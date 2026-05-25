@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "patina"
+version = "0.1.0"
+description = "A cognitive app that compounds — learns you, mirrors your judgment, and improves with every interaction."
+requires-python = ">=3.13"
+dependencies = [
+    "typer>=0.15",
+]
+
+[project.scripts]
+patina = "patina.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/patina"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

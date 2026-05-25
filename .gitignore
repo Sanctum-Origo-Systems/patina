@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+.ruff_cache/
+*.db
+*.db-journal
+config.yaml
+logs/
+docs/
+fixtures/**/*.zip
