@@ -22,7 +22,7 @@ patina status
 
 ```bash
 # Clone and install
-git clone https://github.com/youruser/patina.git
+git clone https://github.com/Sanctum-Origo-Systems/patina.git
 cd patina
 uv sync
 
