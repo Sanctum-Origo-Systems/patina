@@ -30,6 +30,15 @@ patina dismiss <item-id>
 patina objectives add "Ship v2" --keywords "release,deploy,ship"
 patina objectives list
 patina objectives remove <id>
+
+# Build style profiles from your sent messages
+patina style build
+
+# Show communication patterns for a person
+patina style show <name>
+
+# Generate a draft message in your voice
+patina draft --to <name> --context "follow up on the project timeline"
 ```
 
 ## Development
