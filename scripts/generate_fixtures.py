@@ -15,30 +15,30 @@ SEED = 42
 NUM_MESSAGES = 1000
 NUM_DAYS = 30
 
-SELF_USER = {"id": "U000SELF", "real_name": "You (Self)", "name": "self"}
+SELF_USER = {"id": "U000SELF", "real_name": "You", "name": "self", "title": "self"}
 
 USERS = [
     SELF_USER,
-    {"id": "U001MGR", "real_name": "Jordan Park", "name": "jordan.park"},
-    {"id": "U002PEER", "real_name": "Priya Sharma", "name": "priya.sharma"},
-    {"id": "U003PEER", "real_name": "Marcus Chen", "name": "marcus.chen"},
-    {"id": "U004PEER", "real_name": "Lena Novak", "name": "lena.novak"},
-    {"id": "U005TEAM", "real_name": "Sam Okafor", "name": "sam.okafor"},
-    {"id": "U006TEAM", "real_name": "Aisha Patel", "name": "aisha.patel"},
-    {"id": "U007TEAM", "real_name": "Derek Liu", "name": "derek.liu"},
-    {"id": "U008TEAM", "real_name": "Rosa Martinez", "name": "rosa.martinez"},
-    {"id": "U009TEAM", "real_name": "James Wright", "name": "james.wright"},
-    {"id": "U010TEAM", "real_name": "Nina Volkov", "name": "nina.volkov"},
-    {"id": "U011TEAM", "real_name": "Carlos Reyes", "name": "carlos.reyes"},
-    {"id": "U012TEAM", "real_name": "Fatima Al-Hassan", "name": "fatima.alhassan"},
-    {"id": "U013TEAM", "real_name": "Tommy Nguyen", "name": "tommy.nguyen"},
-    {"id": "U014TEAM", "real_name": "Grace Kim", "name": "grace.kim"},
-    {"id": "U015EXT", "real_name": "Alex Rivera (Vendor)", "name": "alex.rivera"},
-    {"id": "U016EXT", "real_name": "Morgan Taylor (Client)", "name": "morgan.taylor"},
-    {"id": "U017EXT", "real_name": "Kai Tanaka (Partner)", "name": "kai.tanaka"},
-    {"id": "U018EXT", "real_name": "Dana Brooks (Legal)", "name": "dana.brooks"},
-    {"id": "U019EXT", "real_name": "Ravi Gupta (Contractor)", "name": "ravi.gupta"},
-    {"id": "U020EXT", "real_name": "Olivia Foster (Sales)", "name": "olivia.foster"},
+    {"id": "U001MGR", "real_name": "Jordan Park", "name": "jordan.park", "title": "manager"},
+    {"id": "U002PEER", "real_name": "Priya Sharma", "name": "priya.sharma", "title": "peer"},
+    {"id": "U003PEER", "real_name": "Marcus Chen", "name": "marcus.chen", "title": "peer"},
+    {"id": "U004PEER", "real_name": "Lena Novak", "name": "lena.novak", "title": "peer"},
+    {"id": "U005TEAM", "real_name": "Sam Okafor", "name": "sam.okafor", "title": "team"},
+    {"id": "U006TEAM", "real_name": "Aisha Patel", "name": "aisha.patel", "title": "team"},
+    {"id": "U007TEAM", "real_name": "Derek Liu", "name": "derek.liu", "title": "team"},
+    {"id": "U008TEAM", "real_name": "Rosa Martinez", "name": "rosa.martinez", "title": "team"},
+    {"id": "U009TEAM", "real_name": "James Wright", "name": "james.wright", "title": "team"},
+    {"id": "U010TEAM", "real_name": "Nina Volkov", "name": "nina.volkov", "title": "team"},
+    {"id": "U011TEAM", "real_name": "Carlos Reyes", "name": "carlos.reyes", "title": "team"},
+    {"id": "U012TEAM", "real_name": "Fatima Al-Hassan", "name": "fatima.alhassan", "title": "team"},
+    {"id": "U013TEAM", "real_name": "Tommy Nguyen", "name": "tommy.nguyen", "title": "team"},
+    {"id": "U014TEAM", "real_name": "Grace Kim", "name": "grace.kim", "title": "team"},
+    {"id": "U015EXT", "real_name": "Alex Rivera", "name": "alex.rivera", "title": "vendor"},
+    {"id": "U016EXT", "real_name": "Morgan Taylor", "name": "morgan.taylor", "title": "client"},
+    {"id": "U017EXT", "real_name": "Kai Tanaka", "name": "kai.tanaka", "title": "partner"},
+    {"id": "U018EXT", "real_name": "Dana Brooks", "name": "dana.brooks", "title": "legal"},
+    {"id": "U019EXT", "real_name": "Ravi Gupta", "name": "ravi.gupta", "title": "contractor"},
+    {"id": "U020EXT", "real_name": "Olivia Foster", "name": "olivia.foster", "title": "sales"},
 ]
 
 CHANNELS = [

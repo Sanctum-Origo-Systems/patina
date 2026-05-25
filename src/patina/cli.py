@@ -7,6 +7,7 @@ import typer
 from patina.decisions import record_decision
 from patina.graph import count_entities, count_observations
 from patina.ingest import ingest_from_export
+from patina.llm import MockLLM
 from patina.priority.catch_up import catch_up as do_catch_up
 from patina.priority.catch_up import priorities as do_priorities
 from patina.priority.objectives import (
@@ -15,10 +16,14 @@ from patina.priority.objectives import (
     remove_objective,
 )
 from patina.store import connect, get_db_path, init_db
+from patina.style.consolidator import build_all_profiles
+from patina.style.draft import generate_draft, load_style_profile
 
 app = typer.Typer(help="Patina — a cognitive app that compounds.")
 objectives_app = typer.Typer(help="Manage objectives.")
 app.add_typer(objectives_app, name="objectives")
+style_app = typer.Typer(help="Style profiles.")
+app.add_typer(style_app, name="style")
 
 
 @app.command()
@@ -226,3 +231,98 @@ def objectives_remove(
     else:
         typer.echo(f"No objective found matching '{obj_id}'", err=True)
         raise typer.Exit(1)
+
+
+def _find_entity_by_name(conn, name: str):
+    row = conn.execute(
+        "SELECT id, name FROM entities WHERE LOWER(name) LIKE ?",
+        (f"%{name.lower()}%",),
+    ).fetchone()
+    return row
+
+
+@style_app.command("build")
+def style_build(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+    user: str = typer.Option("U000SELF", "--user", help="User entity ID"),
+) -> None:
+    """Build style profiles from sent messages."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        from patina.extraction import _make_id
+
+        user_eid = _make_id("person", user)
+        count = build_all_profiles(conn, user_eid)
+        typer.echo(f"Built {count} style profile(s).")
+    finally:
+        conn.close()
+
+
+@style_app.command("show")
+def style_show(
+    entity_name: str = typer.Argument(..., help="Entity name to look up"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Show style profile for an entity."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        row = _find_entity_by_name(conn, entity_name)
+        if not row:
+            typer.echo(f"No entity found matching '{entity_name}'", err=True)
+            raise typer.Exit(1)
+
+        import json
+
+        profile = load_style_profile(conn, row["id"])
+        if not profile:
+            typer.echo(f"No style profile for {row['name']}.")
+            return
+
+        data = json.loads(profile)
+        typer.echo(f"Style profile for {row['name']}:")
+        for key, val in data.items():
+            typer.echo(f"  {key}: {val}")
+    finally:
+        conn.close()
+
+
+@app.command("draft")
+def draft_cmd(
+    to: str = typer.Option(..., "--to", help="Recipient entity name"),
+    context: str = typer.Option(..., "--context", help="What to write about"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Generate a draft message."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        row = _find_entity_by_name(conn, to)
+        if not row:
+            typer.echo(f"No entity found matching '{to}'", err=True)
+            raise typer.Exit(1)
+
+        llm = MockLLM()
+        draft_text = generate_draft(
+            context=context,
+            recipient_entity_id=row["id"],
+            llm=llm,
+            conn=conn,
+        )
+        typer.echo(f"Draft to {row['name']}:")
+        typer.echo(draft_text)
+    finally:
+        conn.close()
