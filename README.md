@@ -16,6 +16,20 @@ patina ingest --from-export ~/Downloads/slack-export.zip
 
 # Check what was ingested
 patina status
+
+# See what needs your attention (unified view)
+patina catch-up
+
+# See items grouped by priority quadrant
+patina priorities
+
+# Dismiss an item
+patina dismiss <item-id>
+
+# Manage objectives (keywords boost importance scoring)
+patina objectives add "Ship v2" --keywords "release,deploy,ship"
+patina objectives list
+patina objectives remove <id>
 ```
 
 ## Development
