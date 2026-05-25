@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+DEFAULT_HOME = Path.home() / ".patina"
+
+_SCHEMA_VERSION = 1
+
+_TABLES = """
+CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    aliases TEXT,
+    metadata TEXT,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    decay_rate REAL DEFAULT 0.02
+);
+
+CREATE TABLE IF NOT EXISTS relationships (
+    id TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL REFERENCES entities(id),
+    predicate TEXT NOT NULL,
+    object_id TEXT NOT NULL REFERENCES entities(id),
+    confidence REAL DEFAULT 0.5,
+    first_seen TEXT NOT NULL,
+    last_confirmed TEXT NOT NULL,
+    source_ids TEXT
+);
+
+CREATE TABLE IF NOT EXISTS claims (
+    id TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL REFERENCES entities(id),
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    first_asserted TEXT NOT NULL,
+    last_confirmed TEXT NOT NULL,
+    decay_rate REAL DEFAULT 0.02,
+    source_ids TEXT
+);
+
+CREATE TABLE IF NOT EXISTS observations (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    channel_id TEXT,
+    thread_id TEXT,
+    timestamp REAL NOT NULL,
+    sender_entity_id TEXT REFERENCES entities(id),
+    text TEXT,
+    metadata TEXT,
+    ingested_at TEXT NOT NULL,
+    processed INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id TEXT PRIMARY KEY,
+    observation_id TEXT REFERENCES observations(id),
+    action TEXT NOT NULL,
+    acted_at TEXT NOT NULL,
+    latency_seconds REAL,
+    context TEXT
+);
+
+CREATE TABLE IF NOT EXISTS objectives (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    keywords TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS predictions (
+    id TEXT PRIMARY KEY,
+    entity_id TEXT REFERENCES entities(id),
+    prediction_type TEXT NOT NULL,
+    prediction TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    outcome TEXT DEFAULT 'pending',
+    outcome_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS style_exemplars (
+    id TEXT PRIMARY KEY,
+    sender_entity_id TEXT REFERENCES entities(id),
+    recipient_entity_id TEXT REFERENCES entities(id),
+    text TEXT NOT NULL,
+    source TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    metadata TEXT
+);
+
+CREATE TABLE IF NOT EXISTS style_profiles (
+    entity_id TEXT PRIMARY KEY REFERENCES entities(id),
+    profile TEXT NOT NULL,
+    sample_count INTEGER DEFAULT 0,
+    last_updated TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS action_queue (
+    id TEXT PRIMARY KEY,
+    action_type TEXT NOT NULL,
+    target_observation_id TEXT REFERENCES observations(id),
+    target_entity_id TEXT REFERENCES entities(id),
+    payload TEXT,
+    confidence REAL NOT NULL,
+    status TEXT DEFAULT 'proposed',
+    autonomy_level INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS journal (
+    id TEXT PRIMARY KEY,
+    date TEXT NOT NULL,
+    body TEXT NOT NULL,
+    entry_type TEXT DEFAULT 'note',
+    processed INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS anti_patterns (
+    id TEXT PRIMARY KEY,
+    from_level INTEGER NOT NULL,
+    pattern_type TEXT NOT NULL,
+    text_keywords TEXT,
+    sender_tier TEXT,
+    context TEXT,
+    wrong_action TEXT NOT NULL,
+    correct_action TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL PRIMARY KEY
+);
+"""
+
+_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts
+    USING fts5(text, content=observations, content_rowid=rowid);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS journal_fts
+    USING fts5(body, content=journal, content_rowid=rowid);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS claims_fts
+    USING fts5(predicate, object, content=claims, content_rowid=rowid);
+"""
+
+_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities(type, name);
+CREATE INDEX IF NOT EXISTS idx_rel_subject ON relationships(subject_id);
+CREATE INDEX IF NOT EXISTS idx_rel_object ON relationships(object_id);
+CREATE INDEX IF NOT EXISTS idx_rel_predicate ON relationships(predicate);
+CREATE INDEX IF NOT EXISTS idx_claims_subject ON claims(subject_id);
+CREATE INDEX IF NOT EXISTS idx_claims_predicate ON claims(predicate);
+CREATE INDEX IF NOT EXISTS idx_obs_source ON observations(source);
+CREATE INDEX IF NOT EXISTS idx_obs_timestamp ON observations(timestamp);
+CREATE INDEX IF NOT EXISTS idx_obs_sender ON observations(sender_entity_id);
+CREATE INDEX IF NOT EXISTS idx_obs_processed ON observations(processed);
+CREATE INDEX IF NOT EXISTS idx_decisions_obs ON decisions(observation_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_action ON decisions(action);
+CREATE INDEX IF NOT EXISTS idx_action_queue_status ON action_queue(status);
+"""
+
+
+def get_db_path(home: Path | None = None) -> Path:
+    home = home or DEFAULT_HOME
+    home.mkdir(parents=True, exist_ok=True)
+    return home / "store.db"
+
+
+def connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def init_db(db_path: Path) -> None:
+    conn = connect(db_path)
+    try:
+        conn.executescript(_TABLES)
+        conn.executescript(_FTS)
+        conn.executescript(_INDEXES)
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+            (_SCHEMA_VERSION,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
