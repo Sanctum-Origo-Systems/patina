@@ -39,6 +39,18 @@ patina style show <name>
 
 # Generate a draft message in your voice
 patina draft --to <name> --context "follow up on the project timeline"
+
+# List entities and their belief counts
+patina beliefs --type person
+
+# Show beliefs that have decayed below confidence threshold
+patina stale --threshold 0.3
+
+# Find contradictory claims in the belief graph
+patina contradictions
+
+# Show relationship map (trust level + activity)
+patina relationships --top 20
 ```
 
 ## Development

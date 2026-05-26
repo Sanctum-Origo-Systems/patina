@@ -4,6 +4,9 @@ from pathlib import Path
 
 import typer
 
+from patina.beliefs.contradictions import find_contradictions_tier1
+from patina.beliefs.decay import get_stale_beliefs
+from patina.beliefs.relationships import get_relationship_map
 from patina.decisions import record_decision
 from patina.graph import count_entities, count_observations
 from patina.ingest import ingest_from_export
@@ -324,5 +327,136 @@ def draft_cmd(
         )
         typer.echo(f"Draft to {row['name']}:")
         typer.echo(draft_text)
+    finally:
+        conn.close()
+
+
+@app.command("beliefs")
+def beliefs_cmd(
+    entity_type: str = typer.Option("all", "--type", help="Filter: person, topic, or all"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """List entities with claim counts."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if entity_type == "all":
+            entities = conn.execute(
+                "SELECT id, type, name FROM entities ORDER BY type, name"
+            ).fetchall()
+        else:
+            entities = conn.execute(
+                "SELECT id, type, name FROM entities WHERE type = ? ORDER BY name",
+                (entity_type,),
+            ).fetchall()
+
+        if not entities:
+            typer.echo("No entities found.")
+            return
+
+        for ent in entities:
+            claim_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM claims WHERE subject_id = ?",
+                (ent["id"],),
+            ).fetchone()["c"]
+            rel_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM relationships WHERE subject_id = ? OR object_id = ?",
+                (ent["id"], ent["id"]),
+            ).fetchone()["c"]
+            typer.echo(
+                f"  [{ent['type']}] {ent['name']}: {claim_count} claims, {rel_count} relationships"
+            )
+    finally:
+        conn.close()
+
+
+@app.command("stale")
+def stale_cmd(
+    threshold: float = typer.Option(0.3, "--threshold", help="Confidence threshold"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Show beliefs below confidence threshold."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        stale = get_stale_beliefs(conn, threshold)
+        if not stale:
+            typer.echo("No stale beliefs found.")
+            return
+
+        typer.echo(f"Stale beliefs (confidence < {threshold}):")
+        for item in stale:
+            typer.echo(
+                f"  [{item['type']}] {item['subject_name']} "
+                f"{item['predicate']} {item['object']} "
+                f"(conf={item['effective_confidence']:.2f}, "
+                f"{item['days_since_confirmed']:.0f}d old)"
+            )
+    finally:
+        conn.close()
+
+
+@app.command("contradictions")
+def contradictions_cmd(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Find contradictory claims."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        results = find_contradictions_tier1(conn)
+        if not results:
+            typer.echo("No contradictions found.")
+            return
+
+        typer.echo(f"Found {len(results)} contradiction(s):")
+        for item in results:
+            typer.echo(
+                f"  {item['subject']} {item['predicate']}:\n"
+                f"    A: {item['object_1']} (conf={item['confidence_1']:.2f})\n"
+                f"    B: {item['object_2']} (conf={item['confidence_2']:.2f})"
+            )
+    finally:
+        conn.close()
+
+
+@app.command("relationships")
+def relationships_cmd(
+    top: int = typer.Option(20, "--top", help="Number of relationships to show"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Show relationship map."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        rels = get_relationship_map(conn, top_n=top)
+        if not rels:
+            typer.echo("No relationships found.")
+            return
+
+        typer.echo(f"{'Name':<25} {'Trust':<7} {'Activity':<15} {'Msgs/wk':<9} {'Last'}")
+        typer.echo("─" * 70)
+        for r in rels:
+            days = f"{r['days_since_last']:.0f}d ago" if r["days_since_last"] else "never"
+            typer.echo(
+                f"  {r['name']:<23} {r['trust_level']:<7.2f} "
+                f"{r['activity_status']:<15} {r['avg_per_week']:<9.1f} {days}"
+            )
     finally:
         conn.close()
