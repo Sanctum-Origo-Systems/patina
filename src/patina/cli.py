@@ -50,14 +50,79 @@ heartbeat_app = typer.Typer(help="Background heartbeat tasks.")
 app.add_typer(heartbeat_app, name="heartbeat")
 
 
+def _bootstrap_home(home_dir: Path) -> None:
+    home_dir.mkdir(parents=True, exist_ok=True)
+    (home_dir / "journal").mkdir(exist_ok=True)
+    (home_dir / "style").mkdir(exist_ok=True)
+
+    soul = home_dir / "SOUL.md"
+    if not soul.exists():
+        soul.write_text(
+            "# SOUL.md\n"
+            "#\n"
+            "# Define how the agent communicates.\n"
+            "# This file is read-only to the agent — it cannot modify its own personality.\n"
+            "#\n"
+            "# Examples:\n"
+            "#   - Be direct and concise\n"
+            "#   - No emojis\n"
+            "#   - Push back when I'm stalling\n"
+            "#   - Match my energy — casual in DMs, formal in client channels\n"
+        )
+
+    profile = home_dir / "PROFILE.md"
+    if not profile.exists():
+        profile.write_text(
+            "# PROFILE.md\n"
+            "#\n"
+            "# Auto-generated summary of the user from the belief graph.\n"
+            "# Will be populated after ingestion and processing.\n"
+        )
+
+    style_self = home_dir / "style" / "self.md"
+    if not style_self.exists():
+        style_self.write_text(
+            "# self.md\n"
+            "#\n"
+            "# Your observed communication patterns.\n"
+            "# Populated by `patina style build`.\n"
+        )
+
+    config = home_dir / "config.yaml"
+    if not config.exists():
+        import yaml
+
+        default_config = {
+            "adapters": {"chat": [], "email": []},
+            "llm": {
+                "tier2": {"provider": "ollama", "model": "qwen3-coder:30b"},
+            },
+            "heartbeat": {
+                "enabled": True,
+                "interval_minutes": 30,
+                "tasks": {
+                    "ingest": True,
+                    "decay": True,
+                    "escalation_check": True,
+                    "profile_refresh": False,
+                },
+            },
+        }
+        config.write_text(yaml.dump(default_config, default_flow_style=False))
+
+
 @app.command()
 def init(
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
-    """Initialize the Patina database."""
+    """Initialize the Patina database and home directory."""
+    from patina.store import DEFAULT_HOME
+
+    home_dir = home or DEFAULT_HOME
+    _bootstrap_home(home_dir)
     db_path = get_db_path(home)
     init_db(db_path)
-    typer.echo(f"Initialized Patina at {db_path}")
+    typer.echo(f"Initialized Patina at {home_dir}")
 
 
 @app.command()
