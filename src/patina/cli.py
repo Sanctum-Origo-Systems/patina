@@ -4,6 +4,23 @@ from pathlib import Path
 
 import typer
 
+from patina.autonomy.actions import (
+    approve_action,
+    list_pending,
+    reject_action,
+)
+from patina.autonomy.levels import (
+    can_advance,
+    current_level,
+    is_frozen,
+    level_description,
+    set_level,
+)
+from patina.autonomy.tracker import (
+    clear_anti_pattern,
+    get_accuracy_stats,
+    get_anti_patterns,
+)
 from patina.beliefs.contradictions import find_contradictions_tier1
 from patina.beliefs.decay import get_stale_beliefs
 from patina.beliefs.relationships import get_relationship_map
@@ -27,6 +44,8 @@ objectives_app = typer.Typer(help="Manage objectives.")
 app.add_typer(objectives_app, name="objectives")
 style_app = typer.Typer(help="Style profiles.")
 app.add_typer(style_app, name="style")
+autonomy_app = typer.Typer(help="Autonomy system.")
+app.add_typer(autonomy_app, name="autonomy")
 
 
 @app.command()
@@ -458,5 +477,180 @@ def relationships_cmd(
                 f"  {r['name']:<23} {r['trust_level']:<7.2f} "
                 f"{r['activity_status']:<15} {r['avg_per_week']:<9.1f} {days}"
             )
+    finally:
+        conn.close()
+
+
+@autonomy_app.command("status")
+def autonomy_status(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Show autonomy level and stats."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        level = current_level(conn)
+        desc = level_description(level)
+        frozen = is_frozen(conn)
+        stats = get_accuracy_stats(conn)
+        patterns = get_anti_patterns(conn)
+        can, reason = can_advance(conn, level)
+
+        typer.echo(f"Level: {level} — {desc}")
+        typer.echo(f"Frozen: {'yes' if frozen else 'no'}")
+        typer.echo(
+            f"Accuracy: {stats['accuracy_rate']:.0%} ({stats['correct']}/{stats['total']} correct)"
+        )
+        typer.echo(f"Anti-patterns: {len(patterns)}")
+        if can:
+            typer.echo(f"Ready to advance: {reason}")
+        else:
+            typer.echo(f"Next advancement: {reason}")
+    finally:
+        conn.close()
+
+
+@autonomy_app.command("pending")
+def autonomy_pending(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """List proposed actions awaiting approval."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        pending = list_pending(conn)
+        if not pending:
+            typer.echo("No pending actions.")
+            return
+        for item in pending:
+            typer.echo(
+                f"  [{item['id'][:8]}] {item['action_type']} "
+                f"(conf={item['confidence']:.2f}, level={item['autonomy_level']})"
+            )
+    finally:
+        conn.close()
+
+
+@autonomy_app.command("set-level")
+def autonomy_set_level(
+    level: int = typer.Argument(..., help="Level to set (0-6)"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Manually set autonomy level."""
+    if level < 0 or level > 6:
+        typer.echo("Level must be 0-6", err=True)
+        raise typer.Exit(1)
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        set_level(conn, level)
+        typer.echo(f"Set autonomy level to {level} — {level_description(level)}")
+    finally:
+        conn.close()
+
+
+@autonomy_app.command("anti-patterns")
+def autonomy_anti_patterns(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """List stored anti-patterns."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        patterns = get_anti_patterns(conn)
+        if not patterns:
+            typer.echo("No anti-patterns stored.")
+            return
+        for p in patterns:
+            kw = ", ".join(p["text_keywords"]) if p["text_keywords"] else "none"
+            typer.echo(
+                f"  [{p['id'][:8]}] {p['pattern_type']} "
+                f"(from level {p['from_level']}): "
+                f"keywords=[{kw}] "
+                f"wrong={p['wrong_action']} correct={p['correct_action']}"
+            )
+    finally:
+        conn.close()
+
+
+@autonomy_app.command("clear-pattern")
+def autonomy_clear_pattern(
+    pattern_id: str = typer.Argument(..., help="Anti-pattern ID to remove"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Remove an anti-pattern."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if clear_anti_pattern(conn, pattern_id):
+            typer.echo(f"Removed anti-pattern [{pattern_id[:8]}]")
+        else:
+            typer.echo(f"No anti-pattern found matching '{pattern_id}'", err=True)
+            raise typer.Exit(1)
+    finally:
+        conn.close()
+
+
+@app.command("approve")
+def approve_cmd(
+    action_id: str = typer.Argument(..., help="Action ID to approve"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Approve a proposed action."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if approve_action(conn, action_id):
+            typer.echo(f"Approved [{action_id[:8]}]")
+        else:
+            typer.echo(f"No pending action found matching '{action_id}'", err=True)
+            raise typer.Exit(1)
+    finally:
+        conn.close()
+
+
+@app.command("reject")
+def reject_cmd(
+    action_id: str = typer.Argument(..., help="Action ID to reject"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Reject a proposed action (freezes advancement)."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if reject_action(conn, action_id):
+            typer.echo(f"Rejected [{action_id[:8]}]. Advancement frozen for 7 days.")
+        else:
+            typer.echo(f"No pending action found matching '{action_id}'", err=True)
+            raise typer.Exit(1)
     finally:
         conn.close()

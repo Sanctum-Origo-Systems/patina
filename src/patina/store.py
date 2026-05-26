@@ -135,6 +135,13 @@ CREATE TABLE IF NOT EXISTS anti_patterns (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS autonomy_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    level INTEGER NOT NULL DEFAULT 0,
+    frozen_until TEXT,
+    last_advanced TEXT
+);
+
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL PRIMARY KEY
 );
