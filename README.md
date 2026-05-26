@@ -51,6 +51,23 @@ patina contradictions
 
 # Show relationship map (trust level + activity)
 patina relationships --top 20
+
+# Check autonomy level and accuracy stats
+patina autonomy status
+
+# List proposed actions awaiting approval
+patina autonomy pending
+
+# Approve or reject a proposed action
+patina approve <action-id>
+patina reject <action-id>
+
+# Manually set autonomy level (0-6)
+patina autonomy set-level <N>
+
+# View/clear learned anti-patterns
+patina autonomy anti-patterns
+patina autonomy clear-pattern <id>
 ```
 
 ## Development
