@@ -46,6 +46,8 @@ style_app = typer.Typer(help="Style profiles.")
 app.add_typer(style_app, name="style")
 autonomy_app = typer.Typer(help="Autonomy system.")
 app.add_typer(autonomy_app, name="autonomy")
+heartbeat_app = typer.Typer(help="Background heartbeat tasks.")
+app.add_typer(heartbeat_app, name="heartbeat")
 
 
 @app.command()
@@ -60,15 +62,27 @@ def init(
 
 @app.command()
 def ingest(
-    from_export: Path = typer.Option(..., "--from-export", help="Path to Slack export zip"),
+    from_export: Path | None = typer.Option(None, "--from-export", help="Path to Slack export zip"),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
-    """Ingest messages from a Slack export."""
-    if not from_export.exists():
-        typer.echo(f"Error: {from_export} not found", err=True)
-        raise typer.Exit(1)
+    """Ingest messages from export file or configured live adapters."""
+    if from_export:
+        if not from_export.exists():
+            typer.echo(f"Error: {from_export} not found", err=True)
+            raise typer.Exit(1)
+        result = ingest_from_export(from_export, home=home)
+    else:
+        from patina.ingest import ingest_all
 
-    result = ingest_from_export(from_export, home=home)
+        result = ingest_all(home=home)
+        adapters_run = result.get("adapters_run", 0)
+        if adapters_run == 0:
+            typer.echo(
+                "No adapters configured. Use 'patina connect slack' "
+                "or 'patina ingest --from-export <path>'."
+            )
+            return
+
     typer.echo(
         f"Done. Inserted {result['messages_inserted']} messages "
         f"({result['messages_skipped']} skipped). "
@@ -654,3 +668,114 @@ def reject_cmd(
             raise typer.Exit(1)
     finally:
         conn.close()
+
+
+connect_app = typer.Typer(help="Connect live data sources.")
+app.add_typer(connect_app, name="connect")
+
+
+def _ensure_config(home: Path | None) -> Path:
+    import yaml
+
+    config_dir = home or (Path.home() / ".patina")
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "config.yaml"
+    if not config_path.exists():
+        config_path.write_text(yaml.dump({"adapters": {"chat": [], "email": []}}))
+    return config_path
+
+
+@connect_app.command("slack")
+def connect_slack(
+    token: str = typer.Option(..., "--token", help="Slack bot or user token"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Connect a Slack workspace."""
+    import yaml
+
+    config_path = _ensure_config(home)
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+
+    adapters = config.setdefault("adapters", {})
+    chat_list = adapters.setdefault("chat", [])
+
+    for existing in chat_list:
+        if existing.get("provider") == "slack":
+            existing["token"] = token
+            break
+    else:
+        chat_list.append({"provider": "slack", "token": token})
+
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    typer.echo(f"Slack connected. Token saved to {config_path}")
+
+
+@connect_app.command("email")
+def connect_email(
+    host: str = typer.Option(..., "--host", help="IMAP host"),
+    port: int = typer.Option(993, "--port", help="IMAP port"),
+    username: str = typer.Option(..., "--username", help="Email username"),
+    password: str = typer.Option(..., "--password", help="Email password"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Connect an email account via IMAP."""
+    import yaml
+
+    config_path = _ensure_config(home)
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+
+    adapters = config.setdefault("adapters", {})
+    email_list = adapters.setdefault("email", [])
+
+    email_list.append(
+        {
+            "provider": "imap",
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+            "use_ssl": True,
+        }
+    )
+
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    typer.echo(f"Email connected. Settings saved to {config_path}")
+
+
+@heartbeat_app.command("once")
+def heartbeat_once_cmd(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Run all heartbeat tasks once and exit."""
+    from patina.scheduler import heartbeat_once
+
+    result = heartbeat_once(home=home)
+    typer.echo(f"Heartbeat complete. Tasks run: {', '.join(result['tasks_run'])}")
+    if result.get("ingest"):
+        i = result["ingest"]
+        typer.echo(f"  Ingest: {i['messages_inserted']} new, {i['messages_skipped']} skipped")
+    if result.get("decay"):
+        typer.echo(f"  Decay: {result['decay']['stale_count']} beliefs below threshold")
+    if result.get("escalation"):
+        typer.echo(f"  Escalation: {result['escalation']['shifts']} urgency shifts detected")
+    if result["errors"]:
+        for err in result["errors"]:
+            typer.echo(f"  Error: {err}", err=True)
+
+
+@heartbeat_app.command("start")
+def heartbeat_start_cmd(
+    interval: int = typer.Option(30, "--interval", help="Minutes between heartbeats"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Run heartbeat continuously at configured interval."""
+    from patina.scheduler import heartbeat_start
+
+    typer.echo(f"Starting heartbeat (every {interval}m). Press Ctrl+C to stop.")
+    heartbeat_start(interval_minutes=interval, home=home)
