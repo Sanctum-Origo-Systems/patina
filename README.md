@@ -70,6 +70,24 @@ patina autonomy anti-patterns
 patina autonomy clear-pattern <id>
 ```
 
+## MCP Server
+
+Patina exposes all features as MCP tools for conversational use from Claude Code, Cline, or any MCP-compatible host.
+
+```json
+{
+  "mcpServers": {
+    "patina-core": {
+      "command": "uv",
+      "args": ["run", "patina-mcp"],
+      "cwd": "/path/to/patina"
+    }
+  }
+}
+```
+
+19 tools available: catch_up, priorities, dismiss, acknowledge, done, beliefs, stale, contradictions, relationships, style_show, draft_reply, journal_write, journal_search, profile_read, soul_read, objective_list, objective_add, objective_remove, autonomy_status, approve, reject.
+
 ## Development
 
 ```bash
