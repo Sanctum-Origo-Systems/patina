@@ -17,9 +17,10 @@ def test_init_creates_database(tmp_path):
     assert (tmp_path / "store.db").exists()
 
 
-def test_ingest_requires_from_export():
-    result = runner.invoke(app, ["ingest"])
-    assert result.exit_code != 0
+def test_ingest_no_adapters_shows_message(tmp_path):
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "No adapters configured" in result.output
 
 
 def test_ingest_with_valid_zip(tmp_path):

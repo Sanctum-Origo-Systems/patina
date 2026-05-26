@@ -92,3 +92,24 @@ class ChatMessage:
     channel_name: str | None = None
     reactions: list[dict] = field(default_factory=list)
     is_bot: bool = False
+
+
+@dataclass
+class EmailMessage:
+    id: str
+    sender: str
+    subject: str
+    text: str
+    timestamp: float
+    recipients: list[str] = field(default_factory=list)
+    conversation_id: str | None = None
+
+
+@dataclass
+class CalendarEvent:
+    id: str
+    subject: str
+    start: float
+    end: float
+    attendees: list[str] = field(default_factory=list)
+    organizer: str = ""

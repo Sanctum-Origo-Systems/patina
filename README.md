@@ -68,6 +68,17 @@ patina autonomy set-level <N>
 # View/clear learned anti-patterns
 patina autonomy anti-patterns
 patina autonomy clear-pattern <id>
+
+# Connect live data sources
+patina connect slack --token "xoxb-..."
+patina connect email --host imap.gmail.com --username user@gmail.com --password app-pass
+
+# Ingest from configured live adapters
+patina ingest
+
+# Run heartbeat (ingest + decay + escalation check)
+patina heartbeat once
+patina heartbeat start --interval 30
 ```
 
 ## MCP Server

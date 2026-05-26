@@ -5,7 +5,8 @@ import zipfile
 
 import pytest
 
-from patina.ingest import ingest_from_export
+from patina.ingest import ingest_all, ingest_from_export, ingest_live
+from patina.models import ChatMessage
 
 
 @pytest.fixture
@@ -75,3 +76,62 @@ def test_returns_correct_counts(export_zip, tmp_path):
     assert "entities_created" in result
     assert "total_observations" in result
     assert "total_entities" in result
+
+
+_FIXED_TS = 1700000100.0
+
+
+class MockChatPort:
+    @property
+    def platform(self) -> str:
+        return "mock"
+
+    def list_dm_messages(self, since: float) -> list[ChatMessage]:
+        return [
+            ChatMessage(
+                user_id="U001",
+                text="Hello from DM",
+                timestamp=_FIXED_TS,
+                channel_id="D001",
+                user_name="Alice",
+            ),
+        ]
+
+    def list_mentions(self, since: float) -> list[ChatMessage]:
+        return [
+            ChatMessage(
+                user_id="U002",
+                text="Hey <@U001>",
+                timestamp=_FIXED_TS + 100,
+                channel_id="C001",
+                user_name="Bob",
+            ),
+        ]
+
+    def list_channel_messages(self, channel_id, since):
+        return []
+
+    def get_thread(self, channel_id, thread_id):
+        return []
+
+
+def test_ingest_live_with_mock_port(tmp_path):
+    home = tmp_path / "live_home"
+    port = MockChatPort()
+    result = ingest_live(port=port, source="mock", home=home)
+    assert result["messages_inserted"] == 2
+    assert result["entities_created"] >= 2
+
+
+def test_ingest_live_dedup(tmp_path):
+    home = tmp_path / "live_home"
+    port = MockChatPort()
+    ingest_live(port=port, source="mock", home=home)
+    result2 = ingest_live(port=port, source="mock", home=home)
+    assert result2["messages_skipped"] == 2
+
+
+def test_ingest_all_no_adapters(tmp_path):
+    result = ingest_all(home=tmp_path)
+    assert result["adapters_run"] == 0
+    assert result["messages_inserted"] == 0
