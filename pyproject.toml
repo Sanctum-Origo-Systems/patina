@@ -6,11 +6,18 @@ build-backend = "hatchling.build"
 name = "patina"
 version = "0.1.0"
 description = "A cognitive app that compounds — learns you, mirrors your judgment, and improves with every interaction."
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "typer>=0.15",
     "mcp[cli]>=1.0",
+    "pyyaml>=6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Sanctum-Origo-Systems/patina"
+Repository = "https://github.com/Sanctum-Origo-Systems/patina"
 
 [project.scripts]
 patina = "patina.cli:app"

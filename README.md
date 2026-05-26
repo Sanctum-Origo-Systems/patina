@@ -1,6 +1,12 @@
 # Patina
 
-A cognitive app that compounds — learns you, mirrors your judgment, and improves with every interaction.
+> The first AI assistant that learns you — and the longer you use it, the less you need to tell it.
+
+Your cognitive ceiling isn't set by your intelligence. It's set by your cognitive load. Patina is a persistent extension of your cognition: it holds your context, tracks your beliefs about your world, mirrors your judgment, and improves with every interaction.
+
+- **Day 1:** Export your Slack. In 5 minutes, see everything you've missed, forgotten, or let slip.
+- **Day 30:** It knows your priorities, drafts in your voice, and dismisses noise automatically.
+- **Day 90:** It predicts what you'd do, catches contradictions across conversations, and operates silently.
 
 ## Quick Start
 
@@ -11,79 +17,83 @@ uv tool install patina
 # Initialize
 patina init
 
-# Ingest from a Slack export
+# Ingest from a Slack export (immediate value)
 patina ingest --from-export ~/Downloads/slack-export.zip
 
-# Check what was ingested
-patina status
-
-# See what needs your attention (unified view)
+# See what needs your attention
 patina catch-up
 
-# See items grouped by priority quadrant
+# See everything ranked by priority quadrant
 patina priorities
+```
 
-# Dismiss an item
-patina dismiss <item-id>
+## What It Does
 
-# Manage objectives (keywords boost importance scoring)
-patina objectives add "Ship v2" --keywords "release,deploy,ship"
-patina objectives list
-patina objectives remove <id>
+```bash
+# Priority + judgment
+patina catch-up                    # unified view: needs action / new / waiting
+patina priorities                  # grouped by quadrant (Q1-Q4)
+patina dismiss <id>                # dismiss noise, trains the model
+patina objectives add "Ship v2" --keywords "release,deploy"
 
-# Build style profiles from your sent messages
-patina style build
+# Style + drafting
+patina style build                 # build communication profiles from sent messages
+patina style show <name>           # view patterns for a person
+patina draft --to <name> --context "follow up on the timeline"
 
-# Show communication patterns for a person
-patina style show <name>
+# Belief graph
+patina beliefs --type person       # entities with claim counts
+patina stale                       # decayed beliefs below confidence threshold
+patina contradictions              # conflicting claims
+patina relationships --top 20      # trust level + activity map
 
-# Generate a draft message in your voice
-patina draft --to <name> --context "follow up on the project timeline"
+# Graduated autonomy
+patina autonomy status             # current level, accuracy, anti-patterns
+patina approve <id>                # approve a proposed action
+patina reject <id>                 # reject (freezes advancement, stores anti-pattern)
+patina autonomy set-level <N>      # manual override (0-6)
 
-# List entities and their belief counts
-patina beliefs --type person
-
-# Show beliefs that have decayed below confidence threshold
-patina stale --threshold 0.3
-
-# Find contradictory claims in the belief graph
-patina contradictions
-
-# Show relationship map (trust level + activity)
-patina relationships --top 20
-
-# Check autonomy level and accuracy stats
-patina autonomy status
-
-# List proposed actions awaiting approval
-patina autonomy pending
-
-# Approve or reject a proposed action
-patina approve <action-id>
-patina reject <action-id>
-
-# Manually set autonomy level (0-6)
-patina autonomy set-level <N>
-
-# View/clear learned anti-patterns
-patina autonomy anti-patterns
-patina autonomy clear-pattern <id>
-
-# Connect live data sources
+# Live adapters
 patina connect slack --token "xoxb-..."
-patina connect email --host imap.gmail.com --username user@gmail.com --password app-pass
+patina ingest                      # fetch from configured adapters
 
-# Ingest from configured live adapters
-patina ingest
-
-# Run heartbeat (ingest + decay + escalation check)
-patina heartbeat once
+# Heartbeat (background tasks)
+patina heartbeat once              # ingest + decay + escalation check
 patina heartbeat start --interval 30
 ```
 
+## How It Works
+
+```
+┌─────────────────────────────────────────────────┐
+│ Tier 3: Frontier LLM (Claude, GPT-4o)          │ Synthesis, drafts, contradictions
+├─────────────────────────────────────────────────┤
+│ Tier 2: Local LLM (Qwen 3.x, Ollama)           │ Entity extraction, classification
+├─────────────────────────────────────────────────┤
+│ Tier 1: Deterministic (no LLM)                  │ Scoring, decay, graph queries
+└─────────────────────────────────────────────────┘
+        ↓ all tiers feed ↓
+┌─────────────────────────────────────────────────┐
+│ Belief Graph (SQLite)                           │
+│ Entities → Relationships → Claims               │
+│ Confidence decay · Provenance · Contradictions   │
+└─────────────────────────────────────────────────┘
+```
+
+The system is fully functional at Tier 1 alone (zero LLM calls). Each tier adds capability but never load-bears. Local-first: all data stays in `~/.patina/store.db`.
+
+## What Makes This Different
+
+1. **Persistent belief model with decay** — not a message archive, a living world model
+2. **Judgment learned from your decisions** — not universal rules, YOUR priorities
+3. **Graduated autonomy earned by accuracy** — not configured, proven
+4. **Local-first, model-agnostic** — runs offline, no vendor lock-in
+5. **Deterministic core** — the intelligence is math and graphs, not LLM calls
+6. **Day-one value from export** — no warm-up period
+
 ## MCP Server
 
-Patina exposes all features as MCP tools for conversational use from Claude Code, Cline, or any MCP-compatible host.
+Patina runs as an MCP server for conversational use from Claude Code, Cline, or any MCP host.
 
 ```json
 {
@@ -97,12 +107,30 @@ Patina exposes all features as MCP tools for conversational use from Claude Code
 }
 ```
 
-19 tools available: catch_up, priorities, dismiss, acknowledge, done, beliefs, stale, contradictions, relationships, style_show, draft_reply, journal_write, journal_search, profile_read, soul_read, objective_list, objective_add, objective_remove, autonomy_status, approve, reject.
+## Configuration
+
+All config lives in `~/.patina/config.yaml`. Credentials never leave your machine.
+
+```yaml
+adapters:
+  chat:
+    - provider: slack
+      token: "xoxb-..."
+llm:
+  tier2:
+    provider: ollama
+    model: "qwen3-coder:30b"
+  tier3:
+    provider: anthropic
+    api_key: "sk-ant-..."
+heartbeat:
+  enabled: true
+  interval_minutes: 30
+```
 
 ## Development
 
 ```bash
-# Clone and install
 git clone https://github.com/Sanctum-Origo-Systems/patina.git
 cd patina
 uv sync
@@ -110,9 +138,14 @@ uv sync
 # Generate test fixtures
 uv run python scripts/generate_fixtures.py
 
-# Run tests
+# Run tests + evals
 uv run pytest
+uv run pytest eval/deterministic/
 
-# Lint and format
+# Lint
 uv run ruff check && uv run ruff format
 ```
+
+## License
+
+Apache 2.0
