@@ -9,10 +9,12 @@ description = "A cognitive app that compounds — learns you, mirrors your judgm
 requires-python = ">=3.13"
 dependencies = [
     "typer>=0.15",
+    "mcp[cli]>=1.0",
 ]
 
 [project.scripts]
 patina = "patina.cli:app"
+patina-mcp = "patina.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/patina"]
