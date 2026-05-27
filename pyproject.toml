@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "patina"
-version = "0.2.0"
+version = "0.3.0"
 description = "A cognitive app that compounds — learns you, mirrors your judgment, and improves with every interaction."
 readme = "README.md"
 license = "Apache-2.0"
@@ -16,6 +16,8 @@ dependencies = [
     "claude-agent-sdk>=0.2",
     "starlette>=0.38",
     "uvicorn>=0.30",
+    "python-telegram-bot>=21.0",
+    "httpx>=0.27",
 ]
 
 [project.urls]
