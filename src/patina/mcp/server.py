@@ -9,6 +9,7 @@ from patina.mcp import (
     tools_journal,
     tools_objectives,
     tools_profile,
+    tools_session,
     tools_style,
 )
 from patina.store import get_db_path, init_db
@@ -22,6 +23,7 @@ tools_journal.register(mcp)
 tools_profile.register(mcp)
 tools_objectives.register(mcp)
 tools_autonomy.register(mcp)
+tools_session.register(mcp)
 
 
 def main():
