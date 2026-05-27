@@ -33,6 +33,8 @@ def test_server_has_tools(tool_names):
     assert "autonomy_status" in tool_names
     assert "approve" in tool_names
     assert "reject" in tool_names
+    assert "recent_messages" in tool_names
+    assert "session_checkpoint" in tool_names
 
 
 def test_no_soul_write_tool(tool_names):

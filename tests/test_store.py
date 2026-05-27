@@ -29,6 +29,7 @@ def test_init_db_creates_all_tables(db_path):
         "action_queue",
         "journal",
         "anti_patterns",
+        "conversations",
         "schema_version",
     }
     assert expected.issubset(names)
@@ -49,7 +50,7 @@ def test_init_db_idempotent(db_path):
 def test_schema_version_set(db_path):
     conn = connect(db_path)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 1
+    assert row["version"] == 2
     conn.close()
 
 

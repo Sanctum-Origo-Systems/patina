@@ -5,7 +5,7 @@ from pathlib import Path
 
 DEFAULT_HOME = Path.home() / ".patina"
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _TABLES = """
 CREATE TABLE IF NOT EXISTS entities (
@@ -142,6 +142,15 @@ CREATE TABLE IF NOT EXISTS autonomy_state (
     last_advanced TEXT
 );
 
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    timestamp REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL PRIMARY KEY
 );
@@ -172,6 +181,7 @@ CREATE INDEX IF NOT EXISTS idx_obs_processed ON observations(processed);
 CREATE INDEX IF NOT EXISTS idx_decisions_obs ON decisions(observation_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_action ON decisions(action);
 CREATE INDEX IF NOT EXISTS idx_action_queue_status ON action_queue(status);
+CREATE INDEX IF NOT EXISTS idx_conversations_channel_ts ON conversations(channel, timestamp DESC);
 """
 
 
