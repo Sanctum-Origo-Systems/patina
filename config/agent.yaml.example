@@ -1,0 +1,8 @@
+# Patina Agent Configuration
+# Copy to ~/.patina/agent.yaml and customize
+
+provider: anthropic        # anthropic | openai | google | aws
+model: null                # model name (null = provider default)
+session_ttl_seconds: 300   # burst cache TTL for gateway mode
+permission_mode: auto      # auto | default
+max_turns: 50              # safety cap per session

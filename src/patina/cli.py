@@ -844,3 +844,83 @@ def heartbeat_start_cmd(
 
     typer.echo(f"Starting heartbeat (every {interval}m). Press Ctrl+C to stop.")
     heartbeat_start(interval_minutes=interval, home=home)
+
+
+@app.command("chat")
+def chat_cmd(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Start interactive conversation with your cognitive partner."""
+    import asyncio
+
+    from patina.agent.config import load_config
+    from patina.agent.runtime import AgentRuntime
+    from patina.conversations import store_exchange
+
+    config = load_config()
+    config.repl_mode = True
+    runtime = AgentRuntime(config)
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+
+    last_checkpoint = conn.execute(
+        """SELECT body FROM journal WHERE entry_type = 'session_end'
+           ORDER BY created_at DESC LIMIT 1"""
+    ).fetchone()
+    if last_checkpoint:
+        typer.echo("Resuming from last session checkpoint.")
+    else:
+        typer.echo("Welcome to Patina. Type /quit to exit.")
+
+    try:
+        while True:
+            try:
+                user_input = input("\n> ")
+            except (KeyboardInterrupt, EOFError):
+                typer.echo("\nCheckpointing session...")
+                break
+
+            if user_input.strip() in ("/quit", "/exit"):
+                typer.echo("Checkpointing session...")
+                break
+
+            if not user_input.strip():
+                continue
+
+            store_exchange(conn, "repl-local", "default", "user", user_input)
+
+            response_parts: list[str] = []
+
+            async def _run():
+                from claude_agent_sdk import ResultMessage
+
+                async for message in runtime.query(user_input):
+                    if isinstance(message, ResultMessage):
+                        text = message.result if hasattr(message, "result") else ""
+                        response_parts.append(text)
+
+            asyncio.run(_run())
+
+            response_text = "".join(response_parts)
+            if response_text:
+                typer.echo(response_text)
+                store_exchange(conn, "repl-local", "default", "assistant", response_text)
+    finally:
+        conn.close()
+
+
+@app.command("serve")
+def serve_cmd(
+    port: int = typer.Option(8321, "--port", help="Port to listen on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+) -> None:
+    """Start HTTP server for gateway integration."""
+    import uvicorn
+
+    from patina.serve import create_app
+
+    http_app = create_app()
+    typer.echo(f"Starting Patina server on {host}:{port}")
+    uvicorn.run(http_app, host=host, port=port)

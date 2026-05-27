@@ -60,15 +60,21 @@ patina ingest                      # fetch from configured adapters
 # Heartbeat (background tasks)
 patina heartbeat once              # ingest + decay + escalation check
 patina heartbeat start --interval 30
+
+# Interactive conversation (Claude Agent SDK)
+patina chat
+
+# HTTP server for gateway integration
+patina serve --port 8321
 ```
 
 ## How It Works
 
 ```
 ┌─────────────────────────────────────────────────┐
-│ Tier 3: Frontier LLM (Claude, GPT-4o)          │ Synthesis, drafts, contradictions
+│ Tier 3: Frontier LLM (Claude, GPT-4o)           │ Synthesis, drafts, contradictions
 ├─────────────────────────────────────────────────┤
-│ Tier 2: Local LLM (Qwen 3.x, Ollama)           │ Entity extraction, classification
+│ Tier 2: Local LLM (Qwen 3.x, Ollama)            │ Entity extraction, classification
 ├─────────────────────────────────────────────────┤
 │ Tier 1: Deterministic (no LLM)                  │ Scoring, decay, graph queries
 └─────────────────────────────────────────────────┘
@@ -76,7 +82,7 @@ patina heartbeat start --interval 30
 ┌─────────────────────────────────────────────────┐
 │ Belief Graph (SQLite)                           │
 │ Entities → Relationships → Claims               │
-│ Confidence decay · Provenance · Contradictions   │
+│ Confidence decay · Provenance · Contradictions  │
 └─────────────────────────────────────────────────┘
 ```
 
