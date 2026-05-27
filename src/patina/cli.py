@@ -88,10 +88,10 @@ def _bootstrap_home(home_dir: Path) -> None:
             "# Populated by `patina style build`.\n"
         )
 
+    import yaml
+
     config = home_dir / "config.yaml"
     if not config.exists():
-        import yaml
-
         default_config = {
             "adapters": {"chat": [], "email": []},
             "llm": {
@@ -109,6 +109,20 @@ def _bootstrap_home(home_dir: Path) -> None:
             },
         }
         config.write_text(yaml.dump(default_config, default_flow_style=False))
+
+    gateway_config = home_dir / "gateway.yaml"
+    if not gateway_config.exists():
+        default_gateway = {
+            "adapters": {
+                "telegram": {
+                    "enabled": False,
+                    "token": "${TELEGRAM_BOT_TOKEN}",
+                    "allowed_users": [],
+                },
+            },
+            "agent_url": "http://127.0.0.1:8321",
+        }
+        gateway_config.write_text(yaml.dump(default_gateway, default_flow_style=False))
 
 
 @app.command()
@@ -924,3 +938,50 @@ def serve_cmd(
     http_app = create_app()
     typer.echo(f"Starting Patina server on {host}:{port}")
     uvicorn.run(http_app, host=host, port=port)
+
+
+@app.command("gateway")
+def gateway_cmd(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Start messaging gateway (connects Telegram/Slack to agent)."""
+    import asyncio
+
+    from patina.gateway.base import load_gateway_config
+    from patina.gateway.telegram import TelegramAdapter
+
+    config = load_gateway_config()
+    adapters = []
+
+    if config.telegram.enabled:
+        if not config.telegram.token:
+            typer.echo("Error: Telegram token not configured", err=True)
+            raise typer.Exit(1)
+        adapters.append(
+            TelegramAdapter(
+                token=config.telegram.token,
+                agent_url=config.agent_url,
+                allowed_users=config.telegram.allowed_users or None,
+            )
+        )
+
+    if not adapters:
+        typer.echo("No adapters enabled. Configure ~/.patina/gateway.yaml first.")
+        raise typer.Exit(1)
+
+    typer.echo(f"Starting gateway with {len(adapters)} adapter(s)...")
+
+    async def _run():
+        for adapter in adapters:
+            await adapter.start()
+        typer.echo("Gateway running. Press Ctrl+C to stop.")
+        try:
+            await asyncio.Event().wait()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            for adapter in adapters:
+                await adapter.stop()
+            typer.echo("Gateway stopped.")
+
+    asyncio.run(_run())

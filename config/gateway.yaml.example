@@ -1,0 +1,14 @@
+# Patina Gateway Configuration
+# Copy to ~/.patina/gateway.yaml and customize
+
+adapters:
+  telegram:
+    enabled: true
+    token: "${TELEGRAM_BOT_TOKEN}"
+    allowed_users: []  # your Telegram user ID(s)
+
+  slack:
+    enabled: false
+    # token: "${SLACK_BOT_TOKEN}"
+
+agent_url: "http://127.0.0.1:8321"

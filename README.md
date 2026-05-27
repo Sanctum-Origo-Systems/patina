@@ -66,6 +66,9 @@ patina chat
 
 # HTTP server for gateway integration
 patina serve --port 8321
+
+# Telegram gateway (talk to your agent from your phone)
+patina gateway
 ```
 
 ## How It Works
