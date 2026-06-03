@@ -63,3 +63,57 @@ def test_repl_mode_flag(tmp_path):
     runtime = AgentRuntime(config)
     assert runtime.config.repl_mode is True
     assert runtime._repl_session_id is None
+
+
+def test_build_options_no_bedrock_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+    (tmp_path / "SOUL.md").write_text("")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    env = opts.get("env", {})
+    assert "CLAUDE_CODE_USE_BEDROCK" not in env
+    assert "AWS_REGION" not in env
+    assert "AWS_PROFILE" not in env
+
+
+def test_build_options_bedrock_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+    (tmp_path / "SOUL.md").write_text("")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert opts["env"]["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert opts["env"]["AWS_REGION"] == "eu-west-1"
+
+
+def test_build_options_bedrock_default_region(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+    (tmp_path / "SOUL.md").write_text("")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert opts["env"]["AWS_REGION"] == "us-west-2"
+
+
+def test_build_options_aws_profile(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.setenv("AWS_PROFILE", "my-profile")
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+    (tmp_path / "SOUL.md").write_text("")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert opts["env"]["AWS_PROFILE"] == "my-profile"
+
+
+def test_build_options_env_always_has_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+    (tmp_path / "SOUL.md").write_text("")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert "PATH" in opts["env"]
