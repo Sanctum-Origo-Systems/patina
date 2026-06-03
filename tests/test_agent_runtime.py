@@ -117,3 +117,24 @@ def test_build_options_env_always_has_path(tmp_path, monkeypatch):
     runtime = AgentRuntime(config)
     opts = runtime._build_options(None)
     assert "PATH" in opts["env"]
+
+
+def test_build_options_cli_path_when_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda cmd: "/usr/local/bin/claude" if cmd == "claude" else None,
+    )
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+    (tmp_path / "SOUL.md").write_text("")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert opts["cli_path"] == "/usr/local/bin/claude"
+
+
+def test_build_options_no_cli_path_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+    (tmp_path / "SOUL.md").write_text("")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert "cli_path" not in opts

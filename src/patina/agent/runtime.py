@@ -60,6 +60,10 @@ class AgentRuntime:
         if env:
             opts["env"] = env
 
+        system_claude = shutil.which("claude")
+        if system_claude:
+            opts["cli_path"] = system_claude
+
         return opts
 
     async def query(
