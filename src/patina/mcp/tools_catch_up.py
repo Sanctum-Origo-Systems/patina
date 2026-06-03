@@ -16,7 +16,17 @@ def _format_item(item: dict) -> str:
     age_d = item["staleness_days"]
     age = f"{age_d * 24:.0f}h" if age_d < 1 else f"{age_d:.1f}d"
     text = item["text"][:80] if item["text"] else ""
-    return f"- **{item['sender_name']}**: {text} ({age} ago, {item['quadrant']})"
+    source = item.get("source", "")
+    permalink = item.get("permalink", "")
+
+    sender = item["sender_name"]
+    if permalink:
+        sender = f"[{sender}]({permalink})"
+
+    parts = [f"- **{sender}**: {text} ({age} ago, {item['quadrant']})"]
+    if source and not permalink:
+        parts[0] += f" via {source.replace('_', ' ')}"
+    return parts[0]
 
 
 def catch_up(days: int = 3) -> str:

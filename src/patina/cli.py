@@ -924,7 +924,11 @@ def chat_cmd(
 
                 response_text = "".join(response_parts)
                 if response_text:
-                    typer.echo(response_text)
+                    from rich.console import Console
+                    from rich.markdown import Markdown
+
+                    console = Console()
+                    console.print(Markdown(response_text))
                     store_exchange(conn, "repl-local", "default", "assistant", response_text)
         finally:
             conn.close()

@@ -22,7 +22,8 @@ def test_build_options_includes_soul(tmp_path):
     (tmp_path / "SOUL.md").write_text("Be direct.")
     runtime = AgentRuntime(config)
     opts = runtime._build_options(None)
-    assert opts["system_prompt"] == "Be direct."
+    assert opts["system_prompt"].startswith("Be direct.")
+    assert "Operational Instructions" in opts["system_prompt"]
 
 
 def test_build_options_includes_max_turns(tmp_path):
