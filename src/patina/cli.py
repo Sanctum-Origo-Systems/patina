@@ -908,11 +908,19 @@ def chat_cmd(
 
                 store_exchange(conn, "repl-local", "default", "user", user_input)
 
+                from patina.spinner import Spinner
+
+                spinner = Spinner("Thinking")
+                spinner.start()
                 response_parts: list[str] = []
-                async for message in runtime.query(user_input):
-                    if isinstance(message, ResultMessage):
-                        text = message.result if hasattr(message, "result") else ""
-                        response_parts.append(text)
+                try:
+                    async for message in runtime.query(user_input):
+                        if isinstance(message, ResultMessage):
+                            spinner.stop()
+                            text = message.result if hasattr(message, "result") else ""
+                            response_parts.append(text)
+                finally:
+                    spinner.stop()
 
                 response_text = "".join(response_parts)
                 if response_text:
