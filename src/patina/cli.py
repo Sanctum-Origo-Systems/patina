@@ -888,41 +888,40 @@ def chat_cmd(
     else:
         typer.echo("Welcome to Patina. Type /quit to exit.")
 
-    try:
-        while True:
-            try:
-                user_input = input("\n> ")
-            except (KeyboardInterrupt, EOFError):
-                typer.echo("\nCheckpointing session...")
-                break
+    async def _chat_loop():
+        from claude_agent_sdk import ResultMessage
 
-            if user_input.strip() in ("/quit", "/exit"):
-                typer.echo("Checkpointing session...")
-                break
+        try:
+            while True:
+                try:
+                    user_input = await asyncio.to_thread(input, "\n> ")
+                except (KeyboardInterrupt, EOFError):
+                    typer.echo("\nCheckpointing session...")
+                    break
 
-            if not user_input.strip():
-                continue
+                if user_input.strip() in ("/quit", "/exit"):
+                    typer.echo("Checkpointing session...")
+                    break
 
-            store_exchange(conn, "repl-local", "default", "user", user_input)
+                if not user_input.strip():
+                    continue
 
-            response_parts: list[str] = []
+                store_exchange(conn, "repl-local", "default", "user", user_input)
 
-            async def _run():
-                from claude_agent_sdk import ResultMessage
-
+                response_parts: list[str] = []
                 async for message in runtime.query(user_input):
                     if isinstance(message, ResultMessage):
                         text = message.result if hasattr(message, "result") else ""
                         response_parts.append(text)
 
-            asyncio.run(_run())
+                response_text = "".join(response_parts)
+                if response_text:
+                    typer.echo(response_text)
+                    store_exchange(conn, "repl-local", "default", "assistant", response_text)
+        finally:
+            conn.close()
 
-            response_text = "".join(response_parts)
-            if response_text:
-                typer.echo(response_text)
-                store_exchange(conn, "repl-local", "default", "assistant", response_text)
-    finally:
-        conn.close()
+    asyncio.run(_chat_loop())
 
 
 @app.command("serve")
