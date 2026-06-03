@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import AsyncIterator
 from typing import Any
@@ -48,6 +49,16 @@ class AgentRuntime:
 
         if self.config.model:
             opts["model"] = self.config.model
+
+        env: dict[str, str] = {}
+        if os.environ.get("CLAUDE_CODE_USE_BEDROCK"):
+            env["CLAUDE_CODE_USE_BEDROCK"] = "1"
+            env["AWS_REGION"] = os.environ.get("AWS_REGION", "us-west-2")
+        if os.environ.get("AWS_PROFILE"):
+            env["AWS_PROFILE"] = os.environ["AWS_PROFILE"]
+        env["PATH"] = os.environ.get("PATH", "")
+        if env:
+            opts["env"] = env
 
         return opts
 

@@ -6,3 +6,10 @@ model: null                # model name (null = provider default)
 session_ttl_seconds: 300   # burst cache TTL for gateway mode
 permission_mode: auto      # auto | default
 max_turns: 50              # safety cap per session
+
+# --- Bedrock users ---
+# To use AWS Bedrock instead of direct Anthropic API:
+#   export CLAUDE_CODE_USE_BEDROCK=1
+#   export AWS_REGION=us-west-2       # optional, defaults to us-west-2
+#   export AWS_PROFILE=my-profile     # optional, uses default profile if unset
+# These env vars are forwarded to the SDK automatically. No config changes needed.
