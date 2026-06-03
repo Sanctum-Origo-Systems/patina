@@ -8,6 +8,22 @@ from typing import Any
 from patina.agent.config import AgentConfig, load_soul
 from patina.agent.session_cache import SessionCache
 
+_OPERATIONAL_INSTRUCTIONS = """
+
+---
+## Operational Instructions
+
+When referencing messages or observations:
+- Include the source type (e.g., slack_dm, slack_channel, email, calendar)
+- Include the permalink as a clickable markdown link when available in metadata
+- Example: "From [Slack DM](https://slack.com/archives/D123/p456): ..."
+
+Format all responses in markdown:
+- Use headers, bullet lists, and bold for structure
+- Use `code` formatting for IDs, commands, and technical terms
+- Use blockquotes for message excerpts
+"""
+
 
 class AgentRuntime:
     def __init__(self, config: AgentConfig) -> None:
@@ -36,8 +52,10 @@ class AgentRuntime:
                 "args": self.config.mcp_server_args,
             }
 
+        system_prompt = self.soul + _OPERATIONAL_INSTRUCTIONS
+
         opts: dict[str, Any] = {
-            "system_prompt": self.soul,
+            "system_prompt": system_prompt,
             "mcp_servers": mcp_servers,
             "permission_mode": self.config.permission_mode,
             "allowed_tools": ["mcp__cognitive__*"],

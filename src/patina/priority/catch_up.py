@@ -21,7 +21,7 @@ def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]
 
         rows = conn.execute(
             """SELECT o.id, o.text, o.timestamp, o.sender_entity_id,
-                      o.channel_id, o.metadata,
+                      o.channel_id, o.metadata, o.source,
                       e.name AS sender_name
                FROM observations o
                LEFT JOIN entities e ON o.sender_entity_id = e.id
@@ -61,6 +61,8 @@ def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]
                 "text": row["text"] or "",
                 "sender_name": row["sender_name"] or "unknown",
                 "channel_name": channel_name,
+                "source": row["source"] if "source" in row.keys() else "",
+                "permalink": meta.get("permalink", ""),
                 "timestamp": row["timestamp"],
                 "quadrant": scored.quadrant,
                 "urgency": scored.urgency,
@@ -100,7 +102,7 @@ def priorities(*, home: Path | None = None, days: int = 7) -> dict[str, list[dic
 
         rows = conn.execute(
             """SELECT o.id, o.text, o.timestamp, o.sender_entity_id,
-                      o.channel_id, o.metadata,
+                      o.channel_id, o.metadata, o.source,
                       e.name AS sender_name
                FROM observations o
                LEFT JOIN entities e ON o.sender_entity_id = e.id
@@ -137,6 +139,8 @@ def priorities(*, home: Path | None = None, days: int = 7) -> dict[str, list[dic
                 "text": row["text"] or "",
                 "sender_name": row["sender_name"] or "unknown",
                 "channel_name": channel_name,
+                "source": row["source"],
+                "permalink": meta.get("permalink", ""),
                 "timestamp": row["timestamp"],
                 "quadrant": scored.quadrant,
                 "urgency": scored.urgency,
