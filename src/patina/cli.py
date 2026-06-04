@@ -139,6 +139,26 @@ def init(
     typer.echo(f"Initialized Patina at {home_dir}")
 
 
+@app.command("extract")
+def extract_cmd(
+    batch_size: int = typer.Option(10, "--batch-size", help="Messages per LLM call"),
+    limit: int = typer.Option(500, "--limit", help="Max observations to process"),
+    model: str = typer.Option("sonnet", "--model", help="Claude model to use"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Count without calling LLM"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Extract beliefs from unprocessed observations via LLM."""
+    from patina.beliefs.extractor import extract_beliefs
+
+    extract_beliefs(
+        batch_size=batch_size,
+        limit=limit,
+        model=model,
+        dry_run=dry_run,
+        home=home,
+    )
+
+
 @app.command()
 def ingest(
     from_export: Path | None = typer.Option(None, "--from-export", help="Path to Slack export zip"),
