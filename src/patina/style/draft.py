@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from patina.llm import LLMPort
+from patina.owner import get_owner_entity_id
 
 
 def load_style_profile(conn: sqlite3.Connection, entity_id: str) -> str | None:
@@ -30,8 +31,9 @@ def generate_draft(
     ).fetchone()
     recipient_name = row["name"] if row else "Unknown"
 
-    user_rows = conn.execute("SELECT entity_id, profile FROM style_profiles LIMIT 1").fetchone()
-    user_style = user_rows["profile"] if user_rows else "{}"
+    owner_id = get_owner_entity_id(conn)
+    user_style = load_style_profile(conn, owner_id) if owner_id else None
+    user_style = user_style or "{}"
 
     style_prompt = (
         f"Recipient: {recipient_name}\n"

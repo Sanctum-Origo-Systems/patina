@@ -13,7 +13,7 @@ from patina.graph import (
     upsert_entity,
 )
 from patina.models import ChatMessage, Observation
-from patina.owner import get_owner_user_ids, mark_entity_as_owner
+from patina.owner import get_owner_entity_id, get_owner_user_ids, mark_entity_as_owner
 from patina.store import connect, get_db_path, init_db
 
 
@@ -81,10 +81,18 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
                 upsert_entity(conn, ent)
                 entity_ids_seen.add(ent.id)
 
+        owner_id = get_owner_entity_id(conn)
+        styles_built = 0
+        if owner_id and inserted > 0:
+            from patina.style.consolidator import build_all_profiles
+
+            styles_built = build_all_profiles(conn, owner_id)
+
         return {
             "messages_inserted": inserted,
             "messages_skipped": skipped,
             "entities_created": len(entity_ids_seen),
+            "styles_built": styles_built,
             "total_observations": count_observations(conn),
             "total_entities": count_entities(conn),
         }
