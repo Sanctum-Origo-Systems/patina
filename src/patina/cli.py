@@ -400,7 +400,6 @@ def _find_entity_by_name(conn, name: str):
 @style_app.command("build")
 def style_build(
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
-    user: str = typer.Option("U000SELF", "--user", help="User entity ID"),
 ) -> None:
     """Build style profiles from sent messages."""
     db_path = get_db_path(home)
@@ -410,10 +409,18 @@ def style_build(
 
     conn = connect(db_path)
     try:
-        from patina.extraction import _make_id
+        from patina.owner import get_owner_entity_id
 
-        user_eid = _make_id("person", user)
-        count = build_all_profiles(conn, user_eid)
+        owner_id = get_owner_entity_id(conn)
+        if not owner_id:
+            typer.echo(
+                "No owner entity found. Run 'patina init' and set your user ID, "
+                "then ingest messages first.",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        count = build_all_profiles(conn, owner_id)
         typer.echo(f"Built {count} style profile(s).")
     finally:
         conn.close()

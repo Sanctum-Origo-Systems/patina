@@ -146,7 +146,8 @@ uv run python scripts/generate_demo_export.py --output demo-export.zip
 uv run patina init
 uv run patina ingest --from-export demo-export.zip
 uv run patina extract --model sonnet  # re-run if it times out — skips already-processed
-uv run python scripts/seed_decisions.py
+uv run python scripts/seed_decisions.py  # demo only — simulates user behavior for trust scoring
+uv run patina style build              # build communication style profiles from sent messages
 uv run patina chat
 
 # Try asking:

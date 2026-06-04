@@ -82,3 +82,30 @@ def test_draft_fallback_no_profile(db_conn):
         conn=db_conn,
     )
     assert isinstance(result, str)
+
+
+def test_draft_uses_owner_style(db_conn):
+    from patina.owner import mark_entity_as_owner
+
+    owner = Entity(id="owner1", type="person", name="Me")
+    upsert_entity(db_conn, owner)
+    mark_entity_as_owner(db_conn, "owner1")
+
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat()
+    db_conn.execute(
+        """INSERT INTO style_profiles (entity_id, profile, sample_count, last_updated)
+           VALUES (?, ?, ?, ?)""",
+        ("owner1", '{"greeting": "hey", "formality": 0.2}', 10, now),
+    )
+    db_conn.commit()
+
+    recipient = Entity(id="r1", type="person", name="Alice")
+    upsert_entity(db_conn, recipient)
+
+    llm = MockLLM()
+    generate_draft(context="follow up", recipient_entity_id="r1", llm=llm, conn=db_conn)
+
+    assert len(llm.calls) == 1
+    assert "formality" in llm.calls[0]["style_profile"]
