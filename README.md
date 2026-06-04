@@ -42,6 +42,7 @@ patina style show <name>           # view patterns for a person
 patina draft --to <name> --context "follow up on the timeline"
 
 # Belief graph
+patina extract                     # extract beliefs from observations via LLM
 patina beliefs --type person       # entities with claim counts
 patina stale                       # decayed beliefs below confidence threshold
 patina contradictions              # conflicting claims
