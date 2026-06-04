@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from patina.agent.config import AgentConfig, load_soul
@@ -82,6 +83,8 @@ class AgentRuntime:
         system_claude = shutil.which("claude")
         if system_claude:
             opts["cli_path"] = system_claude
+
+        opts["cwd"] = str(Path.home())
 
         return opts
 
