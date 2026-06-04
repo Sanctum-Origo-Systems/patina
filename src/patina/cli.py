@@ -93,10 +93,8 @@ def _bootstrap_home(home_dir: Path) -> None:
     config = home_dir / "config.yaml"
     if not config.exists():
         default_config = {
+            "owner": {"user_ids": [], "name": ""},
             "adapters": {"chat": [], "email": []},
-            "llm": {
-                "tier2": {"provider": "ollama", "model": "qwen3-coder:30b"},
-            },
             "heartbeat": {
                 "enabled": True,
                 "interval_minutes": 30,
@@ -130,12 +128,35 @@ def init(
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Initialize the Patina database and home directory."""
+    import yaml
+
     from patina.store import DEFAULT_HOME
 
     home_dir = home or DEFAULT_HOME
     _bootstrap_home(home_dir)
     db_path = get_db_path(home)
     init_db(db_path)
+
+    config_path = home_dir / "config.yaml"
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+
+    owner = config.setdefault("owner", {})
+    if not owner.get("user_ids"):
+        typer.echo()
+        typer.echo("Your messaging user ID (e.g., Slack member ID, email address).")
+        typer.echo("Leave blank to set later in config.yaml.")
+        user_id = input("> ").strip()
+        if user_id:
+            owner["user_ids"] = [user_id]
+            if not owner.get("name"):
+                name = input("Your display name: ").strip()
+                if name:
+                    owner["name"] = name
+            with open(config_path, "w") as f:
+                yaml.dump(config, f, default_flow_style=False)
+            typer.echo(f"Owner set: {user_id}")
+
     typer.echo(f"Initialized Patina at {home_dir}")
 
 
@@ -478,11 +499,11 @@ def beliefs_cmd(
     try:
         if entity_type == "all":
             entities = conn.execute(
-                "SELECT id, type, name FROM entities ORDER BY type, name"
+                "SELECT id, type, name FROM entities WHERE is_owner = 0 ORDER BY type, name"
             ).fetchall()
         else:
             entities = conn.execute(
-                "SELECT id, type, name FROM entities WHERE type = ? ORDER BY name",
+                "SELECT id, type, name FROM entities WHERE type = ? AND is_owner = 0 ORDER BY name",
                 (entity_type,),
             ).fetchall()
 

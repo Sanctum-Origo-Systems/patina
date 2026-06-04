@@ -5,7 +5,7 @@ from pathlib import Path
 
 DEFAULT_HOME = Path.home() / ".patina"
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _TABLES = """
 CREATE TABLE IF NOT EXISTS entities (
@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS entities (
     metadata TEXT,
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
-    decay_rate REAL DEFAULT 0.02
+    decay_rate REAL DEFAULT 0.02,
+    is_owner INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS relationships (

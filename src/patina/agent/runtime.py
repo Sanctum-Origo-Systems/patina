@@ -15,7 +15,8 @@ _OPERATIONAL_INSTRUCTIONS = """
 
 When referencing messages or observations:
 - Include the source type (e.g., slack_dm, slack_channel, email, calendar)
-- ALWAYS preserve and include permalink URLs rom tool response. Never ommit them. Format as [sender](permalink_url).
+- ALWAYS preserve and include permalink URLs from tool responses.
+  Never omit them. Format as [sender](permalink_url).
 - Example: "From [Slack DM](https://slack.com/archives/D123/p456): ..."
 
 Format all responses in markdown:

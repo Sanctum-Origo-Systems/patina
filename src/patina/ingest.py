@@ -13,6 +13,7 @@ from patina.graph import (
     upsert_entity,
 )
 from patina.models import ChatMessage, Observation
+from patina.owner import get_owner_user_ids, mark_entity_as_owner
 from patina.store import connect, get_db_path, init_db
 
 
@@ -28,6 +29,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
 
     try:
         messages, users, channels = parse_slack_export(zip_path)
+        owner_ids = set(get_owner_user_ids(home))
 
         inserted = 0
         skipped = 0
@@ -58,6 +60,9 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
             sender = extract_sender_entity(msg.user_id, sender_name)
             upsert_entity(conn, sender)
             entity_ids_seen.add(sender.id)
+
+            if msg.user_id in owner_ids:
+                mark_entity_as_owner(conn, sender.id)
 
             conn.execute(
                 "UPDATE observations SET sender_entity_id = ? WHERE id = ?",

@@ -122,17 +122,13 @@ Patina runs as an MCP server for conversational use from Claude Code, Cline, or 
 All config lives in `~/.patina/config.yaml`. Credentials never leave your machine.
 
 ```yaml
+owner:
+  user_ids: ["U0ABC123"]
+  name: "Your Name"
 adapters:
   chat:
     - provider: slack
       token: "xoxb-..."
-llm:
-  tier2:
-    provider: ollama
-    model: "qwen3-coder:30b"
-  tier3:
-    provider: anthropic
-    api_key: "sk-ant-..."
 heartbeat:
   enabled: true
   interval_minutes: 30
@@ -145,8 +141,20 @@ git clone https://github.com/Sanctum-Origo-Systems/patina.git
 cd patina
 uv sync
 
-# Generate test fixtures
-uv run python scripts/generate_fixtures.py
+# Generate demo data and start chatting
+uv run python scripts/generate_demo_export.py --output demo-export.zip
+uv run patina init
+uv run patina ingest --from-export demo-export.zip
+uv run patina extract --model sonnet  # re-run if it times out — skips already-processed
+uv run python scripts/seed_decisions.py
+uv run patina chat
+
+# Try asking:
+#   "What needs my attention?"
+#   "Who do I trust most?"
+#   "What do we know about Jordan?"
+#   "Draft a message to Alexis about the Atlas timeline"
+#   "Any contradictions in my beliefs?"
 
 # Run tests + evals
 uv run pytest
