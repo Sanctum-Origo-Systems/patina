@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from patina.agent.config import AgentConfig
 from patina.agent.runtime import AgentRuntime
 
@@ -139,3 +141,11 @@ def test_build_options_no_cli_path_when_missing(tmp_path, monkeypatch):
     runtime = AgentRuntime(config)
     opts = runtime._build_options(None)
     assert "cli_path" not in opts
+
+
+def test_build_options_cwd_is_home(tmp_path):
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+    (tmp_path / "SOUL.md").write_text("")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert opts["cwd"] == str(Path.home())
