@@ -52,8 +52,7 @@ def compute_trust_level(conn: sqlite3.Connection, entity_id: str) -> float:
     if row["total"] == 0:
         return 0.5
 
-    act_rate = (row["acted"] or 0) / row["total"]
-    return round(min(act_rate * 1.2, 1.0), 3)
+    return round((row["acted"] or 0) / row["total"], 3)
 
 
 def _classify_activity(avg_per_week: float, days_since_last: float | None) -> str:
@@ -67,7 +66,9 @@ def _classify_activity(avg_per_week: float, days_since_last: float | None) -> st
 
 
 def get_relationship_map(conn: sqlite3.Connection, *, top_n: int = 20) -> list[dict]:
-    entities = conn.execute("SELECT id, name FROM entities WHERE type = 'person'").fetchall()
+    entities = conn.execute(
+        "SELECT id, name FROM entities WHERE type = 'person' AND is_owner = 0"
+    ).fetchall()
 
     results: list[dict] = []
     for ent in entities:

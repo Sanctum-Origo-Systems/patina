@@ -11,7 +11,7 @@ runner = CliRunner()
 
 
 def test_init_creates_database(tmp_path):
-    result = runner.invoke(app, ["init", "--home", str(tmp_path)])
+    result = runner.invoke(app, ["init", "--home", str(tmp_path)], input="\n")
     assert result.exit_code == 0
     assert "Initialized" in result.output
     assert (tmp_path / "store.db").exists()

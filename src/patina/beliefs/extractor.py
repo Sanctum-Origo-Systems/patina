@@ -94,11 +94,17 @@ def _parse_extraction(response: str) -> dict:
     return {"claims": [], "relationships": []}
 
 
-def _resolve_entity_id(conn, name: str) -> str | None:
-    row = conn.execute(
-        "SELECT id FROM entities WHERE name = ? OR name LIKE ? LIMIT 1",
-        (name, f"%{name}%"),
-    ).fetchone()
+def _resolve_entity_id(conn, name: str, *, exclude_owner: bool = False) -> str | None:
+    if exclude_owner:
+        row = conn.execute(
+            "SELECT id FROM entities WHERE (name = ? OR name LIKE ?) AND is_owner = 0 LIMIT 1",
+            (name, f"%{name}%"),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id FROM entities WHERE name = ? OR name LIKE ? LIMIT 1",
+            (name, f"%{name}%"),
+        ).fetchone()
     return row["id"] if row else None
 
 
@@ -182,7 +188,7 @@ def extract_beliefs(
 
             for claim in claims:
                 subject_name = claim.get("subject", "")
-                subject_id = _resolve_entity_id(conn, subject_name)
+                subject_id = _resolve_entity_id(conn, subject_name, exclude_owner=True)
                 if not subject_id:
                     continue
 

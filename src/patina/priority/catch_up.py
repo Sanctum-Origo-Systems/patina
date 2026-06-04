@@ -27,6 +27,7 @@ def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]
                LEFT JOIN entities e ON o.sender_entity_id = e.id
                LEFT JOIN decisions d ON o.id = d.observation_id
                WHERE d.id IS NULL AND o.timestamp >= ?
+                 AND (e.is_owner IS NULL OR e.is_owner = 0)
                ORDER BY o.timestamp DESC""",
             (cutoff,),
         ).fetchall()
@@ -108,6 +109,7 @@ def priorities(*, home: Path | None = None, days: int = 7) -> dict[str, list[dic
                LEFT JOIN entities e ON o.sender_entity_id = e.id
                LEFT JOIN decisions d ON o.id = d.observation_id
                WHERE d.id IS NULL AND o.timestamp >= ?
+                 AND (e.is_owner IS NULL OR e.is_owner = 0)
                ORDER BY o.timestamp DESC""",
             (cutoff,),
         ).fetchall()

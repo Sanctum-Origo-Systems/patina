@@ -17,12 +17,12 @@ def beliefs(entity_type: str | None = None) -> str:
     try:
         if entity_type:
             rows = conn.execute(
-                "SELECT id, type, name FROM entities WHERE type = ? ORDER BY name",
+                "SELECT id, type, name FROM entities WHERE type = ? AND is_owner = 0 ORDER BY name",
                 (entity_type,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, type, name FROM entities ORDER BY type, name"
+                "SELECT id, type, name FROM entities WHERE is_owner = 0 ORDER BY type, name"
             ).fetchall()
 
         if not rows:
