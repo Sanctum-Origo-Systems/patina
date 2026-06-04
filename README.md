@@ -1,12 +1,14 @@
 # Patina
 
-> The first AI assistant that learns you — and the longer you use it, the less you need to tell it.
+> An AI that learns you — the longer you use it, the less you need to tell it.
 
 Your cognitive ceiling isn't set by your intelligence. It's set by your cognitive load. Patina is a persistent extension of your cognition: it holds your context, tracks your beliefs about your world, mirrors your judgment, and improves with every interaction.
 
 - **Day 1:** Export your Slack. In 5 minutes, see everything you've missed, forgotten, or let slip.
 - **Day 30:** It knows your priorities, drafts in your voice, and dismisses noise automatically.
 - **Day 90:** It predicts what you'd do, catches contradictions across conversations, and operates silently.
+
+![Patina Demo](patina-demo.gif)
 
 ## Quick Start
 
