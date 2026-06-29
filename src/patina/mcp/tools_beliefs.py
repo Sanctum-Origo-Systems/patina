@@ -13,6 +13,7 @@ def _get_conn(home=None):
 
 
 def beliefs(entity_type: str | None = None) -> str:
+    """List known entities with their claim and relationship counts."""
     conn = _get_conn()
     try:
         if entity_type:
@@ -45,6 +46,7 @@ def beliefs(entity_type: str | None = None) -> str:
 
 
 def stale(threshold: float = 0.3) -> str:
+    """Find beliefs that have decayed below a confidence threshold."""
     conn = _get_conn()
     try:
         items = get_stale_beliefs(conn, threshold)
@@ -64,6 +66,7 @@ def stale(threshold: float = 0.3) -> str:
 
 
 def contradictions() -> str:
+    """Find conflicting claims about the same entity."""
     conn = _get_conn()
     try:
         results = find_contradictions_tier1(conn)
@@ -82,6 +85,7 @@ def contradictions() -> str:
 
 
 def relationships(top_n: int = 20) -> str:
+    """Show ranked relationship map with trust scores, activity tiers, and behavioral signals."""
     conn = _get_conn()
     try:
         rels = get_relationship_map(conn, top_n=top_n)

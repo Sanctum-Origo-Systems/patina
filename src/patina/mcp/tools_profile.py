@@ -4,6 +4,7 @@ from patina.store import DEFAULT_HOME
 
 
 def profile_read() -> str:
+    """Read the user's auto-generated profile summary."""
     path = DEFAULT_HOME / "PROFILE.md"
     if not path.exists():
         return "No PROFILE.md found. Run `patina profile refresh` to generate."
@@ -11,6 +12,7 @@ def profile_read() -> str:
 
 
 def soul_read() -> str:
+    """Read the SOUL.md personality and communication directives."""
     path = DEFAULT_HOME / "SOUL.md"
     if not path.exists():
         return "No SOUL.md found. Create one at ~/.patina/SOUL.md to define agent personality."

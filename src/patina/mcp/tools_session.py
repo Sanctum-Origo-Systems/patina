@@ -14,6 +14,7 @@ def _get_conn():
 
 
 def recent_messages(channel: str, limit: int = 5) -> str:
+    """Retrieve recent conversation messages for a channel."""
     conn = _get_conn()
     try:
         messages = get_recent_messages(conn, channel, limit)
@@ -33,6 +34,7 @@ def session_checkpoint(
     open_threads: list[str] | None = None,
     user_focus: str | None = None,
 ) -> str:
+    """Save a session checkpoint with decisions, open threads, and context."""
     conn = _get_conn()
     try:
         summary = build_checkpoint_summary(conn, channel)

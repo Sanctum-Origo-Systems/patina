@@ -30,6 +30,7 @@ def _format_item(item: dict) -> str:
 
 
 def catch_up(days: int = 3) -> str:
+    """Summarize recent unread messages, mentions, and items needing action."""
     result = do_catch_up(days=days)
     lines = []
 
@@ -58,6 +59,7 @@ def catch_up(days: int = 3) -> str:
 
 
 def priorities(days: int = 7) -> str:
+    """Rank pending items by urgency and importance into Do/Delegate/Schedule/Drop quadrants."""
     result = do_priorities(days=days)
     labels = {
         "Q1": "Q1 — Do Now",
@@ -78,6 +80,7 @@ def priorities(days: int = 7) -> str:
 
 
 def dismiss(item_id: str) -> str:
+    """Dismiss an observation — mark it as not needing action."""
     conn = _get_conn()
     try:
         row = conn.execute(
@@ -93,6 +96,7 @@ def dismiss(item_id: str) -> str:
 
 
 def acknowledge(item_id: str) -> str:
+    """Mark an observation as seen and acted upon."""
     conn = _get_conn()
     try:
         row = conn.execute(
@@ -108,6 +112,7 @@ def acknowledge(item_id: str) -> str:
 
 
 def done(item_id: str) -> str:
+    """Mark an observation as completed."""
     conn = _get_conn()
     try:
         row = conn.execute(

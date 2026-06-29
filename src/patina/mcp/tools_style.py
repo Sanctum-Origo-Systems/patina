@@ -21,6 +21,7 @@ def _find_entity(conn, name):
 
 
 def style_show(entity_name: str) -> str:
+    """Show a person's communication style profile."""
     conn = _get_conn()
     try:
         row = _find_entity(conn, entity_name)
@@ -39,6 +40,7 @@ def style_show(entity_name: str) -> str:
 
 
 def draft_reply(to: str, context: str) -> str:
+    """Draft a reply to someone using their communication style profile."""
     conn = _get_conn()
     try:
         row = _find_entity(conn, to)

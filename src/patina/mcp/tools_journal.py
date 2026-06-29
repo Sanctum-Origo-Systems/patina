@@ -13,6 +13,7 @@ def _get_conn(home=None):
 
 
 def journal_write(date: str, body: str) -> str:
+    """Save a journal entry for a given date."""
     conn = _get_conn()
     try:
         now = datetime.now(UTC).isoformat()
@@ -29,6 +30,7 @@ def journal_write(date: str, body: str) -> str:
 
 
 def journal_search(query: str, limit: int = 10) -> str:
+    """Search past journal entries by keyword."""
     conn = _get_conn()
     try:
         rows = conn.execute(
