@@ -62,9 +62,7 @@ def build_all_profiles(conn: sqlite3.Connection, user_entity_id: str) -> int:
         if recipient_id is None:
             continue
         # Guard: skip if entity no longer exists (e.g. cleaned up)
-        exists = conn.execute(
-            "SELECT 1 FROM entities WHERE id=?", (recipient_id,)
-        ).fetchone()
+        exists = conn.execute("SELECT 1 FROM entities WHERE id=?", (recipient_id,)).fetchone()
         if not exists:
             continue
         profile = consolidate_profile(obs_list)

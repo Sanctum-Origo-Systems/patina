@@ -116,9 +116,7 @@ def test_build_updates_existing(db_conn):
 def test_build_skips_deleted_recipient(db_conn):
     sender = Entity(id="sender1", type="person", name="Alice")
     upsert_entity(db_conn, sender)
-    recipient = Entity(
-        id=_make_id("person", "U099"), type="person", name="Deleted Bob"
-    )
+    recipient = Entity(id=_make_id("person", "U099"), type="person", name="Deleted Bob")
     upsert_entity(db_conn, recipient)
 
     for i in range(3):
