@@ -42,8 +42,7 @@ def _build_tool_guide() -> str:
         "\n---",
         "## MCP Tools (use proactively)",
         "",
-        "Use these tools without being asked. "
-        "Surface what matters before the user asks for it.",
+        "Use these tools without being asked. Surface what matters before the user asks for it.",
         "",
     ]
     for tool in tools:
