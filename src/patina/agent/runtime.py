@@ -27,6 +27,36 @@ Format all responses in markdown:
 """
 
 
+def _build_tool_guide() -> str:
+    try:
+        from patina.mcp.server import mcp
+
+        tools = mcp._tool_manager.list_tools()
+    except Exception:
+        return ""
+
+    if not tools:
+        return ""
+
+    lines = [
+        "\n---",
+        "## MCP Tools (use proactively)",
+        "",
+        "Use these tools without being asked. Surface what matters before the user asks for it.",
+        "",
+    ]
+    for tool in tools:
+        name = tool.name if hasattr(tool, "name") else str(tool)
+        desc = ""
+        if hasattr(tool, "description") and tool.description:
+            desc = tool.description[:120]
+        elif hasattr(tool, "fn") and tool.fn and tool.fn.__doc__:
+            desc = tool.fn.__doc__.strip().split("\n")[0][:120]
+        lines.append(f"- **{name}** — {desc}")
+
+    return "\n".join(lines) + "\n"
+
+
 class AgentRuntime:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
@@ -54,7 +84,7 @@ class AgentRuntime:
                 "args": self.config.mcp_server_args,
             }
 
-        system_prompt = self.soul + _OPERATIONAL_INSTRUCTIONS
+        system_prompt = self.soul + _OPERATIONAL_INSTRUCTIONS + _build_tool_guide()
 
         opts: dict[str, Any] = {
             "system_prompt": system_prompt,

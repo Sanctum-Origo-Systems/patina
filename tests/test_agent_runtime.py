@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from patina.agent.config import AgentConfig
-from patina.agent.runtime import AgentRuntime
+from patina.agent.runtime import AgentRuntime, _build_tool_guide
 
 
 def test_runtime_initializes(tmp_path):
@@ -149,3 +150,72 @@ def test_build_options_cwd_is_home(tmp_path):
     runtime = AgentRuntime(config)
     opts = runtime._build_options(None)
     assert opts["cwd"] == str(Path.home())
+
+
+class TestBuildToolGuide:
+    def test_returns_non_empty(self):
+        guide = _build_tool_guide()
+        assert len(guide) > 0
+
+    def test_contains_header(self):
+        guide = _build_tool_guide()
+        assert "## MCP Tools (use proactively)" in guide
+
+    def test_contains_known_tools(self):
+        guide = _build_tool_guide()
+        for name in [
+            "catch_up",
+            "relationships",
+            "hidden_allies",
+            "beliefs",
+            "journal_write",
+            "profile_read",
+            "autonomy_status",
+        ]:
+            assert f"**{name}**" in guide, f"tool '{name}' missing"
+
+    def test_contains_descriptions(self):
+        guide = _build_tool_guide()
+        assert "Summarize recent unread" in guide
+        assert "high-trust, low-noise" in guide
+        assert "communication style" in guide
+
+    def test_all_tools_have_descriptions(self):
+        guide = _build_tool_guide()
+        for line in guide.split("\n"):
+            if line.startswith("- **"):
+                assert "— " in line
+                desc = line.split("— ", 1)[1]
+                assert len(desc) > 5, f"empty description: {line}"
+
+    def test_graceful_fallback_on_import_error(self):
+        with patch(
+            "patina.mcp.server.mcp",
+            new_callable=lambda: type(
+                "BadMcp",
+                (),
+                {"_tool_manager": property(lambda s: (_ for _ in ()).throw(ImportError))},
+            ),
+        ):
+            guide = _build_tool_guide()
+            assert guide == ""
+
+    def test_system_prompt_includes_tool_guide(self, tmp_path):
+        config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+        (tmp_path / "SOUL.md").write_text("Be helpful.")
+        runtime = AgentRuntime(config)
+        opts = runtime._build_options(None)
+        prompt = opts["system_prompt"]
+        assert "MCP Tools (use proactively)" in prompt
+        assert "catch_up" in prompt
+        assert "hidden_allies" in prompt
+
+    def test_tool_guide_after_operational_instructions(self, tmp_path):
+        config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+        (tmp_path / "SOUL.md").write_text("")
+        runtime = AgentRuntime(config)
+        opts = runtime._build_options(None)
+        prompt = opts["system_prompt"]
+        ops_idx = prompt.index("Operational Instructions")
+        tools_idx = prompt.index("MCP Tools (use proactively)")
+        assert tools_idx > ops_idx

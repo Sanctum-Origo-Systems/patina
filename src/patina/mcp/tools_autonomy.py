@@ -18,6 +18,7 @@ def _get_conn(home=None):
 
 
 def autonomy_status() -> str:
+    """Check the current autonomy level, accuracy stats, and advancement status."""
     conn = _get_conn()
     try:
         level = current_level(conn)
@@ -43,6 +44,7 @@ def autonomy_status() -> str:
 
 
 def approve(action_id: str) -> str:
+    """Approve a pending autonomous action."""
     conn = _get_conn()
     try:
         if approve_action(conn, action_id):
@@ -53,6 +55,7 @@ def approve(action_id: str) -> str:
 
 
 def reject(action_id: str) -> str:
+    """Reject a pending autonomous action and freeze advancement."""
     conn = _get_conn()
     try:
         if reject_action(conn, action_id):
