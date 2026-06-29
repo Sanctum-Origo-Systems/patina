@@ -8,6 +8,7 @@ from patina.beliefs.relationships import (
     _score_relationship_predicates,
     compute_interaction_stats,
     compute_trust_level,
+    get_hidden_allies,
     get_relationship_map,
 )
 from patina.decisions import record_decision
@@ -44,20 +45,42 @@ def test_stats_computed(db_conn):
     assert stats["avg_messages_per_week"] > 0
 
 
-def test_classify_active():
-    assert _classify_activity(5.0, 2.0) == "active"
+class TestClassifyActivity:
+    def test_core(self):
+        assert _classify_activity(20.0, 1.0) == "core"
 
+    def test_core_boundary(self):
+        assert _classify_activity(15.0, 2.0) == "core"
 
-def test_classify_low_frequency():
-    assert _classify_activity(0.5, 10.0) == "low-frequency"
+    def test_active(self):
+        assert _classify_activity(8.0, 2.0) == "active"
 
+    def test_active_boundary(self):
+        assert _classify_activity(5.0, 3.0) == "active"
 
-def test_classify_dormant():
-    assert _classify_activity(0.1, 90.0) == "dormant"
+    def test_moderate(self):
+        assert _classify_activity(2.0, 7.0) == "moderate"
 
+    def test_moderate_boundary(self):
+        assert _classify_activity(1.0, 14.0) == "moderate"
 
-def test_classify_dormant_none():
-    assert _classify_activity(0.0, None) == "dormant"
+    def test_occasional(self):
+        assert _classify_activity(0.5, 20.0) == "occasional"
+
+    def test_occasional_boundary(self):
+        assert _classify_activity(0.3, 30.0) == "occasional"
+
+    def test_low_frequency(self):
+        assert _classify_activity(0.2, 45.0) == "low-frequency"
+
+    def test_dormant(self):
+        assert _classify_activity(0.1, 90.0) == "dormant"
+
+    def test_dormant_none(self):
+        assert _classify_activity(0.0, None) == "dormant"
+
+    def test_dormant_boundary(self):
+        assert _classify_activity(5.0, 61.0) == "dormant"
 
 
 def test_trust_uses_act_rate_not_recency(db_conn):
@@ -358,3 +381,149 @@ class TestRelationshipMapRanking:
         r = results[0]
         rank = r["trust_level"] * 0.4 + min(r["message_count"] / 100, 1.0) * 0.6
         assert rank < 0.3
+
+    def test_activity_tier_breaks_tie(self, db_conn):
+        """Same trust+msg score, higher activity tier wins."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Bob"))
+        now = time.time()
+        for i in range(10):
+            _add_obs(db_conn, f"a{i}", "e1", ts=now - i * 3600)
+            _add_obs(db_conn, f"b{i}", "e2", ts=now - i * 86400 * 3)
+        results = get_relationship_map(db_conn)
+        names = [r["name"] for r in results]
+        assert names.index("Alice") < names.index("Bob")
+
+
+class TestWidenedTrustSpread:
+    def _claim(self, predicate, obj, confidence=0.8):
+        return {"predicate": predicate, "object": obj, "confidence": confidence}
+
+    def test_accommodating_ally_scores_high(self):
+        claims = [
+            self._claim("behavioral:style", "accommodates and adapts schedule"),
+            self._claim("behavioral:commitment", "volunteers for tasks"),
+        ]
+        score = _score_behavioral_claims(claims)
+        assert score >= 0.7
+
+    def test_demanding_authority_scores_low(self):
+        claims = [
+            self._claim("behavioral:style", "demands accountability on deadline"),
+        ]
+        score = _score_behavioral_claims(claims)
+        assert score < 0.4
+
+    def test_spread_between_ally_and_authority(self):
+        ally = [
+            self._claim("behavioral:style", "accommodates and volunteers"),
+        ]
+        authority = [
+            self._claim("behavioral:style", "demands accountability"),
+        ]
+        ally_score = _score_behavioral_claims(ally)
+        authority_score = _score_behavioral_claims(authority)
+        assert ally_score - authority_score >= 0.2
+
+    def test_mixed_signals_net_positive(self):
+        claims = [
+            self._claim("behavioral:style", "responsive but sometimes demands"),
+        ]
+        score = _score_behavioral_claims(claims)
+        assert 0.3 < score < 0.7
+
+    def test_mixed_signals_net_negative(self):
+        claims = [
+            self._claim(
+                "behavioral:style",
+                "demands accountability and pressures on deadline",
+            ),
+        ]
+        score = _score_behavioral_claims(claims)
+        assert score < 0.5
+
+    def test_commitment_base_raised(self):
+        claims = [self._claim("behavioral:commitment", "neutral note")]
+        score = _score_behavioral_claims(claims)
+        assert score == 0.8
+
+    def test_new_positive_keywords(self):
+        for kw in ["accommodates", "shields", "volunteers", "champions"]:
+            claims = [self._claim("behavioral:style", f"person {kw} others")]
+            score = _score_behavioral_claims(claims)
+            assert score > 0.5, f"keyword '{kw}' should boost score"
+
+    def test_new_negative_keywords(self):
+        for kw in ["controls", "accountability", "constraint"]:
+            claims = [self._claim("behavioral:style", f"person {kw} others")]
+            score = _score_behavioral_claims(claims)
+            assert score < 0.5, f"keyword '{kw}' should lower score"
+
+
+class TestHiddenAllies:
+    def test_returns_empty_when_no_entities(self, db_conn):
+        assert get_hidden_allies(db_conn) == []
+
+    def test_excludes_dormant(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        old = time.time() - 90 * 86400
+        for i in range(5):
+            _add_obs(db_conn, f"o{i}", "e1", ts=old - i * 3600)
+        _insert_claim(db_conn, "e1", "behavioral:style", "helpful")
+        results = get_hidden_allies(db_conn)
+        assert len(results) == 0
+
+    def test_excludes_low_message_count(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        now = time.time()
+        _add_obs(db_conn, "o0", "e1", ts=now)
+        _add_obs(db_conn, "o1", "e1", ts=now - 3600)
+        results = get_hidden_allies(db_conn)
+        assert len(results) == 0
+
+    def test_high_depth_low_volume_ranks_first(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Quiet Ally"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Loud Talker"))
+        now = time.time()
+        for i in range(5):
+            _add_obs(db_conn, f"q{i}", "e1", ts=now - i * 3600)
+        for i in range(50):
+            _add_obs(db_conn, f"l{i}", "e2", ts=now - i * 3600)
+        for i in range(10):
+            _insert_claim(db_conn, "e1", f"role:{i}", f"claim {i}", 0.8)
+        for i in range(10):
+            _insert_claim(db_conn, "e2", f"role:{i}", f"claim {i}", 0.8)
+        _insert_claim(db_conn, "e1", "behavioral:style", "helpful", 0.9)
+        results = get_hidden_allies(db_conn)
+        assert results[0]["name"] == "Quiet Ally"
+
+    def test_includes_depth_ratio(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        now = time.time()
+        for i in range(5):
+            _add_obs(db_conn, f"o{i}", "e1", ts=now - i * 3600)
+        for i in range(15):
+            _insert_claim(db_conn, "e1", f"fact:{i}", f"val {i}")
+        results = get_hidden_allies(db_conn)
+        assert len(results) == 1
+        assert results[0]["depth_ratio"] == 3.0
+
+    def test_includes_behavioral_note(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        now = time.time()
+        for i in range(5):
+            _add_obs(db_conn, f"o{i}", "e1", ts=now - i * 3600)
+        _insert_claim(db_conn, "e1", "behavioral:style", "very supportive", 0.9)
+        results = get_hidden_allies(db_conn)
+        assert results[0]["behavioral_note"] == "very supportive"
+
+    def test_top_n_limits_results(self, db_conn):
+        now = time.time()
+        for j in range(5):
+            eid = f"e{j}"
+            upsert_entity(db_conn, Entity(id=eid, type="person", name=f"Person {j}"))
+            for i in range(5):
+                _add_obs(db_conn, f"o{j}_{i}", eid, ts=now - i * 3600)
+            _insert_claim(db_conn, eid, "role:x", "val")
+        results = get_hidden_allies(db_conn, top_n=3)
+        assert len(results) <= 3

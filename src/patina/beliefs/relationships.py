@@ -103,6 +103,15 @@ _HIGH_TRUST_KEYWORDS = {
     "follows up",
     "delivers",
     "on time",
+    "accommodates",
+    "reschedules",
+    "adapts",
+    "shields",
+    "absorbs",
+    "volunteers",
+    "champions",
+    "encourages",
+    "motivational",
 }
 _LOW_TRUST_KEYWORDS = {
     "escalates",
@@ -115,6 +124,12 @@ _LOW_TRUST_KEYWORDS = {
     "misses",
     "late",
     "ignores",
+    "manages",
+    "controls",
+    "accountability",
+    "deadline",
+    "why should we",
+    "constraint",
 }
 
 
@@ -129,15 +144,18 @@ def _score_behavioral_claims(claims: list) -> float:
 
         base = 0.5
         if "commitment" in predicate:
-            base = 0.75
+            base = 0.80
 
         positive_hits = sum(1 for kw in _HIGH_TRUST_KEYWORDS if kw in obj)
         negative_hits = sum(1 for kw in _LOW_TRUST_KEYWORDS if kw in obj)
 
         if positive_hits > 0 and negative_hits == 0:
-            base = min(base + 0.15 * positive_hits, 0.9)
+            base = min(base + 0.25 * positive_hits, 0.95)
         elif negative_hits > 0 and positive_hits == 0:
-            base = max(base - 0.15 * negative_hits, 0.1)
+            base = max(base - 0.25 * negative_hits, 0.05)
+        elif positive_hits > 0 and negative_hits > 0:
+            net = positive_hits - negative_hits
+            base = max(0.05, min(0.95, base + 0.15 * net))
 
         score_sum += base * confidence
         count += confidence
@@ -170,13 +188,17 @@ def _score_relationship_predicates(rels: list) -> float:
 
 
 def _classify_activity(avg_per_week: float, days_since_last: float | None) -> str:
-    if days_since_last is None:
+    if days_since_last is None or days_since_last > 60:
         return "dormant"
-    if days_since_last > 60:
-        return "dormant"
-    if avg_per_week < 1.0 or days_since_last > 7:
-        return "low-frequency"
-    return "active"
+    if avg_per_week >= 15:
+        return "core"
+    if avg_per_week >= 5:
+        return "active"
+    if avg_per_week >= 1 and days_since_last <= 14:
+        return "moderate"
+    if days_since_last <= 30:
+        return "occasional"
+    return "low-frequency"
 
 
 def get_relationship_map(conn: sqlite3.Connection, *, top_n: int = 20) -> list[dict]:
@@ -215,7 +237,75 @@ def get_relationship_map(conn: sqlite3.Connection, *, top_n: int = 20) -> list[d
         )
 
     results.sort(
-        key=lambda x: x["trust_level"] * 0.4 + min(x["message_count"] / 100, 1.0) * 0.6,
+        key=lambda x: (
+            x["trust_level"] * 0.4 + min(x["message_count"] / 100, 1.0) * 0.6,
+            _ACTIVITY_RANK.get(x["activity_status"], 0),
+        ),
         reverse=True,
     )
+    return results[:top_n]
+
+
+_ACTIVITY_RANK = {
+    "core": 5,
+    "active": 4,
+    "moderate": 3,
+    "occasional": 2,
+    "low-frequency": 1,
+    "dormant": 0,
+}
+
+
+def get_hidden_allies(conn: sqlite3.Connection, *, top_n: int = 10) -> list[dict]:
+    entities = conn.execute(
+        "SELECT id, name FROM entities WHERE type = 'person' AND is_owner = 0"
+    ).fetchall()
+
+    results = []
+    for ent in entities:
+        stats = compute_interaction_stats(conn, ent["id"])
+        if stats["message_count"] < 3:
+            continue
+
+        trust = compute_trust_level(conn, ent["id"])
+        activity = _classify_activity(stats["avg_messages_per_week"], stats["days_since_last"])
+
+        if activity == "dormant":
+            continue
+
+        claim_count = conn.execute(
+            "SELECT COUNT(*) FROM claims WHERE subject_id = ?",
+            (ent["id"],),
+        ).fetchone()[0]
+
+        depth_ratio = claim_count / stats["message_count"]
+
+        volume_penalty = min(stats["avg_messages_per_week"] / 30, 1.0)
+        hidden_score = trust * depth_ratio * (1 - volume_penalty * 0.3)
+
+        top_beh = conn.execute(
+            """SELECT predicate, object FROM claims
+               WHERE subject_id = ? AND predicate LIKE 'behavioral:%'
+               ORDER BY confidence DESC LIMIT 1""",
+            (ent["id"],),
+        ).fetchone()
+        behavioral_note = top_beh["object"][:80] if top_beh else None
+
+        results.append(
+            {
+                "entity_id": ent["id"],
+                "name": ent["name"],
+                "trust_level": trust,
+                "activity_status": activity,
+                "message_count": stats["message_count"],
+                "avg_per_week": stats["avg_messages_per_week"],
+                "days_since_last": stats["days_since_last"],
+                "claim_count": claim_count,
+                "depth_ratio": round(depth_ratio, 2),
+                "hidden_score": round(hidden_score, 3),
+                "behavioral_note": behavioral_note,
+            }
+        )
+
+    results.sort(key=lambda x: x["hidden_score"], reverse=True)
     return results[:top_n]

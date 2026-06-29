@@ -104,8 +104,34 @@ def relationships(top_n: int = 20) -> str:
         conn.close()
 
 
+def hidden_allies(top_n: int = 10) -> str:
+    """Surface high-trust, low-noise relationships — people who give without demanding attention."""
+    conn = _get_conn()
+    try:
+        from patina.beliefs.relationships import get_hidden_allies
+
+        allies = get_hidden_allies(conn, top_n=top_n)
+        if not allies:
+            return "No hidden allies found."
+        lines = [
+            "| Name | Trust | Activity | Msgs/wk | Depth | Behavioral Signal |",
+            "|---|---|---|---|---|---|",
+        ]
+        for r in allies:
+            beh = r.get("behavioral_note") or ""
+            lines.append(
+                f"| {r['name']} | {r['trust_level']:.2f} | "
+                f"{r['activity_status']} | {r['avg_per_week']:.1f} | "
+                f"{r['depth_ratio']:.1f}x | {beh} |"
+            )
+        return "\n".join(lines)
+    finally:
+        conn.close()
+
+
 def register(mcp):
     mcp.tool()(beliefs)
     mcp.tool()(stale)
     mcp.tool()(contradictions)
     mcp.tool()(relationships)
+    mcp.tool()(hidden_allies)
