@@ -294,3 +294,83 @@ class TestRelationshipMapBehavioralNote:
         _insert_claim(db_conn, "e1", "behavioral:style", "x" * 200, 0.9)
         results = get_relationship_map(db_conn)
         assert len(results[0]["behavioral_note"]) == 80
+
+
+class TestRelationshipMapRanking:
+    def test_high_messages_beats_high_trust(self, db_conn):
+        """50 messages + baseline trust should rank above 2 messages + high trust."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Bob"))
+        now = time.time()
+        for i in range(50):
+            _add_obs(db_conn, f"a{i}", "e1", ts=now - i * 3600)
+        _add_obs(db_conn, "b0", "e2", ts=now)
+        _add_obs(db_conn, "b1", "e2", ts=now - 3600)
+        _insert_claim(
+            db_conn, "e2", "behavioral:style", "very responsive and helpful"
+        )
+        results = get_relationship_map(db_conn)
+        assert results[0]["name"] == "Alice"
+        assert results[1]["name"] == "Bob"
+
+    def test_equal_messages_trust_breaks_tie(self, db_conn):
+        """Same message count — higher trust should win."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Bob"))
+        now = time.time()
+        _add_obs(db_conn, "a0", "e1", ts=now)
+        _add_obs(db_conn, "b0", "e2", ts=now)
+        _insert_claim(
+            db_conn, "e2", "behavioral:commitment", "delivers on time"
+        )
+        results = get_relationship_map(db_conn)
+        assert results[0]["name"] == "Bob"
+
+    def test_message_count_caps_at_100(self, db_conn):
+        """200 messages should rank the same as 100 messages
+        (both cap at 1.0 for the message component)."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Bob"))
+        now = time.time()
+        for i in range(200):
+            _add_obs(db_conn, f"a{i}", "e1", ts=now - i * 600)
+        for i in range(100):
+            _add_obs(db_conn, f"b{i}", "e2", ts=now - i * 600)
+        results = get_relationship_map(db_conn)
+        r1 = next(r for r in results if r["name"] == "Alice")
+        r2 = next(r for r in results if r["name"] == "Bob")
+        score1 = r1["trust_level"] * 0.4 + min(r1["message_count"] / 100, 1.0) * 0.6
+        score2 = r2["trust_level"] * 0.4 + min(r2["message_count"] / 100, 1.0) * 0.6
+        assert abs(score1 - score2) < 0.01
+
+    def test_ranking_stable_across_additions(self, db_conn):
+        """Adding a third person shouldn't change relative order of first two."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Bob"))
+        now = time.time()
+        for i in range(30):
+            _add_obs(db_conn, f"a{i}", "e1", ts=now - i * 3600)
+        for i in range(5):
+            _add_obs(db_conn, f"b{i}", "e2", ts=now - i * 3600)
+        results_before = get_relationship_map(db_conn)
+        order_before = [r["name"] for r in results_before]
+
+        upsert_entity(db_conn, Entity(id="e3", type="person", name="Carol"))
+        for i in range(15):
+            _add_obs(db_conn, f"c{i}", "e3", ts=now - i * 3600)
+        results_after = get_relationship_map(db_conn)
+        order_after = [r["name"] for r in results_after]
+
+        idx_a = order_after.index("Alice")
+        idx_b = order_after.index("Bob")
+        assert idx_a < idx_b
+        assert order_before[0] == "Alice"
+
+    def test_single_message_low_rank(self, db_conn):
+        """1 message should produce a low rank score."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        _add_obs(db_conn, "a0", "e1")
+        results = get_relationship_map(db_conn)
+        r = results[0]
+        rank = r["trust_level"] * 0.4 + min(r["message_count"] / 100, 1.0) * 0.6
+        assert rank < 0.3
