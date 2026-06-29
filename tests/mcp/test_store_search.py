@@ -15,11 +15,11 @@ def _seed(db_conn, db_path):
 
     now = time.time()
     msgs = [
-        ("o1", "e1", "Check the Neptune proposal for Elevance", now - 3600),
-        ("o2", "e2", "SOW is in final review stages", now - 7200),
-        ("o3", "e1", "Deploy Neptune to staging today", now - 1800),
-        ("o4", "e2", "Meeting about Delivery Agent launch", now - 900),
-        ("o5", "e1", "Neptune OpenSearch integration complete", now - 600),
+        ("o1", "e1", "Check the Atlas proposal for Acme Corp", now - 3600),
+        ("o2", "e2", "Contract is in final review stages", now - 7200),
+        ("o3", "e1", "Deploy Atlas to staging today", now - 1800),
+        ("o4", "e2", "Meeting about dashboard launch", now - 900),
+        ("o5", "e1", "Atlas search integration complete", now - 600),
     ]
     for oid, sender, text, ts in msgs:
         obs = Observation(
@@ -39,8 +39,8 @@ def _seed(db_conn, db_path):
 class TestStoreSearch:
     def test_simple_match(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune")
-        assert "Neptune" in result
+        result = store_search("Atlas")
+        assert "Atlas" in result
         assert "results for" in result
 
     def test_no_match(self, db_conn, db_path, tmp_path):
@@ -50,38 +50,38 @@ class TestStoreSearch:
 
     def test_returns_sender_name(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune")
+        result = store_search("Atlas")
         assert "Alice" in result
 
     def test_returns_source(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune")
+        result = store_search("Atlas")
         assert "slack" in result
 
     def test_returns_date(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune")
+        result = store_search("Atlas")
         assert "[20" in result
 
     def test_returns_channel_name(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune")
+        result = store_search("Atlas")
         assert "project-alpha" in result
 
     def test_multiple_results(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune")
+        result = store_search("Atlas")
         assert result.count(">") >= 2
 
     def test_limit_respected(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune", limit=1)
+        result = store_search("Atlas", limit=1)
         lines = [line for line in result.split("\n") if line.startswith(">")]
         assert len(lines) == 1
 
     def test_limit_capped_at_50(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune", limit=999)
+        result = store_search("Atlas", limit=999)
         assert "No messages found" not in result
 
     def test_text_truncated(self, db_conn, db_path, tmp_path):
@@ -104,7 +104,7 @@ class TestStoreSearch:
 
     def test_and_search(self, db_conn, db_path, tmp_path):
         _seed(db_conn, db_path)
-        result = store_search("Neptune staging")
+        result = store_search("Atlas staging")
         assert "staging" in result
 
     def test_missing_sender_shows_unknown(self, db_conn, db_path, tmp_path):
@@ -116,11 +116,11 @@ class TestStoreSearch:
             thread_id=None,
             timestamp=time.time(),
             sender_entity_id=None,
-            text="Orphan message about Neptune",
+            text="Orphan message about Atlas",
         )
         insert_observation(db_conn, obs)
         db_conn.close()
-        result = store_search("Neptune")
+        result = store_search("Atlas")
         assert "unknown" in result
 
     def test_fts_trigger_on_new_insert(self, db_conn, db_path, tmp_path):

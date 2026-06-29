@@ -59,9 +59,9 @@ def test_ids_unique():
 
 
 def test_sender_entity_last_first_normalized():
-    e = extract_sender_entity("U001", "Wang, Rachael")
-    assert e.name == "Rachael Wang"
-    assert "Wang, Rachael" in e.aliases
+    e = extract_sender_entity("U001", "Chen, Dana")
+    assert e.name == "Dana Chen"
+    assert "Chen, Dana" in e.aliases
     assert "U001" in e.aliases
 
 

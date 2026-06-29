@@ -143,7 +143,7 @@ def test_upsert_entity_rejects_empty(db_conn):
 
 
 def test_upsert_entity_accepts_real_names(db_conn):
-    assert _upsert_entity(db_conn, "SOW Feedback Review") != ""
+    assert _upsert_entity(db_conn, "Quarterly Feedback Review") != ""
     assert _upsert_entity(db_conn, "Alice Smith") != ""
     assert _upsert_entity(db_conn, "Jean-Pierre") != ""
 

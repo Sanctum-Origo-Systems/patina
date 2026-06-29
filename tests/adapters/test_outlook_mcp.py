@@ -24,10 +24,10 @@ def _make_bridge(responses: dict[str, str] | None = None):
 
 FIXTURE_INBOX_RAW = (
     "<untrusted_content_email>\n"
-    '[{"id":"AAMkAGE2YTg5NWI","subject":"Project Alpha SOW Review",'
+    '[{"id":"AAMkAGE2YTg5NWI","subject":"Project Alpha Contract Review",'
     '"from":{"name":"Smith, Bob","email":"bob@example.com"},'
     '"receivedDateTime":"2026-06-24T14:30:00Z",'
-    '"bodyPreview":"The SOW is in final review stages.",'
+    '"bodyPreview":"The contract is in final review stages.",'
     '"conversationId":"AAQkAGE2YTg5NWI_conv",'
     '"toRecipients":[{"name":"Owner, Jane","email":"owner@example.com"},'
     '{"name":"Johnson, Frank","email":"frank@example.com"}],'
@@ -47,7 +47,7 @@ FIXTURE_SEARCH_SENT = json.dumps(
     [
         {
             "id": "AAMkSENT001",
-            "subject": "Re: Project Alpha SOW Review",
+            "subject": "Re: Project Alpha Contract Review",
             "from": {"name": "Owner, Jane", "email": "owner@example.com"},
             "receivedDateTime": "2026-06-20T09:00:00Z",
             "bodyPreview": "Frank is handling the database correction.",
@@ -61,7 +61,7 @@ FIXTURE_CALENDAR = json.dumps(
     [
         {
             "meetingId": "AAMkCAL001",
-            "subject": "SOW Feedback Review",
+            "subject": "Quarterly Review",
             "start": "2026-06-24T15:00:00-05:00",
             "end": "2026-06-24T15:30:00-05:00",
             "organizer": {"email": "frank@example.com", "name": "Johnson, Frank"},
@@ -101,7 +101,7 @@ class TestListInbox:
         emails = adapter.list_inbox(since=0.0)
         assert len(emails) == 2
         assert emails[0].sender == "bob@example.com"
-        assert emails[0].subject == "Project Alpha SOW Review"
+        assert emails[0].subject == "Project Alpha Contract Review"
         assert "final review" in emails[0].text
 
     def test_recipients_parsed(self):
@@ -134,7 +134,7 @@ class TestSearchSent:
     def test_parses_sent_results(self):
         bridge = _make_bridge({"email_search": FIXTURE_SEARCH_SENT})
         adapter = OutlookMcpAdapter(bridge)
-        emails = adapter.search_sent("Project Alpha SOW")
+        emails = adapter.search_sent("Project Alpha Contract")
         assert len(emails) == 1
         assert emails[0].sender == "owner@example.com"
         assert "database correction" in emails[0].text
@@ -157,7 +157,7 @@ class TestListEvents:
         end = datetime(2026, 6, 25, tzinfo=UTC)
         events = adapter.list_events(start, end)
         assert len(events) == 2
-        assert events[0].subject == "SOW Feedback Review"
+        assert events[0].subject == "Quarterly Review"
         assert events[0].organizer == "frank@example.com"
         assert events[0].id == "AAMkCAL001"
 
