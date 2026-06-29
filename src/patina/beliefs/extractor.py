@@ -19,7 +19,9 @@ EXTRACTION_PROMPT = """\
 Analyze these messages and extract structured beliefs about people and their relationships.
 
 For each message, identify:
-1. ENTITIES: people mentioned or sending messages (extract their name and any identifiers)
+1. ENTITIES: real people only — individuals with names. Do NOT extract meeting titles, \
+system names, team names, project names, or concepts as entities. \
+Only extract if the entity is a human being with a personal name.
 2. CLAIMS: factual assertions about a person (e.g., "X is VP of Engineering", \
 "X is based in Chicago")
 3. RELATIONSHIPS: connections between people (e.g., "X reports_to Y", \
@@ -123,10 +125,25 @@ def _resolve_entity_id(conn, name: str, *, exclude_owner: bool = False) -> str |
     return row["id"] if row else None
 
 
+def _is_plausible_person_name(name: str) -> bool:
+    if not name or len(name) < 3 or len(name) > 50:
+        return False
+    if any(c in name for c in "()[]/@:."):
+        return False
+    if name.isupper():
+        return False
+    if sum(1 for w in name.split() if w[0].isupper()) < 1:
+        return False
+    return True
+
+
 def _upsert_entity(conn, name: str, aliases: list[str] | None = None) -> str:
     entity_id = _resolve_entity_id(conn, name)
     if entity_id:
         return entity_id
+    name = name.strip()
+    if not _is_plausible_person_name(name):
+        return ""
     now = _iso_now()
     entity_id = _id("person", name)
     conn.execute(

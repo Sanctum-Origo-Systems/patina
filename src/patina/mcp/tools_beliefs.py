@@ -87,12 +87,21 @@ def relationships(top_n: int = 20) -> str:
         rels = get_relationship_map(conn, top_n=top_n)
         if not rels:
             return "No relationships found."
-        lines = ["| Name | Trust | Activity | Msgs/wk | Last |", "|---|---|---|---|---|"]
+        lines = [
+            "| Name | Trust | Activity | Msgs/wk | Last | Behavioral |",
+            "|---|---|---|---|---|---|",
+        ]
         for r in rels:
-            days = f"{r['days_since_last']:.0f}d ago" if r["days_since_last"] else "never"
+            days = (
+                f"{r['days_since_last']:.0f}d ago"
+                if r["days_since_last"]
+                else "never"
+            )
+            beh = r.get("behavioral_note") or ""
             lines.append(
                 f"| {r['name']} | {r['trust_level']:.2f} | "
-                f"{r['activity_status']} | {r['avg_per_week']:.1f} | {days} |"
+                f"{r['activity_status']} | {r['avg_per_week']:.1f} | "
+                f"{days} | {beh} |"
             )
         return "\n".join(lines)
     finally:
