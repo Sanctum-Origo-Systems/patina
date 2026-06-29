@@ -159,7 +159,7 @@ class TestBuildToolGuide:
 
     def test_contains_header(self):
         guide = _build_tool_guide()
-        assert "## Available MCP Tools" in guide
+        assert "## MCP Tools (use proactively)" in guide
 
     def test_contains_known_tools(self):
         guide = _build_tool_guide()
@@ -206,7 +206,7 @@ class TestBuildToolGuide:
         runtime = AgentRuntime(config)
         opts = runtime._build_options(None)
         prompt = opts["system_prompt"]
-        assert "Available MCP Tools" in prompt
+        assert "MCP Tools (use proactively)" in prompt
         assert "catch_up" in prompt
         assert "hidden_allies" in prompt
 
@@ -217,5 +217,5 @@ class TestBuildToolGuide:
         opts = runtime._build_options(None)
         prompt = opts["system_prompt"]
         ops_idx = prompt.index("Operational Instructions")
-        tools_idx = prompt.index("Available MCP Tools")
+        tools_idx = prompt.index("MCP Tools (use proactively)")
         assert tools_idx > ops_idx

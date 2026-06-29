@@ -40,9 +40,10 @@ def _build_tool_guide() -> str:
 
     lines = [
         "\n---",
-        "## Available MCP Tools",
+        "## MCP Tools (use proactively)",
         "",
-        "Use these tools to answer user questions. Pick the most specific tool.",
+        "Use these tools without being asked. "
+        "Surface what matters before the user asks for it.",
         "",
     ]
     for tool in tools:
