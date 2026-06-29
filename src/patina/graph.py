@@ -6,13 +6,104 @@ import sqlite3
 from patina.models import Claim, Entity, Observation, Relationship
 
 
+def normalize_name(name: str) -> str:
+    name = name.strip()
+    if "@" in name:
+        name = name.split("@")[0]
+    if "," in name:
+        parts = [p.strip() for p in name.split(",", 1)]
+        if len(parts) == 2:
+            name = f"{parts[1]} {parts[0]}"
+    return name.lower().strip()
+
+
+def resolve_entity_id(
+    conn: sqlite3.Connection,
+    name: str,
+    aliases: list[str] | None = None,
+) -> str | None:
+    if not name or not name.strip():
+        return None
+
+    row = conn.execute(
+        "SELECT id FROM entities WHERE name = ? AND is_owner = 0 LIMIT 1",
+        (name,),
+    ).fetchone()
+    if row:
+        return row["id"]
+
+    row = conn.execute(
+        "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
+        (f"%{name}%",),
+    ).fetchone()
+    if row:
+        return row["id"]
+
+    normalized = normalize_name(name)
+    if normalized and len(normalized) > 2:
+        rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
+        for r in rows:
+            if normalize_name(r["name"]) == normalized:
+                return r["id"]
+        for r in rows:
+            for alias in json.loads(r["aliases"] or "[]"):
+                clean = alias.split(":")[-1] if ":" in alias else alias
+                if normalize_name(clean) == normalized:
+                    return r["id"]
+        row = conn.execute(
+            "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
+            (f"%{normalized}%",),
+        ).fetchone()
+        if row:
+            return row["id"]
+
+    if aliases:
+        for alias in aliases:
+            if not alias:
+                continue
+            row = conn.execute(
+                "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
+                (f"%{alias}%",),
+            ).fetchone()
+            if row:
+                return row["id"]
+            norm_alias = normalize_name(alias)
+            if norm_alias and len(norm_alias) > 2:
+                row = conn.execute(
+                    "SELECT id FROM entities WHERE name = ? AND is_owner = 0 LIMIT 1",
+                    (norm_alias,),
+                ).fetchone()
+                if row:
+                    return row["id"]
+
+    return None
+
+
 def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
+    existing_id = resolve_entity_id(conn, entity.name, entity.aliases)
+
+    if existing_id and existing_id != entity.id:
+        existing = conn.execute(
+            "SELECT aliases FROM entities WHERE id = ?", (existing_id,)
+        ).fetchone()
+        existing_aliases = json.loads(existing["aliases"] or "[]")
+        merged_aliases = list(set(existing_aliases + entity.aliases))
+        conn.execute(
+            "UPDATE entities SET aliases = ?, last_seen = ? WHERE id = ?",
+            (json.dumps(merged_aliases), entity.last_seen, existing_id),
+        )
+        conn.commit()
+        entity.id = existing_id
+        return
+
     conn.execute(
         """INSERT INTO entities
-               (id, type, name, aliases, metadata, first_seen, last_seen, decay_rate)
+               (id, type, name, aliases, metadata, first_seen, last_seen,
+                decay_rate)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
+               aliases = excluded.aliases,
                last_seen = excluded.last_seen""",
         (
             entity.id,

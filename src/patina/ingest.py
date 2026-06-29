@@ -10,9 +10,10 @@ from patina.graph import (
     count_entities,
     count_observations,
     insert_observation,
+    resolve_entity_id,
     upsert_entity,
 )
-from patina.models import ChatMessage, Observation
+from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation
 from patina.owner import get_owner_entity_id, get_owner_user_ids, mark_entity_as_owner
 from patina.store import connect, get_db_path, init_db
 
@@ -127,6 +128,9 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
         inserted += 1
 
         sender = extract_sender_entity(msg.user_id, msg.user_name)
+        existing_id = resolve_entity_id(conn, sender.name, sender.aliases)
+        if existing_id:
+            sender.id = existing_id
         upsert_entity(conn, sender)
         entity_ids_seen.add(sender.id)
 
@@ -144,10 +148,47 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
     return inserted, skipped, entity_ids_seen
 
 
+def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
+    results = []
+    for em in emails:
+        text = f"[Subject: {em.subject}] {em.text}"
+        results.append(
+            ChatMessage(
+                user_id=em.sender,
+                text=text,
+                timestamp=em.timestamp,
+                channel_id=f"email:{em.conversation_id or em.id}",
+                user_name=em.sender,
+            )
+        )
+    return results
+
+
+def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:
+    results = []
+    for ev in events:
+        attendee_list = ", ".join(ev.attendees) if ev.attendees else "none"
+        text = f"[Meeting: {ev.subject}] Organizer: {ev.organizer}, Attendees: {attendee_list}"
+        results.append(
+            ChatMessage(
+                user_id=ev.organizer,
+                text=text,
+                timestamp=ev.start,
+                channel_id=f"calendar:{ev.id}",
+                user_name=ev.organizer,
+            )
+        )
+    return results
+
+
 def ingest_live(
     *, port, source: str = "live", home: Path | None = None, lookback_days: int = 3
 ) -> dict:
+    from datetime import UTC, datetime, timedelta
+
+    from patina.ports.calendar import CalendarPort
     from patina.ports.chat import ChatPort
+    from patina.ports.email import EmailPort
 
     db_path = get_db_path(home)
     init_db(db_path)
@@ -160,6 +201,16 @@ def ingest_live(
         if isinstance(port, ChatPort):
             messages.extend(port.list_dm_messages(since))
             messages.extend(port.list_mentions(since))
+
+        if isinstance(port, EmailPort):
+            emails = port.list_inbox(since)
+            messages.extend(_emails_to_chat_messages(emails))
+
+        if isinstance(port, CalendarPort):
+            now = datetime.now(UTC)
+            start = now - timedelta(days=lookback_days)
+            events = port.list_events(start, now)
+            messages.extend(_events_to_chat_messages(events))
 
         messages.sort(key=lambda m: m.timestamp)
         inserted, skipped, entity_ids = _ingest_messages(conn, messages, source)
@@ -186,14 +237,24 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
     }
 
     adapters = _load_adapters(home)
-    for source_name, port in adapters:
-        result = ingest_live(port=port, source=source_name, home=home, lookback_days=lookback_days)
-        totals["messages_inserted"] += result["messages_inserted"]
-        totals["messages_skipped"] += result["messages_skipped"]
-        totals["entities_created"] += result["entities_created"]
-        totals["total_observations"] = result["total_observations"]
-        totals["total_entities"] = result["total_entities"]
-        totals["adapters_run"] += 1
+    try:
+        for source_name, port in adapters:
+            result = ingest_live(
+                port=port, source=source_name, home=home, lookback_days=lookback_days
+            )
+            totals["messages_inserted"] += result["messages_inserted"]
+            totals["messages_skipped"] += result["messages_skipped"]
+            totals["entities_created"] += result["entities_created"]
+            totals["total_observations"] = result["total_observations"]
+            totals["total_entities"] = result["total_entities"]
+            totals["adapters_run"] += 1
+    finally:
+        for _, port in adapters:
+            if hasattr(port, "close"):
+                try:
+                    port.close()
+                except Exception:
+                    pass
 
     return totals
 
@@ -212,8 +273,9 @@ def _load_adapters(home: Path | None = None) -> list[tuple[str, object]]:
         return []
 
     adapters: list[tuple[str, object]] = []
-    chat_adapters = config.get("adapters", {}).get("chat", [])
-    for adapter_cfg in chat_adapters:
+    adapter_sections = config.get("adapters", {})
+
+    for adapter_cfg in adapter_sections.get("chat", []):
         provider = adapter_cfg.get("provider")
         if provider == "slack":
             token = adapter_cfg.get("token", "")
@@ -221,5 +283,57 @@ def _load_adapters(home: Path | None = None) -> list[tuple[str, object]]:
                 from patina.adapters.slack_live import SlackLiveAdapter
 
                 adapters.append(("slack_live", SlackLiveAdapter(token)))
+        elif provider == "slack_mcp":
+            adapters.append(("slack_mcp", _make_mcp_adapter("slack_mcp", adapter_cfg)))
+
+    for adapter_cfg in adapter_sections.get("email", []):
+        provider = adapter_cfg.get("provider")
+        if provider == "imap":
+            from patina.adapters.email_imap import ImapEmailAdapter
+
+            adapters.append(
+                (
+                    "imap",
+                    ImapEmailAdapter(
+                        host=adapter_cfg.get("host", ""),
+                        port=adapter_cfg.get("port", 993),
+                        username=adapter_cfg.get("username", ""),
+                        password=adapter_cfg.get("password", ""),
+                    ),
+                )
+            )
+        elif provider == "outlook_mcp":
+            adapters.append(("outlook_mcp_email", _make_mcp_adapter("outlook_mcp", adapter_cfg)))
+
+    for adapter_cfg in adapter_sections.get("calendar", []):
+        provider = adapter_cfg.get("provider")
+        if provider == "outlook_mcp":
+            adapters.append(("outlook_mcp_calendar", _make_mcp_adapter("outlook_mcp", adapter_cfg)))
 
     return adapters
+
+
+def _make_mcp_adapter(provider: str, cfg: dict) -> object:
+    from patina.adapters._mcp_client import connect_mcp_sync
+
+    command = cfg.get("command", "")
+    if not command:
+        raise ValueError(f"MCP adapter '{provider}' requires a 'command' field")
+
+    bridge = connect_mcp_sync(
+        command=command,
+        args=cfg.get("args"),
+        env=cfg.get("env"),
+    )
+
+    if provider == "slack_mcp":
+        from patina.adapters.slack_mcp import SlackMcpAdapter
+
+        return SlackMcpAdapter(bridge)
+    elif provider == "outlook_mcp":
+        from patina.adapters.outlook_mcp import OutlookMcpAdapter
+
+        return OutlookMcpAdapter(bridge)
+    else:
+        bridge.close()
+        raise ValueError(f"Unknown MCP provider: {provider}")

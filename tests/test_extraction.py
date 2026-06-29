@@ -56,3 +56,22 @@ def test_ids_unique():
     e1 = extract_sender_entity("U001")
     e2 = extract_sender_entity("U002")
     assert e1.id != e2.id
+
+
+def test_sender_entity_last_first_normalized():
+    e = extract_sender_entity("U001", "Wang, Rachael")
+    assert e.name == "Rachael Wang"
+    assert "Wang, Rachael" in e.aliases
+    assert "U001" in e.aliases
+
+
+def test_sender_entity_includes_display_name_as_alias():
+    e = extract_sender_entity("U001", "Alice Smith")
+    assert e.name == "Alice Smith"
+    assert "U001" in e.aliases
+    assert "Alice Smith" in e.aliases
+
+
+def test_sender_entity_no_duplicate_aliases():
+    e = extract_sender_entity("U001", "Alice")
+    assert len(e.aliases) == len(set(e.aliases))
