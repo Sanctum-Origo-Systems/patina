@@ -204,5 +204,9 @@ def get_relationship_map(conn: sqlite3.Connection, *, top_n: int = 20) -> list[d
             }
         )
 
-    results.sort(key=lambda x: x["trust_level"], reverse=True)
+    results.sort(
+        key=lambda x: x["trust_level"] * 0.4
+        + min(x["message_count"] / 100, 1.0) * 0.6,
+        reverse=True,
+    )
     return results[:top_n]
