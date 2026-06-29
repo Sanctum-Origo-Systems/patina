@@ -132,11 +132,15 @@ def store_search(query: str, limit: int = 20) -> str:
     import json
     from datetime import UTC, datetime
 
+    from patina.graph import resolve_entity_id
+
     conn = _get_conn()
     try:
         limit = min(limit, 50)
+        seen_ids: set[str] = set()
+        all_rows: list = []
 
-        rows = conn.execute(
+        fts_rows = conn.execute(
             """SELECT o.id, o.source, o.timestamp, o.text,
                       e.name AS sender_name,
                       o.metadata
@@ -149,11 +153,34 @@ def store_search(query: str, limit: int = 20) -> str:
             (query, limit),
         ).fetchall()
 
-        if not rows:
+        for row in fts_rows:
+            seen_ids.add(row["id"])
+            all_rows.append(row)
+
+        entity_id = resolve_entity_id(conn, query)
+        if entity_id:
+            sender_limit = max(limit - len(all_rows), 10)
+            sender_rows = conn.execute(
+                """SELECT o.id, o.source, o.timestamp, o.text,
+                          e.name AS sender_name,
+                          o.metadata
+                   FROM observations o
+                   LEFT JOIN entities e ON o.sender_entity_id = e.id
+                   WHERE o.sender_entity_id = ?
+                   ORDER BY o.timestamp DESC
+                   LIMIT ?""",
+                (entity_id, sender_limit),
+            ).fetchall()
+            for row in sender_rows:
+                if row["id"] not in seen_ids:
+                    seen_ids.add(row["id"])
+                    all_rows.append(row)
+
+        if not all_rows:
             return f"No messages found matching '{query}'."
 
-        lines = [f"**{len(rows)} results for '{query}':**\n"]
-        for row in rows:
+        lines = [f"**{len(all_rows)} results for '{query}':**\n"]
+        for row in all_rows:
             try:
                 dt = datetime.fromtimestamp(row["timestamp"], tz=UTC)
                 date_str = dt.strftime("%Y-%m-%d")
