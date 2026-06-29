@@ -326,7 +326,9 @@ class TestResolveEntityIdCrossMatch:
         )
         db_conn.commit()
         new_ent = Entity(
-            id="e2", type="person", name="Rachael Wang",
+            id="e2",
+            type="person",
+            name="Rachael Wang",
             aliases=["racwang@corp.com"],
         )
         upsert_entity(db_conn, new_ent)

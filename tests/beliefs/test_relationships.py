@@ -106,9 +106,7 @@ def test_empty_graph_empty_map(db_conn):
 def _insert_claim(conn, subject_id, predicate, obj, confidence=0.8):
     import hashlib
 
-    claim_id = hashlib.sha256(
-        f"{subject_id}:{predicate}:{obj}".encode()
-    ).hexdigest()[:16]
+    claim_id = hashlib.sha256(f"{subject_id}:{predicate}:{obj}".encode()).hexdigest()[:16]
     now = "2026-06-29T00:00:00+00:00"
     conn.execute(
         """INSERT OR REPLACE INTO claims
@@ -123,9 +121,7 @@ def _insert_claim(conn, subject_id, predicate, obj, confidence=0.8):
 def _insert_relationship(conn, subject_id, predicate, object_id, confidence=0.8):
     import hashlib
 
-    rel_id = hashlib.sha256(
-        f"{subject_id}:{predicate}:{object_id}".encode()
-    ).hexdigest()[:16]
+    rel_id = hashlib.sha256(f"{subject_id}:{predicate}:{object_id}".encode()).hexdigest()[:16]
     now = "2026-06-29T00:00:00+00:00"
     conn.execute(
         """INSERT OR REPLACE INTO relationships
@@ -227,9 +223,7 @@ class TestComputeTrustLevelBlended:
     def test_behavioral_only(self, db_conn):
         upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
         _add_obs(db_conn, "o1", "e1")
-        _insert_claim(
-            db_conn, "e1", "behavioral:style", "very responsive and helpful"
-        )
+        _insert_claim(db_conn, "e1", "behavioral:style", "very responsive and helpful")
         trust = compute_trust_level(db_conn, "e1")
         assert trust > 0.5
 
@@ -253,9 +247,7 @@ class TestComputeTrustLevelBlended:
         upsert_entity(db_conn, Entity(id="e2", type="person", name="Bob"))
         _add_obs(db_conn, "o1", "e1")
         record_decision(db_conn, "o1", "acted")
-        _insert_claim(
-            db_conn, "e1", "behavioral:commitment", "always delivers on time"
-        )
+        _insert_claim(db_conn, "e1", "behavioral:commitment", "always delivers on time")
         _insert_relationship(db_conn, "e1", "collaborates_with", "e2")
         trust = compute_trust_level(db_conn, "e1")
         assert trust > 0.6
@@ -263,9 +255,7 @@ class TestComputeTrustLevelBlended:
     def test_negative_behavioral_lowers_trust(self, db_conn):
         upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
         _add_obs(db_conn, "o1", "e1")
-        _insert_claim(
-            db_conn, "e1", "behavioral:style", "avoids and ignores messages"
-        )
+        _insert_claim(db_conn, "e1", "behavioral:style", "avoids and ignores messages")
         trust = compute_trust_level(db_conn, "e1")
         assert trust < 0.5
 
@@ -274,9 +264,7 @@ class TestRelationshipMapBehavioralNote:
     def test_includes_behavioral_note(self, db_conn):
         upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
         _add_obs(db_conn, "o1", "e1")
-        _insert_claim(
-            db_conn, "e1", "behavioral:style", "very responsive", 0.9
-        )
+        _insert_claim(db_conn, "e1", "behavioral:style", "very responsive", 0.9)
         results = get_relationship_map(db_conn)
         assert len(results) == 1
         assert results[0]["behavioral_note"] == "very responsive"
@@ -306,9 +294,7 @@ class TestRelationshipMapRanking:
             _add_obs(db_conn, f"a{i}", "e1", ts=now - i * 3600)
         _add_obs(db_conn, "b0", "e2", ts=now)
         _add_obs(db_conn, "b1", "e2", ts=now - 3600)
-        _insert_claim(
-            db_conn, "e2", "behavioral:style", "very responsive and helpful"
-        )
+        _insert_claim(db_conn, "e2", "behavioral:style", "very responsive and helpful")
         results = get_relationship_map(db_conn)
         assert results[0]["name"] == "Alice"
         assert results[1]["name"] == "Bob"
@@ -320,9 +306,7 @@ class TestRelationshipMapRanking:
         now = time.time()
         _add_obs(db_conn, "a0", "e1", ts=now)
         _add_obs(db_conn, "b0", "e2", ts=now)
-        _insert_claim(
-            db_conn, "e2", "behavioral:commitment", "delivers on time"
-        )
+        _insert_claim(db_conn, "e2", "behavioral:commitment", "delivers on time")
         results = get_relationship_map(db_conn)
         assert results[0]["name"] == "Bob"
 

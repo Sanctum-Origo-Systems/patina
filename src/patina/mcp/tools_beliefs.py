@@ -92,11 +92,7 @@ def relationships(top_n: int = 20) -> str:
             "|---|---|---|---|---|---|",
         ]
         for r in rels:
-            days = (
-                f"{r['days_since_last']:.0f}d ago"
-                if r["days_since_last"]
-                else "never"
-            )
+            days = f"{r['days_since_last']:.0f}d ago" if r["days_since_last"] else "never"
             beh = r.get("behavioral_note") or ""
             lines.append(
                 f"| {r['name']} | {r['trust_level']:.2f} | "

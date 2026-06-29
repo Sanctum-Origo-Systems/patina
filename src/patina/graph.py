@@ -41,9 +41,7 @@ def resolve_entity_id(
 
     normalized = normalize_name(name)
     if normalized and len(normalized) > 2:
-        rows = conn.execute(
-            "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
-        ).fetchall()
+        rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
         for r in rows:
             if normalize_name(r["name"]) == normalized:
                 return r["id"]
@@ -53,8 +51,7 @@ def resolve_entity_id(
                 if normalize_name(clean) == normalized:
                     return r["id"]
         row = conn.execute(
-            "SELECT id FROM entities WHERE aliases LIKE ?"
-            " AND is_owner = 0 LIMIT 1",
+            "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
             (f"%{normalized}%",),
         ).fetchone()
         if row:

@@ -89,19 +89,32 @@ def compute_trust_level(conn: sqlite3.Connection, entity_id: str) -> float:
         return 0.5
 
     total_weight = sum(weights)
-    return round(
-        sum(s * w for s, w in zip(scores, weights)) / total_weight, 3
-    )
+    return round(sum(s * w for s, w in zip(scores, weights)) / total_weight, 3)
 
 
 _HIGH_TRUST_KEYWORDS = {
-    "proactive", "responsive", "transparent", "helpful",
-    "collaborative", "consistent", "reliable", "follows up",
-    "delivers", "on time",
+    "proactive",
+    "responsive",
+    "transparent",
+    "helpful",
+    "collaborative",
+    "consistent",
+    "reliable",
+    "follows up",
+    "delivers",
+    "on time",
 }
 _LOW_TRUST_KEYWORDS = {
-    "escalates", "pressures", "demands", "avoids", "delays",
-    "inconsistent", "unreliable", "misses", "late", "ignores",
+    "escalates",
+    "pressures",
+    "demands",
+    "avoids",
+    "delays",
+    "inconsistent",
+    "unreliable",
+    "misses",
+    "late",
+    "ignores",
 }
 
 
@@ -150,10 +163,7 @@ def _score_relationship_predicates(rels: list) -> float:
     if not rels:
         return 0.5
 
-    total = sum(
-        _PREDICATE_SCORES.get(r["predicate"], 0.5) * r["confidence"]
-        for r in rels
-    )
+    total = sum(_PREDICATE_SCORES.get(r["predicate"], 0.5) * r["confidence"] for r in rels)
     weight = sum(r["confidence"] for r in rels)
 
     return round(total / weight, 3) if weight > 0 else 0.5
@@ -205,8 +215,7 @@ def get_relationship_map(conn: sqlite3.Connection, *, top_n: int = 20) -> list[d
         )
 
     results.sort(
-        key=lambda x: x["trust_level"] * 0.4
-        + min(x["message_count"] / 100, 1.0) * 0.6,
+        key=lambda x: x["trust_level"] * 0.4 + min(x["message_count"] / 100, 1.0) * 0.6,
         reverse=True,
     )
     return results[:top_n]
