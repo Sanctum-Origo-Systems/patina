@@ -105,7 +105,7 @@ The system is fully functional at Tier 1 alone (zero LLM calls). Each tier adds 
 
 ## MCP Server
 
-Patina runs as an MCP server for conversational use from Claude Code, Cline, or any MCP host. 21 tools including `session_checkpoint` for graceful context handoff and `recent_messages` for conversational continuity across stateless sessions.
+Patina runs as an MCP server for conversational use from Claude Code, Cline, or any MCP host. 25 tools including `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
 
 ```json
 {
