@@ -54,9 +54,21 @@ def extract_entities_from_text(text: str) -> list[Entity]:
 
 
 def extract_sender_entity(user_id: str, user_name: str | None = None) -> Entity:
+    aliases = [user_id]
+    canonical_name = user_name or user_id
+
+    if user_name and "," in user_name:
+        parts = [p.strip() for p in user_name.split(",", 1)]
+        if len(parts) == 2:
+            canonical_name = f"{parts[1]} {parts[0]}"
+            aliases.append(user_name)
+
+    if user_name and user_name != user_id:
+        aliases.append(user_name)
+
     return Entity(
         id=_make_id("person", user_id),
         type="person",
-        name=user_name or user_id,
-        aliases=[user_id],
+        name=canonical_name,
+        aliases=list(set(aliases)),
     )

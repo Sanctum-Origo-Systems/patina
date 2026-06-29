@@ -138,12 +138,28 @@ def _is_plausible_person_name(name: str) -> bool:
 
 
 def _upsert_entity(conn, name: str, aliases: list[str] | None = None) -> str:
-    entity_id = _resolve_entity_id(conn, name)
-    if entity_id:
-        return entity_id
+    from patina.graph import resolve_entity_id
+
     name = name.strip()
     if not _is_plausible_person_name(name):
         return ""
+
+    existing_id = resolve_entity_id(conn, name, aliases)
+    if existing_id:
+        if aliases:
+            existing = conn.execute(
+                "SELECT aliases FROM entities WHERE id = ?",
+                (existing_id,),
+            ).fetchone()
+            if existing:
+                existing_aliases = json.loads(existing["aliases"] or "[]")
+                merged = list(set(existing_aliases + aliases))
+                conn.execute(
+                    "UPDATE entities SET aliases = ? WHERE id = ?",
+                    (json.dumps(merged), existing_id),
+                )
+        return existing_id
+
     now = _iso_now()
     entity_id = _id("person", name)
     conn.execute(
@@ -249,9 +265,7 @@ def extract_beliefs(
 
             for claim in claims:
                 subject_name = claim.get("subject", "")
-                subject_id = _resolve_entity_id(
-                    conn, subject_name, exclude_owner=True
-                )
+                subject_id = _resolve_entity_id(conn, subject_name, exclude_owner=True)
                 if not subject_id:
                     continue
                 claim_id = _id(
@@ -308,20 +322,14 @@ def extract_beliefs(
                     )
                     stats["relationships_extracted"] += 1
                 except Exception as e:
-                    print(
-                        f"\n    [WARN] Failed to insert relationship: {e}"
-                    )
+                    print(f"\n    [WARN] Failed to insert relationship: {e}")
 
             for beh in behavioral:
                 subject_name = beh.get("subject", "")
-                subject_id = _resolve_entity_id(
-                    conn, subject_name, exclude_owner=True
-                )
+                subject_id = _resolve_entity_id(conn, subject_name, exclude_owner=True)
                 if not subject_id:
                     continue
-                predicate = (
-                    f"behavioral:{beh.get('predicate', 'pattern')}"
-                )
+                predicate = f"behavioral:{beh.get('predicate', 'pattern')}"
                 claim_id = _id(
                     "claim",
                     f"{subject_id}:{predicate}:{beh.get('object', '')}",
@@ -346,9 +354,7 @@ def extract_beliefs(
                     )
                     stats["claims_extracted"] += 1
                 except Exception as e:
-                    print(
-                        f"\n    [WARN] Failed to insert behavioral: {e}"
-                    )
+                    print(f"\n    [WARN] Failed to insert behavioral: {e}")
 
             obs_ids = [row["id"] for row in batch]
             conn.executemany(
@@ -360,10 +366,7 @@ def extract_beliefs(
             stats["observations_processed"] += len(batch)
             n_ent, n_cl = len(entities), len(claims)
             n_rel, n_beh = len(relationships), len(behavioral)
-            print(
-                f"+{n_ent} entities, +{n_cl} claims, "
-                f"+{n_rel} rels, +{n_beh} behavioral"
-            )
+            print(f"+{n_ent} entities, +{n_cl} claims, +{n_rel} rels, +{n_beh} behavioral")
 
             time.sleep(1)
 
