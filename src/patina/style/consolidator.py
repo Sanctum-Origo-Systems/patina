@@ -61,6 +61,12 @@ def build_all_profiles(conn: sqlite3.Connection, user_entity_id: str) -> int:
     for recipient_id, obs_list in by_recipient.items():
         if recipient_id is None:
             continue
+        # Guard: skip if entity no longer exists (e.g. cleaned up)
+        exists = conn.execute(
+            "SELECT 1 FROM entities WHERE id=?", (recipient_id,)
+        ).fetchone()
+        if not exists:
+            continue
         profile = consolidate_profile(obs_list)
         _upsert_style_profile(conn, recipient_id, profile, len(obs_list))
         count += 1
