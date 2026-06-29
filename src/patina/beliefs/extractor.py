@@ -16,31 +16,46 @@ from pathlib import Path
 from patina.store import connect, get_db_path, init_db
 
 EXTRACTION_PROMPT = """\
-Analyze these messages and extract structured beliefs.
+Analyze these messages and extract structured beliefs about people and their relationships.
 
 For each message, identify:
-1. CLAIMS: factual assertions (e.g., "X is VP of Engineering")
-2. RELATIONSHIPS: connections (e.g., "X reports_to Y")
-3. COMMITMENTS: promises (e.g., "X will deliver Y by Z date")
+1. ENTITIES: people mentioned or sending messages (extract their name and any identifiers)
+2. CLAIMS: factual assertions about a person (e.g., "X is VP of Engineering", \
+"X is based in Chicago")
+3. RELATIONSHIPS: connections between people (e.g., "X reports_to Y", \
+"X collaborates_with Y")
+4. BEHAVIORAL: communication patterns, commitments made, urgency signals
 
 Output JSON with this exact structure:
 {
+  "entities": [
+    {"name": "display name", "aliases": ["alias1", "alias2"], "type": "person"}
+  ],
   "claims": [
-    {"subject": "name", "predicate": "role|expertise|location|team",
-     "object": "value", "confidence": 0.5-1.0}
+    {"subject": "name", \
+"predicate": "role|expertise|location|team|org|title", \
+"object": "value", "confidence": 0.5-1.0}
   ],
   "relationships": [
-    {"subject": "name", "predicate": "reports_to|collaborates_with|manages",
-     "object": "other_name", "confidence": 0.5-1.0}
+    {"subject": "name", \
+"predicate": "reports_to|collaborates_with|manages|works_with", \
+"object": "other_name", "confidence": 0.5-1.0}
+  ],
+  "behavioral": [
+    {"subject": "name", \
+"predicate": "communication_style|response_pattern|commitment|urgency", \
+"object": "description", "confidence": 0.5-1.0}
   ]
 }
 
 Rules:
+- Always extract the sender as an entity if they have a real name
 - Only extract claims that are stated or strongly implied, not speculated
 - Confidence: 0.9+ for explicit statements, 0.7 for implied, 0.5 for inferred
-- Use the sender's name as subject when they state something about themselves
-- Use mentioned names as subjects when claims are about others
-- Skip greetings, bot messages, and messages with no extractable information (return empty lists)
+- For behavioral: note if someone consistently makes commitments, escalates urgency, \
+or has a distinct communication style
+- Skip bot messages and messages with no extractable information \
+(return empty lists for all keys)
 
 Messages to analyze:
 """
@@ -106,6 +121,22 @@ def _resolve_entity_id(conn, name: str, *, exclude_owner: bool = False) -> str |
             (name, f"%{name}%"),
         ).fetchone()
     return row["id"] if row else None
+
+
+def _upsert_entity(conn, name: str, aliases: list[str] | None = None) -> str:
+    entity_id = _resolve_entity_id(conn, name)
+    if entity_id:
+        return entity_id
+    now = _iso_now()
+    entity_id = _id("person", name)
+    conn.execute(
+        """INSERT OR IGNORE INTO entities
+           (id, type, name, aliases, metadata, first_seen, last_seen,
+            decay_rate, is_owner)
+           VALUES (?, 'person', ?, ?, '{}', ?, ?, 0.02, 0)""",
+        (entity_id, name, json.dumps(aliases or []), now, now),
+    )
+    return entity_id
 
 
 def extract_beliefs(
@@ -183,15 +214,29 @@ def extract_beliefs(
             stats["batches_sent"] += 1
 
             extracted = _parse_extraction(response)
+            entities = extracted.get("entities", [])
             claims = extracted.get("claims", [])
             relationships = extracted.get("relationships", [])
+            behavioral = extracted.get("behavioral", [])
+
+            for ent in entities:
+                name = ent.get("name", "").strip()
+                if name and len(name) > 1:
+                    _upsert_entity(conn, name, ent.get("aliases", []))
+
+            for item in claims + relationships + behavioral:
+                for key in ("subject", "object"):
+                    name = item.get(key, "").strip()
+                    if name and len(name) > 1 and not name[0].islower():
+                        _upsert_entity(conn, name)
 
             for claim in claims:
                 subject_name = claim.get("subject", "")
-                subject_id = _resolve_entity_id(conn, subject_name, exclude_owner=True)
+                subject_id = _resolve_entity_id(
+                    conn, subject_name, exclude_owner=True
+                )
                 if not subject_id:
                     continue
-
                 claim_id = _id(
                     "claim",
                     f"{subject_id}:{claim['predicate']}:{claim['object']}",
@@ -200,8 +245,10 @@ def extract_beliefs(
                     conn.execute(
                         """INSERT OR REPLACE INTO claims
                            (id, subject_id, predicate, object, confidence,
-                            first_asserted, last_confirmed, decay_rate, source_ids)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0.02, '["extraction"]')""",
+                            first_asserted, last_confirmed, decay_rate,
+                            source_ids)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 0.02,
+                                   '["extraction"]')""",
                         (
                             claim_id,
                             subject_id,
@@ -221,7 +268,6 @@ def extract_beliefs(
                 object_id = _resolve_entity_id(conn, rel.get("object", ""))
                 if not subject_id or not object_id:
                     continue
-
                 rel_id = _id(
                     "rel",
                     f"{subject_id}:{rel['predicate']}:{object_id}",
@@ -231,7 +277,8 @@ def extract_beliefs(
                         """INSERT OR REPLACE INTO relationships
                            (id, subject_id, predicate, object_id, confidence,
                             first_seen, last_confirmed, source_ids)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, '["extraction"]')""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?,
+                                   '["extraction"]')""",
                         (
                             rel_id,
                             subject_id,
@@ -244,7 +291,47 @@ def extract_beliefs(
                     )
                     stats["relationships_extracted"] += 1
                 except Exception as e:
-                    print(f"\n    [WARN] Failed to insert relationship: {e}")
+                    print(
+                        f"\n    [WARN] Failed to insert relationship: {e}"
+                    )
+
+            for beh in behavioral:
+                subject_name = beh.get("subject", "")
+                subject_id = _resolve_entity_id(
+                    conn, subject_name, exclude_owner=True
+                )
+                if not subject_id:
+                    continue
+                predicate = (
+                    f"behavioral:{beh.get('predicate', 'pattern')}"
+                )
+                claim_id = _id(
+                    "claim",
+                    f"{subject_id}:{predicate}:{beh.get('object', '')}",
+                )
+                try:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO claims
+                           (id, subject_id, predicate, object, confidence,
+                            first_asserted, last_confirmed, decay_rate,
+                            source_ids)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 0.05,
+                                   '["behavioral_extraction"]')""",
+                        (
+                            claim_id,
+                            subject_id,
+                            predicate,
+                            beh.get("object", ""),
+                            beh.get("confidence", 0.6),
+                            now,
+                            now,
+                        ),
+                    )
+                    stats["claims_extracted"] += 1
+                except Exception as e:
+                    print(
+                        f"\n    [WARN] Failed to insert behavioral: {e}"
+                    )
 
             obs_ids = [row["id"] for row in batch]
             conn.executemany(
@@ -254,7 +341,12 @@ def extract_beliefs(
             conn.commit()
 
             stats["observations_processed"] += len(batch)
-            print(f"+{len(claims)} claims, +{len(relationships)} rels")
+            n_ent, n_cl = len(entities), len(claims)
+            n_rel, n_beh = len(relationships), len(behavioral)
+            print(
+                f"+{n_ent} entities, +{n_cl} claims, "
+                f"+{n_rel} rels, +{n_beh} behavioral"
+            )
 
             time.sleep(1)
 
