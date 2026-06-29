@@ -41,12 +41,20 @@ def resolve_entity_id(
 
     normalized = normalize_name(name)
     if normalized and len(normalized) > 2:
-        rows = conn.execute("SELECT id, name FROM entities WHERE is_owner = 0").fetchall()
+        rows = conn.execute(
+            "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+        ).fetchall()
         for r in rows:
             if normalize_name(r["name"]) == normalized:
                 return r["id"]
+        for r in rows:
+            for alias in json.loads(r["aliases"] or "[]"):
+                clean = alias.split(":")[-1] if ":" in alias else alias
+                if normalize_name(clean) == normalized:
+                    return r["id"]
         row = conn.execute(
-            "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
+            "SELECT id FROM entities WHERE aliases LIKE ?"
+            " AND is_owner = 0 LIMIT 1",
             (f"%{normalized}%",),
         ).fetchone()
         if row:

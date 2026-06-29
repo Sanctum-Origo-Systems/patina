@@ -258,3 +258,79 @@ class TestUpsertEntityMerge:
         ent = get_entity(db_conn, "e1")
         assert ent.name == "Alice Updated"
         assert count_entities(db_conn) == 1
+
+
+class TestResolveEntityIdCrossMatch:
+    def test_prefixed_alias_matches_name(self, db_conn):
+        """Entity 'racwang' has alias 'display_name:Rachael Wang'.
+        Resolving 'Rachael Wang' should find it via cross-match."""
+        db_conn.execute(
+            """INSERT INTO entities
+               (id, type, name, aliases, metadata, first_seen, last_seen,
+                decay_rate, is_owner)
+               VALUES ('e1', 'person', 'racwang',
+                       '["display_name:Rachael Wang"]', '{}',
+                       '2024-01-01', '2024-01-01', 0.02, 0)"""
+        )
+        db_conn.commit()
+        assert resolve_entity_id(db_conn, "Rachael Wang") == "e1"
+
+    def test_prefixed_alias_normalized_match(self, db_conn):
+        """'Wang, Rachael' normalizes to 'rachael wang', which matches
+        stripped alias 'display_name:Rachael Wang' -> 'rachael wang'."""
+        db_conn.execute(
+            """INSERT INTO entities
+               (id, type, name, aliases, metadata, first_seen, last_seen,
+                decay_rate, is_owner)
+               VALUES ('e1', 'person', 'racwang',
+                       '["display_name:Rachael Wang"]', '{}',
+                       '2024-01-01', '2024-01-01', 0.02, 0)"""
+        )
+        db_conn.commit()
+        assert resolve_entity_id(db_conn, "Wang, Rachael") == "e1"
+
+    def test_outlook_prefixed_alias(self, db_conn):
+        db_conn.execute(
+            """INSERT INTO entities
+               (id, type, name, aliases, metadata, first_seen, last_seen,
+                decay_rate, is_owner)
+               VALUES ('e1', 'person', 'Bob Smith',
+                       '["outlook:Smith, Bob"]', '{}',
+                       '2024-01-01', '2024-01-01', 0.02, 0)"""
+        )
+        db_conn.commit()
+        assert resolve_entity_id(db_conn, "Smith, Bob") == "e1"
+
+    def test_no_false_cross_match(self, db_conn):
+        db_conn.execute(
+            """INSERT INTO entities
+               (id, type, name, aliases, metadata, first_seen, last_seen,
+                decay_rate, is_owner)
+               VALUES ('e1', 'person', 'Alice',
+                       '["slack:alice123"]', '{}',
+                       '2024-01-01', '2024-01-01', 0.02, 0)"""
+        )
+        db_conn.commit()
+        assert resolve_entity_id(db_conn, "Bob Jones") is None
+
+    def test_upsert_merges_via_cross_match(self, db_conn):
+        """Entity 'racwang' with prefixed alias. Upserting 'Rachael Wang'
+        should merge into it instead of creating a duplicate."""
+        db_conn.execute(
+            """INSERT INTO entities
+               (id, type, name, aliases, metadata, first_seen, last_seen,
+                decay_rate, is_owner)
+               VALUES ('e1', 'person', 'racwang',
+                       '["display_name:Rachael Wang", "U00RACWANG"]',
+                       '{}', '2024-01-01', '2024-01-01', 0.02, 0)"""
+        )
+        db_conn.commit()
+        new_ent = Entity(
+            id="e2", type="person", name="Rachael Wang",
+            aliases=["racwang@corp.com"],
+        )
+        upsert_entity(db_conn, new_ent)
+        assert new_ent.id == "e1"
+        assert count_entities(db_conn, "person") == 1
+        ent = get_entity(db_conn, "e1")
+        assert "racwang@corp.com" in ent.aliases
