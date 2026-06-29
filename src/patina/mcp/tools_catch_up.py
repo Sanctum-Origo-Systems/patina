@@ -127,9 +127,66 @@ def done(item_id: str) -> str:
         conn.close()
 
 
+def store_search(query: str, limit: int = 20) -> str:
+    """Full-text search across all ingested messages (Slack, email, calendar)."""
+    import json
+    from datetime import UTC, datetime
+
+    conn = _get_conn()
+    try:
+        limit = min(limit, 50)
+
+        rows = conn.execute(
+            """SELECT o.id, o.source, o.timestamp, o.text,
+                      e.name AS sender_name,
+                      o.metadata
+               FROM observations_fts f
+               JOIN observations o ON f.rowid = o.rowid
+               LEFT JOIN entities e ON o.sender_entity_id = e.id
+               WHERE observations_fts MATCH ?
+               ORDER BY rank
+               LIMIT ?""",
+            (query, limit),
+        ).fetchall()
+
+        if not rows:
+            return f"No messages found matching '{query}'."
+
+        lines = [f"**{len(rows)} results for '{query}':**\n"]
+        for row in rows:
+            try:
+                dt = datetime.fromtimestamp(row["timestamp"], tz=UTC)
+                date_str = dt.strftime("%Y-%m-%d")
+            except Exception:
+                date_str = "unknown date"
+
+            try:
+                meta = json.loads(row["metadata"] or "{}")
+                channel = meta.get("channel_name", "")
+            except Exception:
+                channel = ""
+
+            sender = row["sender_name"] or "unknown"
+            source = row["source"] or ""
+            text = (row["text"] or "")[:200]
+
+            context_parts = [f"[{date_str}]", f"**{sender}**", f"via {source}"]
+            if channel:
+                context_parts.append(f"in #{channel}")
+
+            lines.append(" ".join(context_parts))
+            lines.append(f"> {text}")
+            lines.append("")
+
+        return "\n".join(lines)
+    finally:
+        conn.close()
+
+
 def register(mcp):
     mcp.tool()(catch_up)
     mcp.tool()(priorities)
     mcp.tool()(dismiss)
     mcp.tool()(acknowledge)
     mcp.tool()(done)
+    mcp.tool()(store_search)

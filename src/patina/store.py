@@ -168,6 +168,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS claims_fts
     USING fts5(predicate, object, content=claims, content_rowid=rowid);
 """
 
+_FTS_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+    INSERT INTO observations_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+    INSERT INTO observations_fts(observations_fts, rowid, text)
+        VALUES ('delete', old.rowid, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+    INSERT INTO observations_fts(observations_fts, rowid, text)
+        VALUES ('delete', old.rowid, old.text);
+    INSERT INTO observations_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+"""
+
 _INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_entities_type_name ON entities(type, name);
 CREATE INDEX IF NOT EXISTS idx_rel_subject ON relationships(subject_id);
@@ -205,6 +220,7 @@ def init_db(db_path: Path) -> None:
     try:
         conn.executescript(_TABLES)
         conn.executescript(_FTS)
+        conn.executescript(_FTS_TRIGGERS)
         conn.executescript(_INDEXES)
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
