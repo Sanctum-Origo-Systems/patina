@@ -127,9 +127,93 @@ def done(item_id: str) -> str:
         conn.close()
 
 
+def store_search(query: str, limit: int = 20) -> str:
+    """Full-text search across all ingested messages (Slack, email, calendar)."""
+    import json
+    from datetime import UTC, datetime
+
+    from patina.graph import resolve_entity_id
+
+    conn = _get_conn()
+    try:
+        limit = min(limit, 50)
+        seen_ids: set[str] = set()
+        all_rows: list = []
+
+        fts_rows = conn.execute(
+            """SELECT o.id, o.source, o.timestamp, o.text,
+                      e.name AS sender_name,
+                      o.metadata
+               FROM observations_fts f
+               JOIN observations o ON f.rowid = o.rowid
+               LEFT JOIN entities e ON o.sender_entity_id = e.id
+               WHERE observations_fts MATCH ?
+               ORDER BY rank
+               LIMIT ?""",
+            (query, limit),
+        ).fetchall()
+
+        for row in fts_rows:
+            seen_ids.add(row["id"])
+            all_rows.append(row)
+
+        entity_id = resolve_entity_id(conn, query)
+        if entity_id:
+            sender_limit = max(limit - len(all_rows), 10)
+            sender_rows = conn.execute(
+                """SELECT o.id, o.source, o.timestamp, o.text,
+                          e.name AS sender_name,
+                          o.metadata
+                   FROM observations o
+                   LEFT JOIN entities e ON o.sender_entity_id = e.id
+                   WHERE o.sender_entity_id = ?
+                   ORDER BY o.timestamp DESC
+                   LIMIT ?""",
+                (entity_id, sender_limit),
+            ).fetchall()
+            for row in sender_rows:
+                if row["id"] not in seen_ids:
+                    seen_ids.add(row["id"])
+                    all_rows.append(row)
+
+        if not all_rows:
+            return f"No messages found matching '{query}'."
+
+        lines = [f"**{len(all_rows)} results for '{query}':**\n"]
+        for row in all_rows:
+            try:
+                dt = datetime.fromtimestamp(row["timestamp"], tz=UTC)
+                date_str = dt.strftime("%Y-%m-%d")
+            except Exception:
+                date_str = "unknown date"
+
+            try:
+                meta = json.loads(row["metadata"] or "{}")
+                channel = meta.get("channel_name", "")
+            except Exception:
+                channel = ""
+
+            sender = row["sender_name"] or "unknown"
+            source = row["source"] or ""
+            text = (row["text"] or "")[:200]
+
+            context_parts = [f"[{date_str}]", f"**{sender}**", f"via {source}"]
+            if channel:
+                context_parts.append(f"in #{channel}")
+
+            lines.append(" ".join(context_parts))
+            lines.append(f"> {text}")
+            lines.append("")
+
+        return "\n".join(lines)
+    finally:
+        conn.close()
+
+
 def register(mcp):
     mcp.tool()(catch_up)
     mcp.tool()(priorities)
     mcp.tool()(dismiss)
     mcp.tool()(acknowledge)
     mcp.tool()(done)
+    mcp.tool()(store_search)

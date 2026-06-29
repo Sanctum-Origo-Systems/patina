@@ -109,13 +109,13 @@ def test_insert_claim(db_conn):
 
 class TestNormalizeName:
     def test_last_first_format(self):
-        assert normalize_name("Wang, Rachael") == "rachael wang"
+        assert normalize_name("Chen, Dana") == "dana chen"
 
     def test_email_strips_domain(self):
-        assert normalize_name("racwang@amazon.com") == "racwang"
+        assert normalize_name("dchen@example.com") == "dchen"
 
     def test_simple_name_lowercased(self):
-        assert normalize_name("Rachael Wang") == "rachael wang"
+        assert normalize_name("Dana Chen") == "dana chen"
 
     def test_whitespace_stripped(self):
         assert normalize_name("  Alice  ") == "alice"
@@ -124,7 +124,7 @@ class TestNormalizeName:
         assert normalize_name("") == ""
 
     def test_last_first_with_email(self):
-        assert normalize_name("Wang, Rachael") == "rachael wang"
+        assert normalize_name("Chen, Dana") == "dana chen"
 
 
 class TestResolveEntityId:
@@ -138,15 +138,15 @@ class TestResolveEntityId:
             Entity(
                 id="e1",
                 type="person",
-                name="Rachael Wang",
-                aliases=["racwang", "U00RACHAEL"],
+                name="Dana Chen",
+                aliases=["dchen", "U00DCHEN"],
             ),
         )
-        assert resolve_entity_id(db_conn, "racwang") == "e1"
+        assert resolve_entity_id(db_conn, "dchen") == "e1"
 
     def test_normalized_last_first(self, db_conn):
-        upsert_entity(db_conn, Entity(id="e1", type="person", name="Rachael Wang"))
-        assert resolve_entity_id(db_conn, "Wang, Rachael") == "e1"
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Dana Chen"))
+        assert resolve_entity_id(db_conn, "Chen, Dana") == "e1"
 
     def test_normalized_email(self, db_conn):
         upsert_entity(
@@ -154,11 +154,11 @@ class TestResolveEntityId:
             Entity(
                 id="e1",
                 type="person",
-                name="Rachael Wang",
-                aliases=["racwang"],
+                name="Dana Chen",
+                aliases=["dchen"],
             ),
         )
-        assert resolve_entity_id(db_conn, "racwang@amazon.com") == "e1"
+        assert resolve_entity_id(db_conn, "dchen@example.com") == "e1"
 
     def test_provided_alias_match(self, db_conn):
         upsert_entity(
@@ -199,33 +199,33 @@ class TestUpsertEntityMerge:
             Entity(
                 id="e1",
                 type="person",
-                name="Rachael Wang",
-                aliases=["racwang"],
+                name="Dana Chen",
+                aliases=["dchen"],
             ),
         )
         new_entity = Entity(
             id="e2",
             type="person",
-            name="Rachael Wang",
-            aliases=["U00RACHAEL"],
+            name="Dana Chen",
+            aliases=["U00DCHEN"],
         )
         upsert_entity(db_conn, new_entity)
         assert new_entity.id == "e1"
         assert count_entities(db_conn, "person") == 1
         ent = get_entity(db_conn, "e1")
-        assert "racwang" in ent.aliases
-        assert "U00RACHAEL" in ent.aliases
+        assert "dchen" in ent.aliases
+        assert "U00DCHEN" in ent.aliases
 
     def test_merges_by_normalized_name(self, db_conn):
         upsert_entity(
             db_conn,
-            Entity(id="e1", type="person", name="Rachael Wang"),
+            Entity(id="e1", type="person", name="Dana Chen"),
         )
         new_entity = Entity(
             id="e2",
             type="person",
-            name="Wang, Rachael",
-            aliases=["racwang"],
+            name="Chen, Dana",
+            aliases=["dchen"],
         )
         upsert_entity(db_conn, new_entity)
         assert new_entity.id == "e1"
@@ -262,32 +262,32 @@ class TestUpsertEntityMerge:
 
 class TestResolveEntityIdCrossMatch:
     def test_prefixed_alias_matches_name(self, db_conn):
-        """Entity 'racwang' has alias 'display_name:Rachael Wang'.
-        Resolving 'Rachael Wang' should find it via cross-match."""
+        """Entity 'dchen' has alias 'display_name:Dana Chen'.
+        Resolving 'Dana Chen' should find it via cross-match."""
         db_conn.execute(
             """INSERT INTO entities
                (id, type, name, aliases, metadata, first_seen, last_seen,
                 decay_rate, is_owner)
-               VALUES ('e1', 'person', 'racwang',
-                       '["display_name:Rachael Wang"]', '{}',
+               VALUES ('e1', 'person', 'dchen',
+                       '["display_name:Dana Chen"]', '{}',
                        '2024-01-01', '2024-01-01', 0.02, 0)"""
         )
         db_conn.commit()
-        assert resolve_entity_id(db_conn, "Rachael Wang") == "e1"
+        assert resolve_entity_id(db_conn, "Dana Chen") == "e1"
 
     def test_prefixed_alias_normalized_match(self, db_conn):
-        """'Wang, Rachael' normalizes to 'rachael wang', which matches
-        stripped alias 'display_name:Rachael Wang' -> 'rachael wang'."""
+        """'Chen, Dana' normalizes to 'dana chen', which matches
+        stripped alias 'display_name:Dana Chen' -> 'dana chen'."""
         db_conn.execute(
             """INSERT INTO entities
                (id, type, name, aliases, metadata, first_seen, last_seen,
                 decay_rate, is_owner)
-               VALUES ('e1', 'person', 'racwang',
-                       '["display_name:Rachael Wang"]', '{}',
+               VALUES ('e1', 'person', 'dchen',
+                       '["display_name:Dana Chen"]', '{}',
                        '2024-01-01', '2024-01-01', 0.02, 0)"""
         )
         db_conn.commit()
-        assert resolve_entity_id(db_conn, "Wang, Rachael") == "e1"
+        assert resolve_entity_id(db_conn, "Chen, Dana") == "e1"
 
     def test_outlook_prefixed_alias(self, db_conn):
         db_conn.execute(
@@ -314,25 +314,25 @@ class TestResolveEntityIdCrossMatch:
         assert resolve_entity_id(db_conn, "Bob Jones") is None
 
     def test_upsert_merges_via_cross_match(self, db_conn):
-        """Entity 'racwang' with prefixed alias. Upserting 'Rachael Wang'
+        """Entity 'dchen' with prefixed alias. Upserting 'Dana Chen'
         should merge into it instead of creating a duplicate."""
         db_conn.execute(
             """INSERT INTO entities
                (id, type, name, aliases, metadata, first_seen, last_seen,
                 decay_rate, is_owner)
-               VALUES ('e1', 'person', 'racwang',
-                       '["display_name:Rachael Wang", "U00RACWANG"]',
+               VALUES ('e1', 'person', 'dchen',
+                       '["display_name:Dana Chen", "U00DCHEN2"]',
                        '{}', '2024-01-01', '2024-01-01', 0.02, 0)"""
         )
         db_conn.commit()
         new_ent = Entity(
             id="e2",
             type="person",
-            name="Rachael Wang",
-            aliases=["racwang@corp.com"],
+            name="Dana Chen",
+            aliases=["dchen@corp.com"],
         )
         upsert_entity(db_conn, new_ent)
         assert new_ent.id == "e1"
         assert count_entities(db_conn, "person") == 1
         ent = get_entity(db_conn, "e1")
-        assert "racwang@corp.com" in ent.aliases
+        assert "dchen@corp.com" in ent.aliases

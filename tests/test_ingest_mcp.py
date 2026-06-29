@@ -52,8 +52,8 @@ class MockEmailPort:
             EmailMessage(
                 id="AAMkAGE2YTg5NWI",
                 sender="bob@example.com",
-                subject="Project Alpha SOW Review",
-                text="The SOW is in final review stages.",
+                subject="Project Alpha Contract Review",
+                text="The contract is in final review stages.",
                 timestamp=1781651078.0,
                 recipients=["owner@example.com", "frank@example.com"],
                 conversation_id="AAQkAGE2YTg5NWI_conv",
@@ -73,7 +73,7 @@ class MockCalendarPort:
         return [
             CalendarEvent(
                 id="AAMkCAL001",
-                subject="SOW Feedback Review",
+                subject="Quarterly Review",
                 start=1781600000.0,
                 end=1781601800.0,
                 attendees=["owner@example.com", "bob@example.com"],
@@ -137,7 +137,7 @@ def test_email_creates_observations_with_subject(tmp_path):
 
     conn = connect(get_db_path(home))
     row = conn.execute("SELECT text FROM observations").fetchone()
-    assert "[Subject: Project Alpha SOW Review]" in row[0]
+    assert "[Subject: Project Alpha Contract Review]" in row[0]
     conn.close()
 
 
@@ -149,7 +149,7 @@ def test_calendar_creates_meeting_observations(tmp_path):
 
     conn = connect(get_db_path(home))
     row = conn.execute("SELECT text FROM observations").fetchone()
-    assert "[Meeting: SOW Feedback Review]" in row[0]
+    assert "[Meeting: Quarterly Review]" in row[0]
     assert "frank@example.com" in row[0]
     assert "bob@example.com" in row[0]
     conn.close()
