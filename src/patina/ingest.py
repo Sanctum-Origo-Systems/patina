@@ -151,14 +151,14 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
 def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
     results = []
     for em in emails:
-        text = f"[Subject: {em.subject}] {em.text}"
         results.append(
             ChatMessage(
                 user_id=em.sender,
-                text=text,
+                text=em.text,
                 timestamp=em.timestamp,
                 channel_id=f"email:{em.conversation_id or em.id}",
-                user_name=em.sender,
+                thread_id=em.conversation_id,
+                user_name=em.sender.split("@")[0] if "@" in em.sender else em.sender,
             )
         )
     return results

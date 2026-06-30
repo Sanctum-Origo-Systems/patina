@@ -323,7 +323,7 @@ class TestEmailFromRawConversationGrouped:
             "conversationId": "CONV003",
         }
         email = _email_from_raw(raw)
-        assert email.text == "This is the preview text."
+        assert "This is the preview text." in email.text
 
     def test_timestamp_from_last_delivery_time(self):
         raw = {
@@ -368,7 +368,7 @@ class TestEmailFromRawConversationGrouped:
         email = _email_from_raw(raw)
         assert email.sender == "skim@example.com"
         assert email.subject == "Old Format"
-        assert email.text == "Legacy body."
+        assert "Legacy body." in email.text
 
     def test_empty_senders_falls_through(self):
         raw = {
@@ -420,3 +420,83 @@ class TestSearchSentWrapped:
         adapter.search_sent("test")
         call_args = bridge.call_tool.call_args
         assert call_args[0][1]["folder"] == "sentitems"
+
+
+class TestParticipantIndexing:
+    def test_all_senders_in_text(self):
+        raw = {
+            "conversationId": "CONV001",
+            "topic": "Launch Planning",
+            "senders": ["Martinez, Elena", "Park, David", "Kim, Sonia"],
+            "recipients": ["Taylor, Morgan"],
+            "lastDeliveryTime": "2026-06-30T00:00:00Z",
+            "preview": "Timeline confirmed.",
+        }
+        email = _email_from_raw(raw)
+        assert "Martinez, Elena" in email.text
+        assert "Park, David" in email.text
+        assert "Kim, Sonia" in email.text
+
+    def test_subject_in_text(self):
+        raw = {
+            "topic": "Budget Review Q3",
+            "senders": ["Park, David"],
+            "lastDeliveryTime": "2026-06-30T00:00:00Z",
+            "preview": "See attached.",
+            "conversationId": "CONV002",
+        }
+        email = _email_from_raw(raw)
+        assert "[Subject: Budget Review Q3]" in email.text
+
+    def test_preview_in_text(self):
+        raw = {
+            "topic": "Test",
+            "senders": ["Park, David"],
+            "lastDeliveryTime": "2026-06-30T00:00:00Z",
+            "preview": "The actual preview content here.",
+            "conversationId": "CONV003",
+        }
+        email = _email_from_raw(raw)
+        assert "The actual preview content here." in email.text
+
+    def test_single_sender_as_participant(self):
+        raw = {
+            "topic": "Solo Thread",
+            "senders": ["Kim, Sonia"],
+            "lastDeliveryTime": "2026-06-30T00:00:00Z",
+            "preview": "Just me.",
+            "conversationId": "CONV004",
+        }
+        email = _email_from_raw(raw)
+        assert "[Participants: Kim, Sonia]" in email.text
+
+    def test_no_senders_falls_back_to_from(self):
+        raw = {
+            "from": {"email": "legacy@example.com"},
+            "subject": "Old Email",
+            "receivedDateTime": "2026-06-29T10:00:00Z",
+            "bodyPreview": "Legacy content.",
+            "id": "AAMk999",
+        }
+        email = _email_from_raw(raw)
+        assert "legacy@example.com" in email.text
+
+    def test_secondary_sender_searchable(self):
+        """The key scenario: last sender is auto-reply, but real
+        sender is a different participant deeper in the thread."""
+        raw = {
+            "conversationId": "CONV005",
+            "topic": "Conference Planning",
+            "senders": [
+                "Rivera, Lucia",
+                "Nguyen, Marcus",
+                "Chen, Wei",
+            ],
+            "recipients": ["Taylor, Morgan"],
+            "lastDeliveryTime": "2026-06-30T12:00:00Z",
+            "preview": "Auto-reply: I am out of office.",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == "Rivera, Lucia"
+        assert "Nguyen, Marcus" in email.text
+        assert "Chen, Wei" in email.text

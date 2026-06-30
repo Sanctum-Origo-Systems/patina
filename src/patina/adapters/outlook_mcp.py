@@ -104,11 +104,16 @@ def _email_from_raw(raw: dict) -> EmailMessage:
     received = raw.get("lastDeliveryTime", raw.get("receivedDateTime", ""))
     timestamp = _parse_outlook_datetime(received) if received else 0.0
 
+    subject = raw.get("topic", raw.get("subject", ""))
+    preview = raw.get("preview", raw.get("bodyPreview", raw.get("body", "")))
+    participants_text = ", ".join(senders) if senders else sender
+    text = f"[Subject: {subject}] [Participants: {participants_text}]\n{preview}"
+
     return EmailMessage(
         id=raw.get("conversationId", raw.get("id", "")),
         sender=sender,
-        subject=raw.get("topic", raw.get("subject", "")),
-        text=raw.get("preview", raw.get("bodyPreview", raw.get("body", ""))),
+        subject=subject,
+        text=text,
         timestamp=timestamp,
         recipients=recipients,
         conversation_id=raw.get("conversationId"),
