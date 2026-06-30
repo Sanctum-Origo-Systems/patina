@@ -202,6 +202,10 @@ def ingest_live(
             messages.extend(port.list_dm_messages(since))
             messages.extend(port.list_mentions(since))
 
+            watched = conn.execute("SELECT channel_id FROM watched_channels").fetchall()
+            for ch in watched:
+                messages.extend(port.list_channel_messages(ch["channel_id"], since))
+
         if isinstance(port, EmailPort):
             emails = port.list_inbox(since)
             messages.extend(_emails_to_chat_messages(emails))
