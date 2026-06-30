@@ -17,7 +17,9 @@ def find_contradictions_tier1(conn: sqlite3.Connection) -> list[dict]:
                AND c1.predicate = c2.predicate
                AND c1.object != c2.object
                AND c1.id < c2.id
-           LEFT JOIN entities e ON c1.subject_id = e.id"""
+           LEFT JOIN entities e ON c1.subject_id = e.id
+           WHERE C1.predicate NOT LIKE 'behavioral:%'
+           LIMIT 100"""
     ).fetchall()
 
     return [
