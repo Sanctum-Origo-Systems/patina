@@ -23,32 +23,30 @@ class OutlookMcpAdapter:
 
     def list_inbox(self, since: float) -> list[EmailMessage]:
         try:
-            result = self._bridge.call_tool("email_inbox")
+            result = self._bridge.call_tool("email_inbox", {"limit": 50, "unreadOnly": False})
         except Exception:
             return []
         try:
             raw = parse_outlook_content(result)
         except McpClientError:
             return []
-        if not isinstance(raw, list):
-            raw = [raw] if isinstance(raw, dict) else []
-        emails = [_email_from_raw(item) for item in raw if isinstance(item, dict)]
+
+        email_list = _unwrap_email_list(raw)
+        emails = [_email_from_raw(item) for item in email_list if isinstance(item, dict)]
         return [e for e in emails if e.timestamp >= since]
 
     def search_sent(self, query: str) -> list[EmailMessage]:
         try:
-            result = self._bridge.call_tool(
-                "email_search", {"query": query, "folder": "Sent Items"}
-            )
+            result = self._bridge.call_tool("email_search", {"query": query, "folder": "sentitems"})
         except Exception:
             return []
         try:
             raw = parse_outlook_content(result)
         except McpClientError:
             return []
-        if not isinstance(raw, list):
-            raw = [raw] if isinstance(raw, dict) else []
-        return [_email_from_raw(item) for item in raw if isinstance(item, dict)]
+
+        email_list = _unwrap_email_list(raw)
+        return [_email_from_raw(item) for item in email_list if isinstance(item, dict)]
 
     def list_events(self, start: datetime, end: datetime) -> list[CalendarEvent]:
         start_str = start.strftime("%m-%d-%Y")
@@ -76,26 +74,41 @@ def _parse_outlook_datetime(dt_str: str) -> float:
         return 0.0
 
 
+def _unwrap_email_list(raw) -> list:
+    if isinstance(raw, dict):
+        content = raw.get("content", raw)
+        return content.get("emails", content.get("results", []))
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
 def _email_from_raw(raw: dict) -> EmailMessage:
-    from_raw = raw.get("from", {})
-    if isinstance(from_raw, dict):
-        sender = from_raw.get("email", from_raw.get("name", ""))
-    else:
-        sender = str(from_raw)
+    senders = raw.get("senders", [])
+    sender = senders[0] if senders else ""
+
+    if not sender:
+        from_raw = raw.get("from", {})
+        if isinstance(from_raw, dict):
+            sender = from_raw.get("email", from_raw.get("name", ""))
+        elif from_raw:
+            sender = str(from_raw)
 
     recipients = []
-    for r in raw.get("toRecipients", []):
+    for r in raw.get("recipients", raw.get("toRecipients", [])):
         if isinstance(r, dict):
             recipients.append(r.get("email", r.get("name", "")))
+        elif isinstance(r, str):
+            recipients.append(r)
 
-    received = raw.get("receivedDateTime", "")
+    received = raw.get("lastDeliveryTime", raw.get("receivedDateTime", ""))
     timestamp = _parse_outlook_datetime(received) if received else 0.0
 
     return EmailMessage(
-        id=raw.get("id", ""),
+        id=raw.get("conversationId", raw.get("id", "")),
         sender=sender,
-        subject=raw.get("subject", ""),
-        text=raw.get("bodyPreview", raw.get("body", "")),
+        subject=raw.get("topic", raw.get("subject", "")),
+        text=raw.get("preview", raw.get("bodyPreview", raw.get("body", ""))),
         timestamp=timestamp,
         recipients=recipients,
         conversation_id=raw.get("conversationId"),
