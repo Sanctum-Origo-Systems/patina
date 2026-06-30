@@ -937,6 +937,8 @@ def chat_cmd(
         typer.echo("Welcome to Patina. Type /quit to exit.")
 
     async def _chat_loop():
+        import readline  # noqa: F401 — enables arrow-key history for input()
+
         from claude_agent_sdk import ResultMessage
 
         try:
