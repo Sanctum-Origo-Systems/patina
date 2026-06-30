@@ -45,7 +45,7 @@ def journal_search(query: str, limit: int = 10) -> str:
             return f"No journal entries matching '{query}'."
         lines = []
         for r in rows:
-            preview = r["body"][:100]
+            preview = r["body"]
             lines.append(f"- [{r['date']}] {preview}")
         return "\n".join(lines)
     finally:
