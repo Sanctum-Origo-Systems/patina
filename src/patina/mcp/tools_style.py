@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 
-from patina.llm import MockLLM
 from patina.store import connect, get_db_path, init_db
-from patina.style.draft import generate_draft, load_style_profile
+from patina.style.draft import load_style_profile
 
 
 def _get_conn(home=None):
@@ -40,20 +39,47 @@ def style_show(entity_name: str) -> str:
 
 
 def draft_reply(to: str, context: str) -> str:
-    """Draft a reply to someone using their communication style profile."""
+    """Return style context for drafting a reply — the calling agent generates the actual text."""
     conn = _get_conn()
     try:
         row = _find_entity(conn, to)
         if not row:
             return f"No entity found matching '{to}'"
-        llm = MockLLM()
-        text = generate_draft(
-            context=context,
-            recipient_entity_id=row["id"],
-            llm=llm,
-            conn=conn,
+
+        recipient_profile = conn.execute(
+            "SELECT profile FROM style_profiles WHERE entity_id = ?",
+            (row["id"],),
+        ).fetchone()
+        profile_text = (
+            recipient_profile["profile"] if recipient_profile else "no style profile available"
         )
-        return f"**Draft to {row['name']}:**\n\n{text}"
+
+        owner_id = None
+        try:
+            from patina.owner import get_owner_entity_id
+
+            owner_id = get_owner_entity_id(conn)
+        except Exception:
+            pass
+
+        user_profile = None
+        if owner_id:
+            user_row = conn.execute(
+                "SELECT profile FROM style_profiles WHERE entity_id = ?",
+                (owner_id,),
+            ).fetchone()
+            user_profile = user_row["profile"] if user_row else None
+
+        lines = [
+            f"**Draft a reply to {row['name']}.**\n",
+            f"Context: {context}\n",
+            f"Their communication style: {profile_text}",
+        ]
+        if user_profile:
+            lines.append(f"Your communication style: {user_profile}")
+        lines.append("\nMatch their formality, length, and tone. Be concise.")
+
+        return "\n".join(lines)
     finally:
         conn.close()
 
