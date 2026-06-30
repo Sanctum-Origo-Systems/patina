@@ -53,7 +53,9 @@ class MockEmailPort:
                 id="AAMkAGE2YTg5NWI",
                 sender="bob@example.com",
                 subject="Project Alpha Contract Review",
-                text="The contract is in final review stages.",
+                text="[Subject: Project Alpha Contract Review] "
+                "[Participants: bob@example.com]\n"
+                "The contract is in final review stages.",
                 timestamp=1781651078.0,
                 recipients=["owner@example.com", "frank@example.com"],
                 conversation_id="AAQkAGE2YTg5NWI_conv",
@@ -93,7 +95,7 @@ class MockDualPort:
                 id="AAMk001",
                 sender="alice@example.com",
                 subject="Budget update",
-                text="Approved.",
+                text="[Subject: Budget update] [Participants: alice@example.com]\nApproved.",
                 timestamp=1781700000.0,
                 recipients=["owner@example.com"],
             ),
