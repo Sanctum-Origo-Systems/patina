@@ -260,7 +260,7 @@ def channel_watch(
     channel_id: str | None = None,
     reason: str | None = None,
 ) -> str:
-    """Watch a message source (Slack channel, email folder, etc.) — pull its messages on next ingest."""
+    """Watch a message source (channel, folder, etc.) — pull its messages on next ingest."""
     from datetime import UTC, datetime
 
     conn = _get_conn()
