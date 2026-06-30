@@ -210,6 +210,106 @@ def store_search(query: str, limit: int = 20) -> str:
         conn.close()
 
 
+def sender_watch(alias: str, reason: str | None = None) -> str:
+    """Watch a person — pull all their messages on next ingest, not just DMs/mentions."""
+    from datetime import UTC, datetime
+
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO watched_senders"
+            " (user_id, alias, reason, added_at)"
+            " VALUES (?, ?, ?, ?)",
+            (alias, alias, reason, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+        return f"Now watching {alias}."
+    finally:
+        conn.close()
+
+
+def sender_unwatch(alias: str) -> str:
+    """Stop watching a person."""
+    conn = _get_conn()
+    try:
+        conn.execute("DELETE FROM watched_senders WHERE alias = ?", (alias,))
+        conn.commit()
+        return f"Stopped watching {alias}."
+    finally:
+        conn.close()
+
+
+def sender_list_watched() -> str:
+    """List all watched people."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute("SELECT alias, reason, added_at FROM watched_senders").fetchall()
+        if not rows:
+            return "No watched senders."
+        lines = [
+            f"- {r['alias']}: {r['reason'] or 'no reason'} (since {r['added_at'][:10]})"
+            for r in rows
+        ]
+        return "\n".join(lines)
+    finally:
+        conn.close()
+
+
+def channel_watch(
+    channel_name: str,
+    channel_id: str | None = None,
+    reason: str | None = None,
+) -> str:
+    """Watch a message source (Slack channel, email folder, etc.) — pull its messages on next ingest."""
+    from datetime import UTC, datetime
+
+    conn = _get_conn()
+    try:
+        resolved_id = channel_id or f"unresolved:{channel_name}"
+        conn.execute(
+            "INSERT OR REPLACE INTO watched_channels"
+            " (channel_id, channel_name, reason, added_at)"
+            " VALUES (?, ?, ?, ?)",
+            (resolved_id, channel_name, reason, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+        return f"Now watching #{channel_name}."
+    finally:
+        conn.close()
+
+
+def channel_unwatch(channel_name: str) -> str:
+    """Stop watching a message source."""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "DELETE FROM watched_channels WHERE channel_name = ?",
+            (channel_name,),
+        )
+        conn.commit()
+        return f"Stopped watching #{channel_name}."
+    finally:
+        conn.close()
+
+
+def channel_list_watched() -> str:
+    """List all watched message sources (channels, folders, etc.)."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT channel_name, reason, added_at FROM watched_channels"
+        ).fetchall()
+        if not rows:
+            return "No watched channels."
+        lines = [
+            f"- #{r['channel_name']}: {r['reason'] or 'no reason'} (since {r['added_at'][:10]})"
+            for r in rows
+        ]
+        return "\n".join(lines)
+    finally:
+        conn.close()
+
+
 def register(mcp):
     mcp.tool()(catch_up)
     mcp.tool()(priorities)
@@ -217,3 +317,9 @@ def register(mcp):
     mcp.tool()(acknowledge)
     mcp.tool()(done)
     mcp.tool()(store_search)
+    mcp.tool()(sender_watch)
+    mcp.tool()(sender_unwatch)
+    mcp.tool()(sender_list_watched)
+    mcp.tool()(channel_watch)
+    mcp.tool()(channel_unwatch)
+    mcp.tool()(channel_list_watched)

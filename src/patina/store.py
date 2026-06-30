@@ -155,6 +155,22 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL PRIMARY KEY
 );
+
+CREATE TABLE IF NOT EXISTS watched_senders (
+    user_id TEXT PRIMARY KEY,
+    alias TEXT NOT NULL,
+    display_name TEXT,
+    reason TEXT,
+    added_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watched_channels (
+    channel_id TEXT PRIMARY KEY,
+    channel_name TEXT NOT NULL,
+    reason TEXT,
+    priority TEXT DEFAULT 'normal',
+    added_at TEXT NOT NULL
+);
 """
 
 _FTS = """
