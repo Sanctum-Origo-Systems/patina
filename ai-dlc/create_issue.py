@@ -147,7 +147,7 @@ def suggest_fields(summary: str, issue_type: str) -> dict | None:
             ["claude", "-p", "--model", "sonnet", prompt],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=90,
         )
     except subprocess.TimeoutExpired:
         return None
@@ -162,6 +162,213 @@ def suggest_fields(summary: str, issue_type: str) -> dict | None:
         return json.loads(text)
     except (json.JSONDecodeError, IndexError):
         return None
+
+
+SPEC_TO_ISSUE_PROMPT = """\
+Convert this spec enhancement into structured GitHub issue fields.
+
+Enhancement spec:
+{spec_text}
+
+Issue type: feature
+
+Respond with JSON only:
+{{
+  "title": "short title under 70 chars",
+  "files": ["file1.py", "file2.py"],
+  "expected_behavior": "specific, testable description of correct behavior",
+  "acceptance_criteria": ["criterion 1", "criterion 2"],
+  "deps": ""
+}}
+
+Rules:
+- Title should be concise and action-oriented.
+- Reference files and function names, never line numbers.
+- Expected behavior must be specific and testable.
+- Acceptance criteria must be verifiable by running a test or command.
+- Do not include generic criteria like "tests pass" or "lint clean" — those are added automatically.
+- deps should contain "Depends on: #N" if the spec mentions dependencies, else empty string.
+"""
+
+
+def parse_spec_enhancements(spec_path: str) -> list[dict]:
+    """Parse a spec markdown file into enhancement sections."""
+    text = Path(spec_path).read_text()
+    enhancements = []
+    current_title = None
+    current_lines = []
+
+    for line in text.split("\n"):
+        match = re.match(r"^## Enhancement \d+:\s*(.+)", line)
+        if match:
+            if current_title is not None:
+                enhancements.append(
+                    {
+                        "title": current_title,
+                        "body": "\n".join(current_lines).strip(),
+                    }
+                )
+            current_title = match.group(1).strip()
+            current_lines = []
+        elif current_title is not None:
+            if re.match(r"^## (Enhancement \d+|Summary|Critical Files)", line):
+                enhancements.append(
+                    {
+                        "title": current_title,
+                        "body": "\n".join(current_lines).strip(),
+                    }
+                )
+                current_title = None
+                current_lines = []
+            else:
+                current_lines.append(line)
+
+    if current_title is not None:
+        enhancements.append(
+            {
+                "title": current_title,
+                "body": "\n".join(current_lines).strip(),
+            }
+        )
+
+    return enhancements
+
+
+def spec_to_issue_fields(enhancement: dict) -> dict | None:
+    """Use Claude to convert a spec enhancement into structured issue fields."""
+    if not shutil.which("claude"):
+        return None
+
+    prompt = SPEC_TO_ISSUE_PROMPT.format(spec_text=enhancement["body"][:4000])
+
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", "sonnet", prompt],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    text = result.stdout.strip()
+    if "```" in text:
+        text = text.split("```")[1].replace("json", "").strip()
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, IndexError):
+        return None
+
+
+def extract_files_from_spec(body: str) -> list[str]:
+    """Extract file paths mentioned in **File:** or **Files:** lines."""
+    files = []
+    for match in re.finditer(r"\*\*Files?:\*\*\s*(.+)", body):
+        line = match.group(1)
+        for part in re.findall(r"`([^`]+)`", line):
+            part = part.strip()
+            if part:
+                files.append(part)
+        if not files:
+            for part in line.split(" and "):
+                part = part.strip().strip("`")
+                if part:
+                    files.append(part)
+    return files
+
+
+def extract_problem_from_spec(body: str) -> str:
+    """Extract the **Problem:** text from the spec body."""
+    match = re.search(r"\*\*Problem:\*\*\s*(.+?)(?:\n\n|\n\*\*)", body, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def create_issues_from_spec(
+    spec_path: str,
+    skip: list[int],
+    dry_run: bool = False,
+) -> None:
+    """Parse a spec file and create GitHub issues for each enhancement."""
+    enhancements = parse_spec_enhancements(spec_path)
+    if not enhancements:
+        print("No enhancements found in spec.")
+        return
+
+    print(f"Found {len(enhancements)} enhancement(s) in {spec_path}\n")
+
+    for i, enh in enumerate(enhancements, 1):
+        if i in skip:
+            print(f"  Skipping Enhancement {i}: {enh['title']}")
+            continue
+
+        print(f"  Enhancement {i}: {enh['title']}")
+
+        files = extract_files_from_spec(enh["body"])
+        problem = extract_problem_from_spec(enh["body"])
+
+        print("    Generating structured fields via Claude...")
+        fields = spec_to_issue_fields(enh)
+
+        if fields:
+            title = fields.get("title", enh["title"])
+            files_str = "\n".join(fields.get("files") or files)
+            expected = fields.get("expected_behavior", "")
+            extra_criteria = "\n".join(fields.get("acceptance_criteria") or [])
+            deps = fields.get("deps", "")
+        else:
+            print("    Claude unavailable — using spec text directly.")
+            title = enh["title"]
+            files_str = "\n".join(files)
+            expected = problem
+            extra_criteria = ""
+            deps = ""
+
+        body = build_issue_body(
+            summary=problem or title,
+            issue_type="feature",
+            files=files_str,
+            current_behavior="",
+            expected=expected,
+            extra_criteria=extra_criteria,
+            hints=f"See {spec_path} Enhancement {i} for the full spec.",
+            deps=deps,
+            context=f"Source spec: {spec_path}",
+        )
+
+        if dry_run:
+            print(f"\n--- Enhancement {i}: {title} ---\n")
+            print(f"**Title:** {title}\n")
+            print(body)
+            print("\n**Implementation Detail comment would contain the full spec section.**\n")
+            print("---")
+            continue
+
+        result = subprocess.run(
+            ["gh", "issue", "create", "--repo", REPO, "--title", title, "--body", body],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"    Failed to create issue: {result.stderr.strip()}")
+            continue
+
+        issue_url = result.stdout.strip()
+        issue_number = issue_url.rstrip("/").split("/")[-1]
+        print(f"    Created: {issue_url}")
+
+        detail_comment = f"**Implementation Detail:**\n\n{enh['body']}"
+        subprocess.run(
+            ["gh", "issue", "comment", issue_number, "--repo", REPO, "--body", detail_comment],
+            capture_output=True,
+        )
+        print("    Posted implementation detail comment.")
+
+    print("\nDone.")
 
 
 def parse_issue_sections(body: str) -> dict[str, str]:
@@ -313,7 +520,7 @@ def update_issue(number: int, title: str, body: str):
     print(f"Issue #{number} updated. 'rejected' label removed.")
 
 
-def build_issue(issue_type: str | None = None) -> tuple[str, str]:
+def build_issue(issue_type: str | None = None, suggest: bool = True) -> tuple[str, str]:
     """Interactively build the issue. Returns (title, body)."""
     summary = prompt_required("Summary")
 
@@ -324,8 +531,10 @@ def build_issue(issue_type: str | None = None) -> tuple[str, str]:
                 break
             print(f"  Must be one of: {', '.join(sorted(VALID_TYPES))}")
 
-    print("\nGenerating suggestions from codebase...")
-    suggestions = suggest_fields(summary, issue_type)
+    suggestions = None
+    if suggest:
+        print("\nGenerating suggestions from codebase...")
+        suggestions = suggest_fields(summary, issue_type)
 
     if suggestions:
         print("Suggestions ready. Press Enter to accept each, or 'e' to edit.\n")
@@ -361,10 +570,11 @@ def build_issue(issue_type: str | None = None) -> tuple[str, str]:
             multiline=True,
         )
     else:
-        if shutil.which("claude"):
-            print("Could not generate suggestions. Falling back to manual entry.\n")
-        else:
-            print("claude CLI not found. Using manual entry.\n")
+        if suggest:
+            if shutil.which("claude"):
+                print("Could not generate suggestions. Falling back to manual entry.\n")
+            else:
+                print("claude CLI not found. Using manual entry.\n")
 
         files = prompt_multiline("Files to Modify", "one per line, e.g. src/patina/store.py")
 
@@ -424,9 +634,28 @@ def main():
         default=None,
         help="Edit an existing issue (e.g. fix a rejected issue)",
     )
+    parser.add_argument(
+        "--no-suggest",
+        action="store_true",
+        help="Skip Claude-powered field suggestions",
+    )
+    parser.add_argument(
+        "--from-spec",
+        metavar="PATH",
+        default=None,
+        help="Create issues from a spec markdown file (one per ## Enhancement section)",
+    )
+    parser.add_argument(
+        "--skip",
+        type=lambda s: [int(x) for x in s.split(",")],
+        default=[],
+        help="Enhancement numbers to skip when using --from-spec (e.g. --skip 1,2)",
+    )
     args = parser.parse_args()
 
-    if args.edit:
+    if args.from_spec:
+        create_issues_from_spec(args.from_spec, skip=args.skip, dry_run=args.dry_run)
+    elif args.edit:
         title, body = edit_issue(args.edit)
         if args.dry_run:
             print("\n--- Updated Issue Markdown ---\n")
@@ -435,7 +664,7 @@ def main():
             return
         update_issue(args.edit, title, body)
     else:
-        title, body = build_issue(issue_type=args.type)
+        title, body = build_issue(issue_type=args.type, suggest=not args.no_suggest)
         if args.dry_run:
             print("\n--- Issue Markdown ---\n")
             print(f"**Title:** {title}\n")

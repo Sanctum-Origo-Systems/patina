@@ -178,12 +178,15 @@ def evaluate_issue(issue: dict) -> dict:
         + f"\n\nIssue #{issue['number']}: {issue['title']}\n\n"
         + (issue.get("body") or "")
     )
-    result = subprocess.run(
-        ["claude", "-p", "--model", "sonnet", prompt],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", "sonnet", prompt],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        return {"verdict": "rejected", "reason": "Triage timed out — issue body may be too large"}
     return parse_triage_response(result.stdout)
 
 
@@ -205,12 +208,15 @@ def discover_files(issue: dict) -> list[dict]:
         body=issue["body"] or "",
     )
 
-    result = subprocess.run(
-        ["claude", "-p", "--model", "sonnet", prompt],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--model", "sonnet", prompt],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        return []
 
     files = parse_file_discovery_response(result.stdout)
     return validate_discovered_files(files, REPO_DIR)
