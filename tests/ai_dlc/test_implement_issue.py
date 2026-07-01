@@ -95,6 +95,22 @@ def test_build_pr_body_includes_closes():
     assert "Automated implementation by Patina AI-DLC" in body
 
 
+def test_build_pr_body_includes_stats():
+    issue = {"number": 42, "title": "Add flag"}
+    body = build_pr_body(issue, attempts=2, claude_calls=3, duration=120.5)
+    assert "## AI-DLC Run Stats" in body
+    assert "Attempts: 2/" in body
+    assert "Claude calls: 3" in body
+    assert "Duration: 120s" in body
+    assert "Estimated cost: ~$" in body
+
+
+def test_build_pr_body_no_stats_when_zero_calls():
+    issue = {"number": 42, "title": "Add flag"}
+    body = build_pr_body(issue)
+    assert "AI-DLC Run Stats" not in body
+
+
 # --- Pure function tests: collect_verification_errors ---
 
 
