@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ REPO = "Sanctum-Origo-Systems/patina"
 REPO_DIR = Path(__file__).resolve().parent.parent
 LOG_FILE = REPO_DIR / "ai-dlc" / "run_history.jsonl"
 TRIAGE_COST_PER_CALL = 0.03
+TRIAGE_MODEL = os.environ.get("PATINA_AIDLC_TRIAGE_MODEL", "sonnet")
 
 TRIAGE_LABELS = {
     "ready",
@@ -198,7 +200,7 @@ def evaluate_issue(issue: dict) -> dict:
     )
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet", prompt],
+            ["claude", "-p", "--model", TRIAGE_MODEL, prompt],
             capture_output=True,
             text=True,
             timeout=90,
@@ -228,7 +230,7 @@ def discover_files(issue: dict) -> list[dict]:
 
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet", prompt],
+            ["claude", "-p", "--model", TRIAGE_MODEL, prompt],
             capture_output=True,
             text=True,
             timeout=90,

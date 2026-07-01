@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 
@@ -11,6 +12,7 @@ from implement_issue import (
     collect_verification_errors,
     create_branch,
     detect_issue_type,
+    implement,
     implement_single_issue,
     log_run,
     parse_dependency_numbers,
@@ -743,3 +745,84 @@ def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "No more ready issues." in out
     assert "Implemented 0 issue(s) this run." in out
+
+
+# --- implement() env var tests ---
+
+
+def test_implement_uses_default_model_and_timeout(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["timeout"] = kwargs.get("timeout")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue, "IMPLEMENT_MODEL", "opus")
+    monkeypatch.setattr(implement_issue, "IMPLEMENT_TIMEOUT", 900)
+    monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "prompt")
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    implement({"number": 1, "title": "Test", "body": ""})
+
+    assert "--model" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "opus"
+    assert captured["timeout"] == 900
+
+
+def test_implement_uses_env_model(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue, "IMPLEMENT_MODEL", "haiku")
+    monkeypatch.setattr(implement_issue, "IMPLEMENT_TIMEOUT", 900)
+    monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "prompt")
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    implement({"number": 1, "title": "Test", "body": ""})
+
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "haiku"
+
+
+def test_implement_uses_env_timeout(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue, "IMPLEMENT_MODEL", "opus")
+    monkeypatch.setattr(implement_issue, "IMPLEMENT_TIMEOUT", 1800)
+    monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "prompt")
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    implement({"number": 1, "title": "Test", "body": ""})
+
+    assert captured["timeout"] == 1800
+
+
+def test_implement_model_default_from_env(monkeypatch):
+    monkeypatch.delenv("PATINA_AIDLC_IMPL_MODEL", raising=False)
+    importlib.reload(implement_issue)
+    assert implement_issue.IMPLEMENT_MODEL == "opus"
+
+
+def test_implement_timeout_default_from_env(monkeypatch):
+    monkeypatch.delenv("PATINA_AIDLC_TIMEOUT", raising=False)
+    importlib.reload(implement_issue)
+    assert implement_issue.IMPLEMENT_TIMEOUT == 900
+
+
+def test_implement_model_override_from_env(monkeypatch):
+    monkeypatch.setenv("PATINA_AIDLC_IMPL_MODEL", "sonnet")
+    importlib.reload(implement_issue)
+    assert implement_issue.IMPLEMENT_MODEL == "sonnet"
+
+
+def test_implement_timeout_override_from_env(monkeypatch):
+    monkeypatch.setenv("PATINA_AIDLC_TIMEOUT", "1800")
+    importlib.reload(implement_issue)
+    assert implement_issue.IMPLEMENT_TIMEOUT == 1800

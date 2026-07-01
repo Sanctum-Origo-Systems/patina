@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 
 import triage_issues
@@ -303,3 +304,57 @@ def test_log_run_triage_appends_multiple_entries(tmp_path, monkeypatch):
     assert len(lines) == 2
     assert json.loads(lines[0])["attempts"] == 2
     assert json.loads(lines[1])["attempts"] == 5
+
+
+# --- TRIAGE_MODEL env var tests ---
+
+
+def test_evaluate_issue_uses_triage_model(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0, "stdout": '{"verdict":"ready"}'})()
+
+    monkeypatch.setattr(triage_issues, "TRIAGE_MODEL", "opus")
+    monkeypatch.setattr(triage_issues.subprocess, "run", fake_run)
+
+    triage_issues.evaluate_issue({"number": 1, "title": "T", "body": "B"})
+
+    assert "--model" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "opus"
+
+
+def test_discover_files_uses_triage_model(monkeypatch, tmp_path):
+    captured = {}
+    call_count = [0]
+
+    def fake_run(cmd, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # first call is `find` for tree
+            return type("R", (), {"returncode": 0, "stdout": ""})()
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0, "stdout": '{"files_to_modify": []}'})()
+
+    monkeypatch.setattr(triage_issues, "TRIAGE_MODEL", "haiku")
+    monkeypatch.setattr(triage_issues.subprocess, "run", fake_run)
+    monkeypatch.setattr(triage_issues, "REPO_DIR", tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# CLAUDE")
+
+    triage_issues.discover_files({"number": 1, "title": "T", "body": "B"})
+
+    assert "--model" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "haiku"
+
+
+def test_triage_model_default_from_env(monkeypatch):
+    monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
+    importlib.reload(triage_issues)
+    assert triage_issues.TRIAGE_MODEL == "sonnet"
+
+
+def test_triage_model_override_from_env(monkeypatch):
+    monkeypatch.setenv("PATINA_AIDLC_TRIAGE_MODEL", "opus")
+    importlib.reload(triage_issues)
+    assert triage_issues.TRIAGE_MODEL == "opus"

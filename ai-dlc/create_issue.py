@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ from pathlib import Path
 
 REPO = "Sanctum-Origo-Systems/patina"
 REPO_DIR = Path(__file__).resolve().parent.parent
+TRIAGE_MODEL = os.environ.get("PATINA_AIDLC_TRIAGE_MODEL", "sonnet")
 
 DEFAULT_ACCEPTANCE = [
     "New unit tests pass",
@@ -144,7 +146,7 @@ def suggest_fields(summary: str, issue_type: str) -> dict | None:
 
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet", prompt],
+            ["claude", "-p", "--model", TRIAGE_MODEL, prompt],
             capture_output=True,
             text=True,
             timeout=90,
@@ -243,7 +245,7 @@ def spec_to_issue_fields(enhancement: dict) -> dict | None:
 
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet", prompt],
+            ["claude", "-p", "--model", TRIAGE_MODEL, prompt],
             capture_output=True,
             text=True,
             timeout=90,
