@@ -43,9 +43,14 @@ def detect_issue_type(body: str) -> str:
     return "feat"
 
 
-def build_pr_body(issue: dict) -> str:
+def build_pr_body(
+    issue: dict,
+    attempts: int = 0,
+    claude_calls: int = 0,
+    duration: float = 0,
+) -> str:
     """Build the PR description markdown."""
-    return (
+    body = (
         f"Closes #{issue['number']}\n\n"
         f"## Summary\n"
         f"{issue['title']}\n\n"
@@ -53,8 +58,18 @@ def build_pr_body(issue: dict) -> str:
         f"- `uv run pytest` — all tests pass\n"
         f"- `uv run pytest eval/deterministic/` — eval tests pass\n"
         f"- `uv run ruff check && uv run ruff format --check` — clean\n\n"
-        f"Automated implementation by Patina AI-DLC."
     )
+    if claude_calls > 0:
+        cost = claude_calls * IMPL_COST_PER_CALL
+        body += (
+            f"## AI-DLC Run Stats\n"
+            f"- Attempts: {attempts}/{MAX_RETRIES}\n"
+            f"- Claude calls: {claude_calls}\n"
+            f"- Duration: {duration:.0f}s\n"
+            f"- Estimated cost: ~${cost:.2f}\n\n"
+        )
+    body += "Automated implementation by Patina AI-DLC."
+    return body
 
 
 def collect_verification_errors(
@@ -316,11 +331,17 @@ def cleanup_branch(branch: str):
     )
 
 
-def create_pr(issue: dict, branch: str):
+def create_pr(
+    issue: dict,
+    branch: str,
+    attempts: int = 0,
+    claude_calls: int = 0,
+    duration: float = 0,
+):
     """Create PR with conventional format."""
     issue_type = detect_issue_type(issue.get("body", ""))
     title = f"{issue_type}: {issue['title'][:60]} (#{issue['number']})"
-    body = build_pr_body(issue)
+    body = build_pr_body(issue, attempts=attempts, claude_calls=claude_calls, duration=duration)
     subprocess.run(
         [
             "gh",
@@ -442,7 +463,14 @@ def main():
             return
 
         subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
-        create_pr(issue, branch)
+        elapsed = time.time() - start_time
+        create_pr(
+            issue,
+            branch,
+            attempts=final_attempt,
+            claude_calls=claude_calls,
+            duration=elapsed,
+        )
         label_in_review(issue["number"])
         print(f"  PR created for #{issue['number']}.")
 
