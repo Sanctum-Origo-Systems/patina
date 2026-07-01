@@ -11,3 +11,5 @@ config.yaml
 logs/
 docs/
 fixtures/**/*.zip
+
+.claude/scheduled_tasks.lock
