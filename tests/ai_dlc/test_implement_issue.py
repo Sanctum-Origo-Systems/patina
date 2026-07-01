@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 import implement_issue
@@ -9,6 +10,7 @@ from implement_issue import (
     build_pr_body,
     collect_verification_errors,
     detect_issue_type,
+    log_run,
     parse_dependency_numbers,
     release_lock,
 )
@@ -305,3 +307,52 @@ def test_dependencies_met_one_open(monkeypatch):
 def test_dependencies_met_no_deps():
     issue = {"body": "No deps here"}
     assert implement_issue.dependencies_met(issue) is True
+
+
+# --- log_run tests ---
+
+
+def test_log_run_writes_json_entry(tmp_path, monkeypatch):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    log_run(17, True, 2, 120.0, 5.00)
+
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["issue"] == 17
+    assert entry["success"] is True
+    assert entry["attempts"] == 2
+    assert entry["duration_seconds"] == 120
+    assert entry["estimated_cost"] == 5.00
+    assert "timestamp" in entry
+
+
+def test_log_run_appends_multiple_entries(tmp_path, monkeypatch):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    log_run(10, True, 1, 60.0, 2.50)
+    log_run(11, False, 3, 300.0, 7.50)
+
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["issue"] == 10
+    assert json.loads(lines[1])["issue"] == 11
+
+
+def test_log_run_rounds_duration(tmp_path, monkeypatch):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    log_run(1, True, 1, 99.7, 2.50)
+
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["duration_seconds"] == 100
+
+
+def test_log_run_rounds_cost(tmp_path, monkeypatch):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    log_run(1, True, 1, 10.0, 2.555)
+
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["estimated_cost"] == 2.56
