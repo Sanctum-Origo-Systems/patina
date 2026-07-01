@@ -12,6 +12,7 @@ class AgentConfig:
     provider: str = "anthropic"
     model: str | None = None
     soul_path: Path = field(default_factory=lambda: DEFAULT_HOME / "SOUL.md")
+    profile_path: Path = field(default_factory=lambda: DEFAULT_HOME / "PROFILE.md")
     mcp_server_command: str = "patina-mcp"
     mcp_server_args: list[str] = field(default_factory=list)
     session_ttl_seconds: int = 300
@@ -55,4 +56,11 @@ def load_soul(config: AgentConfig) -> str:
         raise FileNotFoundError(
             f"SOUL.md not found at {path}. Run 'patina init' or create it manually."
         )
+    return path.read_text()
+
+
+def load_profile(config: AgentConfig) -> str:
+    path = config.profile_path
+    if not path.exists():
+        return ""
     return path.read_text()
