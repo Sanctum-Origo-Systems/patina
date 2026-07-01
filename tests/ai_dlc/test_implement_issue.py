@@ -11,6 +11,7 @@ from implement_issue import (
     collect_verification_errors,
     create_branch,
     detect_issue_type,
+    implement_single_issue,
     log_run,
     parse_dependency_numbers,
     release_lock,
@@ -421,3 +422,324 @@ def test_create_branch_pulls_before_creating(monkeypatch):
     create_branch(issue)
 
     assert order == ["pull", "create"]
+
+
+# --- implement_single_issue tests ---
+
+_FAKE_ISSUE = {"number": 42, "title": "Add feature", "body": "## Type\nfeature", "labels": []}
+
+
+def _make_fake_run(responses=None):
+    """Return a fake subprocess.run that cycles through responses."""
+    responses = responses or []
+    call_idx = [0]
+
+    def fake_run(cmd, **kwargs):
+        idx = min(call_idx[0], len(responses) - 1)
+        call_idx[0] += 1
+        return responses[idx]
+
+    return fake_run
+
+
+def _ok():
+    return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+
+def _fail():
+    return type("R", (), {"returncode": 1, "stdout": "error", "stderr": ""})()
+
+
+def _make_verify_ok():
+    """Subprocess responses that make verify_implementation pass."""
+    ahead = type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+    tests = type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+    evals = type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+    lint = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    fmt = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    diff = type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+    return [ahead, tests, evals, lint, fmt, diff]
+
+
+def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        # verify_implementation calls: ahead, pytest, eval, ruff check, ruff format, git diff
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        if cmd[:3] == ["uv", "run", "pytest"] and "eval" not in str(cmd):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if "eval" in str(cmd):
+            return type("R", (), {"returncode": 0, "stdout": "passed", "stderr": ""})()
+        if "ruff" in cmd:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return type("R", (), {"returncode": 0, "stdout": "tests/test_x.py\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "implement", lambda issue: None)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is True
+    assert log_path.exists()
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["success"] is True
+    assert entry["issue"] == 42
+
+
+def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp_path):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "implement", lambda issue: None)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+
+    result = implement_single_issue(_FAKE_ISSUE)
+    assert result is False
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["success"] is False
+    assert entry["issue"] == 42
+
+
+def test_implement_single_issue_labels_needs_human_on_failure(monkeypatch, tmp_path):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    gh_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "gh":
+            gh_calls.append(cmd)
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return type("R", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "implement", lambda issue: None)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+
+    implement_single_issue(_FAKE_ISSUE)
+
+    needs_human_calls = [c for c in gh_calls if "needs-human" in c]
+    assert needs_human_calls, "Expected a gh call adding needs-human label"
+
+
+# --- main() loop tests ---
+
+
+def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
+
+    issues = [{"number": 1, "title": "Issue one", "body": "", "labels": []}]
+    call_count = [0]
+
+    def fake_get_top():
+        if call_count[0] < len(issues):
+            return issues[call_count[0]]
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+
+    def fake_implement_single(issue):
+        call_count[0] += 1
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "Implemented 1 issue(s) this run." in out
+    assert call_count[0] == 1
+
+
+def test_main_max_issues_processes_multiple(monkeypatch, tmp_path, capsys):
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+
+    issues = [{"number": i, "title": f"Issue {i}", "body": "", "labels": []} for i in range(1, 5)]
+    call_count = [0]
+
+    def fake_get_top():
+        if call_count[0] < len(issues):
+            return issues[call_count[0]]
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+
+    def fake_implement_single(issue):
+        call_count[0] += 1
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--max-issues", "3"])
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "Implemented 3 issue(s) this run." in out
+    assert call_count[0] == 3
+
+
+def test_main_stops_when_no_more_issues(monkeypatch, tmp_path, capsys):
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+
+    issues = [{"number": 1, "title": "Only one", "body": "", "labels": []}]
+    call_count = [0]
+
+    def fake_get_top():
+        if call_count[0] < len(issues):
+            return issues[call_count[0]]
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+
+    def fake_implement_single(issue):
+        call_count[0] += 1
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--max-issues", "5"])
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "No more ready issues." in out
+    assert "Implemented 1 issue(s) this run." in out
+    assert call_count[0] == 1
+
+
+def test_main_breaks_on_failure(monkeypatch, tmp_path, capsys):
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+
+    issues = [{"number": i, "title": f"Issue {i}", "body": "", "labels": []} for i in range(1, 4)]
+    call_count = [0]
+
+    def fake_get_top():
+        if call_count[0] < len(issues):
+            return issues[call_count[0]]
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+
+    def fake_implement_single(issue):
+        call_count[0] += 1
+        return False  # always fails
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--max-issues", "3"])
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "Implemented 0 issue(s) this run." in out
+    assert call_count[0] == 1  # stops after first failure
+
+
+def test_main_labels_blocked_on_unmet_deps(monkeypatch, tmp_path, capsys):
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+
+    blocked_issue = {"number": 99, "title": "Blocked issue", "body": "", "labels": []}
+    ready_issue = {"number": 100, "title": "Ready issue", "body": "", "labels": []}
+    get_count = [0]
+
+    def fake_get_top():
+        issues = [blocked_issue, ready_issue]
+        if get_count[0] < len(issues):
+            return issues[get_count[0]]
+        return None
+
+    gh_calls = []
+
+    def fake_subprocess_run(cmd, **kwargs):
+        if cmd and cmd[0] == "gh":
+            gh_calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    def fake_deps_met(issue):
+        return issue["number"] != 99
+
+    monkeypatch.setattr(implement_issue, "dependencies_met", fake_deps_met)
+
+    implement_count = [0]
+
+    def fake_implement_single(issue):
+        get_count[0] += 1
+        implement_count[0] += 1
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
+
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--max-issues", "1"])
+
+    # Advance past the blocked issue when get_top is called
+    def controlled_get_top():
+        idx = get_count[0]
+        issues = [blocked_issue, ready_issue]
+        if idx < len(issues):
+            return issues[idx]
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", controlled_get_top)
+
+    def fake_deps_met2(issue):
+        if issue["number"] == 99:
+            get_count[0] += 1  # advance past blocked
+            return False
+        return True
+
+    monkeypatch.setattr(implement_issue, "dependencies_met", fake_deps_met2)
+
+    implement_issue.main()
+    out = capsys.readouterr().out
+    blocked_label_calls = [c for c in gh_calls if "blocked" in c]
+    assert blocked_label_calls, "Expected gh call adding blocked label"
+    assert "Implemented 1 issue(s) this run." in out
+
+
+def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
+
+    implement_issue.main()
+    out = capsys.readouterr().out
+    assert "No more ready issues." in out
+    assert "Implemented 0 issue(s) this run." in out

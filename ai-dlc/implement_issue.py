@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -385,32 +386,52 @@ def label_in_review(number: int):
 # --- Orchestration ---
 
 
-def main():
+def implement_single_issue(issue: dict) -> bool:
+    """Implement one issue end-to-end. Returns True if PR created successfully."""
     start_time = time.time()
     claude_calls = 0
-    issue_number = 0
-    success = False
     final_attempt = 0
+    success = False
 
-    os.chdir(REPO_DIR)
+    print(f"Implementing #{issue['number']}: {issue['title']}")
 
-    if not acquire_lock():
-        print("Another implementation is running. Exiting.")
-        return
+    subprocess.run(
+        [
+            "gh",
+            "issue",
+            "edit",
+            str(issue["number"]),
+            "--repo",
+            REPO,
+            "--remove-label",
+            "ready",
+            "--add-label",
+            "in-progress",
+        ],
+    )
 
-    try:
-        issue = get_top_ready_issue()
-        if not issue:
-            print("No ready issues to implement.")
-            return
+    branch = create_branch(issue)
+    print(f"  Branch: {branch}")
 
-        if not dependencies_met(issue):
-            print(f"#{issue['number']}: dependencies not met, skipping.")
-            return
+    for attempt in range(1, MAX_RETRIES + 1):
+        print(f"  Attempt {attempt}/{MAX_RETRIES}...")
+        implement(issue)
+        claude_calls += 1
+        final_attempt = attempt
 
-        issue_number = issue["number"]
-        print(f"Implementing #{issue['number']}: {issue['title']}")
+        valid, errors = verify_implementation(branch)
+        if valid:
+            success = True
+            print("  Verification passed.")
+            break
+        else:
+            print(f"  Verification failed:\n{errors}")
 
+    elapsed = time.time() - start_time
+    cost = claude_calls * IMPL_COST_PER_CALL
+
+    if not success:
+        print("  All retries exhausted. Labeling needs-human.")
         subprocess.run(
             [
                 "gh",
@@ -420,74 +441,88 @@ def main():
                 "--repo",
                 REPO,
                 "--remove-label",
+                "in-progress",
+                "--add-label",
                 "ready",
                 "--add-label",
-                "in-progress",
+                "needs-human",
             ],
         )
+        cleanup_branch(branch)
+        log_run(issue["number"], False, final_attempt, elapsed, cost)
+        return False
 
-        branch = create_branch(issue)
-        print(f"  Branch: {branch}")
+    subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
+    create_pr(
+        issue,
+        branch,
+        attempts=final_attempt,
+        claude_calls=claude_calls,
+        duration=elapsed,
+    )
+    label_in_review(issue["number"])
+    print(f"  PR created for #{issue['number']}.")
 
-        for attempt in range(1, MAX_RETRIES + 1):
-            print(f"  Attempt {attempt}/{MAX_RETRIES}...")
-            implement(issue)
-            claude_calls += 1
-            final_attempt = attempt
+    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
 
-            valid, errors = verify_implementation(branch)
-            if valid:
-                success = True
-                print("  Verification passed.")
+    print(f"\n--- AI-DLC Run Stats (#{issue['number']}) ---")
+    print(f"  Duration: {elapsed:.0f}s")
+    print(f"  Claude calls: {claude_calls}")
+    print(f"  Estimated cost: ~${cost:.2f}")
+    log_run(issue["number"], True, final_attempt, elapsed, cost)
+
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--max-issues",
+        type=int,
+        default=1,
+        help="Maximum issues to implement in one run (default: 1)",
+    )
+    args = parser.parse_args()
+
+    os.chdir(REPO_DIR)
+
+    if not acquire_lock():
+        print("Another implementation is running. Exiting.")
+        return
+
+    try:
+        implemented = 0
+        while implemented < args.max_issues:
+            issue = get_top_ready_issue()
+            if not issue:
+                print("No more ready issues.")
                 break
+
+            if not dependencies_met(issue):
+                print(f"#{issue['number']}: dependencies not met, skipping.")
+                subprocess.run(
+                    [
+                        "gh",
+                        "issue",
+                        "edit",
+                        str(issue["number"]),
+                        "--repo",
+                        REPO,
+                        "--add-label",
+                        "blocked",
+                    ],
+                )
+                continue
+
+            success = implement_single_issue(issue)
+            if success:
+                implemented += 1
             else:
-                print(f"  Verification failed:\n{errors}")
+                break
 
-        if not success:
-            print("  All retries exhausted. Labeling needs-human.")
-            subprocess.run(
-                [
-                    "gh",
-                    "issue",
-                    "edit",
-                    str(issue["number"]),
-                    "--repo",
-                    REPO,
-                    "--remove-label",
-                    "in-progress",
-                    "--add-label",
-                    "ready",
-                    "--add-label",
-                    "needs-human",
-                ],
-            )
-            cleanup_branch(branch)
-            return
-
-        subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
-        elapsed = time.time() - start_time
-        create_pr(
-            issue,
-            branch,
-            attempts=final_attempt,
-            claude_calls=claude_calls,
-            duration=elapsed,
-        )
-        label_in_review(issue["number"])
-        print(f"  PR created for #{issue['number']}.")
-
-        subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
-
+        print(f"\nImplemented {implemented} issue(s) this run.")
     finally:
         release_lock()
-        if claude_calls > 0:
-            elapsed = time.time() - start_time
-            cost = claude_calls * IMPL_COST_PER_CALL
-            print("\n--- AI-DLC Run Stats ---")
-            print(f"  Duration: {elapsed:.0f}s")
-            print(f"  Claude calls: {claude_calls}")
-            print(f"  Estimated cost: ~${cost:.2f}")
-            log_run(issue_number, success, final_attempt, elapsed, cost)
 
 
 if __name__ == "__main__":
