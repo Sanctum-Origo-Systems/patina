@@ -7,12 +7,16 @@ import json
 import os
 import re
 import subprocess
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO = "Sanctum-Origo-Systems/patina"
 REPO_DIR = Path(__file__).resolve().parent.parent
 LOCKFILE = REPO_DIR / ".ai-dlc.lock"
+LOG_FILE = REPO_DIR / "ai-dlc" / "run_history.jsonl"
 MAX_RETRIES = 3
+IMPL_COST_PER_CALL = 2.50
 
 
 # --- Pure functions (testable without mocking) ---
@@ -98,6 +102,20 @@ def acquire_lock() -> bool:
 def release_lock():
     """Remove the lockfile."""
     LOCKFILE.unlink(missing_ok=True)
+
+
+def log_run(issue_number: int, success: bool, attempts: int, duration: float, cost: float):
+    """Append a JSON entry to the run history log."""
+    entry = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "issue": issue_number,
+        "success": success,
+        "attempts": attempts,
+        "duration_seconds": round(duration),
+        "estimated_cost": round(cost, 2),
+    }
+    with open(LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 
 # --- Subprocess functions ---
@@ -345,6 +363,12 @@ def label_in_review(number: int):
 
 
 def main():
+    start_time = time.time()
+    claude_calls = 0
+    issue_number = 0
+    success = False
+    final_attempt = 0
+
     os.chdir(REPO_DIR)
 
     if not acquire_lock():
@@ -361,6 +385,7 @@ def main():
             print(f"#{issue['number']}: dependencies not met, skipping.")
             return
 
+        issue_number = issue["number"]
         print(f"Implementing #{issue['number']}: {issue['title']}")
 
         subprocess.run(
@@ -381,10 +406,11 @@ def main():
         branch = create_branch(issue)
         print(f"  Branch: {branch}")
 
-        success = False
         for attempt in range(1, MAX_RETRIES + 1):
             print(f"  Attempt {attempt}/{MAX_RETRIES}...")
             implement(issue)
+            claude_calls += 1
+            final_attempt = attempt
 
             valid, errors = verify_implementation(branch)
             if valid:
@@ -424,6 +450,14 @@ def main():
 
     finally:
         release_lock()
+        if claude_calls > 0:
+            elapsed = time.time() - start_time
+            cost = claude_calls * IMPL_COST_PER_CALL
+            print("\n--- AI-DLC Run Stats ---")
+            print(f"  Duration: {elapsed:.0f}s")
+            print(f"  Claude calls: {claude_calls}")
+            print(f"  Estimated cost: ~${cost:.2f}")
+            log_run(issue_number, success, final_attempt, elapsed, cost)
 
 
 if __name__ == "__main__":

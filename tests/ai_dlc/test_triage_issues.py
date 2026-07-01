@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+
 import triage_issues
 from triage_issues import (
     build_decomposition_comment,
+    log_run,
     parse_file_discovery_response,
     parse_triage_response,
     triage_issue,
@@ -228,3 +231,75 @@ def test_triage_issue_skips_enrich_when_no_files_found(monkeypatch):
 
     triage_issue(_make_issue())
     assert len(enriched) == 0
+
+
+# --- triage_issue call count tests ---
+
+
+def test_triage_issue_returns_1_for_rejected(monkeypatch):
+    verdict = {"verdict": "rejected", "reason": "incomplete"}
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: None)
+
+    assert triage_issue(_make_issue()) == 1
+
+
+def test_triage_issue_returns_1_for_ready_no_file_discovery(monkeypatch):
+    verdict = {"verdict": "ready", "priority": "p1", "reason": "ok", "files_missing": False}
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "approve_issue", lambda n, p, r: None)
+
+    assert triage_issue(_make_issue()) == 1
+
+
+def test_triage_issue_returns_2_when_files_missing(monkeypatch):
+    verdict = {"verdict": "ready", "priority": "p1", "reason": "ok", "files_missing": True}
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(
+        triage_issues, "discover_files", lambda i: [{"path": "tests/test_x.py", "reason": "x"}]
+    )
+    monkeypatch.setattr(triage_issues, "enrich_issue_with_files", lambda n, f: None)
+    monkeypatch.setattr(triage_issues, "approve_issue", lambda n, p, r: None)
+
+    assert triage_issue(_make_issue()) == 2
+
+
+def test_triage_issue_returns_2_when_files_missing_but_none_found(monkeypatch):
+    verdict = {"verdict": "ready", "priority": "p1", "reason": "ok", "files_missing": True}
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "discover_files", lambda i: [])
+    monkeypatch.setattr(triage_issues, "enrich_issue_with_files", lambda n, f: None)
+    monkeypatch.setattr(triage_issues, "approve_issue", lambda n, p, r: None)
+
+    assert triage_issue(_make_issue()) == 2
+
+
+# --- log_run tests ---
+
+
+def test_log_run_triage_writes_json_entry(tmp_path, monkeypatch):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(triage_issues, "LOG_FILE", log_path)
+    log_run(0, True, 3, 45.0, 0.09)
+
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["issue"] == 0
+    assert entry["success"] is True
+    assert entry["attempts"] == 3
+    assert entry["duration_seconds"] == 45
+    assert entry["estimated_cost"] == 0.09
+    assert "timestamp" in entry
+
+
+def test_log_run_triage_appends_multiple_entries(tmp_path, monkeypatch):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(triage_issues, "LOG_FILE", log_path)
+    log_run(0, True, 2, 30.0, 0.06)
+    log_run(0, True, 5, 90.0, 0.15)
+
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["attempts"] == 2
+    assert json.loads(lines[1])["attempts"] == 5

@@ -5,10 +5,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO = "Sanctum-Origo-Systems/patina"
 REPO_DIR = Path(__file__).resolve().parent.parent
+LOG_FILE = REPO_DIR / "ai-dlc" / "run_history.jsonl"
+TRIAGE_COST_PER_CALL = 0.03
 
 TRIAGE_LABELS = {
     "ready",
@@ -139,6 +143,20 @@ def build_decomposition_comment(result: dict) -> str:
         "skips issues whose dependencies aren't merged yet."
     )
     return table
+
+
+def log_run(issue_number: int, success: bool, attempts: int, duration: float, cost: float):
+    """Append a JSON entry to the run history log."""
+    entry = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "issue": issue_number,
+        "success": success,
+        "attempts": attempts,
+        "duration_seconds": round(duration),
+        "estimated_cost": round(cost, 2),
+    }
+    with open(LOG_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 
 # --- Subprocess functions ---
@@ -283,16 +301,18 @@ def decompose_issue(number: int, result: dict):
 # --- Orchestration ---
 
 
-def triage_issue(issue: dict):
-    """Evaluate a single issue and apply the appropriate label."""
+def triage_issue(issue: dict) -> int:
+    """Evaluate a single issue and apply the appropriate label. Returns claude call count."""
+    claude_calls = 1  # evaluate_issue always makes one claude call
     result = evaluate_issue(issue)
 
     if result["verdict"] == "rejected":
         reject_issue(issue["number"], result["reason"])
-        return
+        return claude_calls
 
     if result.get("files_missing", False):
         files = discover_files(issue)
+        claude_calls += 1  # discover_files makes one claude call
         if files:
             enrich_issue_with_files(issue["number"], files)
 
@@ -301,15 +321,29 @@ def triage_issue(issue: dict):
     elif result["verdict"] == "needs-decomposition":
         decompose_issue(issue["number"], result)
 
+    return claude_calls
+
 
 def main():
+    start_time = time.time()
+    claude_calls = 0
+
     issues = list_untriaged_issues()
     if not issues:
         print("No untriaged issues found.")
         return
     for issue in issues:
         print(f"Triaging #{issue['number']}: {issue['title']}")
-        triage_issue(issue)
+        claude_calls += triage_issue(issue)
+
+    if claude_calls > 0:
+        elapsed = time.time() - start_time
+        cost = claude_calls * TRIAGE_COST_PER_CALL
+        print("\n--- AI-DLC Run Stats ---")
+        print(f"  Duration: {elapsed:.0f}s")
+        print(f"  Claude calls: {claude_calls}")
+        print(f"  Estimated cost: ~${cost:.2f}")
+        log_run(0, True, len(issues), elapsed, cost)
 
 
 if __name__ == "__main__":
