@@ -9,9 +9,12 @@ from create_issue import (
     DEFAULT_ACCEPTANCE,
     build_issue,
     build_issue_body,
+    extract_files_from_spec,
+    extract_problem_from_spec,
     get_rejection_reason,
     main,
     parse_issue_sections,
+    parse_spec_enhancements,
     prompt_multiline,
     prompt_optional,
     prompt_required,
@@ -197,6 +200,108 @@ def test_get_rejection_reason_not_found():
 def test_get_rejection_reason_no_comments():
     assert get_rejection_reason({"comments": []}) is None
     assert get_rejection_reason({}) is None
+
+
+# --- Pure function tests: parse_spec_enhancements ---
+
+SAMPLE_SPEC = """\
+# My Spec
+
+## Context
+
+Some context here.
+
+---
+
+## Enhancement 1: Feed Errors Back
+
+**Problem:** Errors are lost on retry.
+
+**File:** `ai-dlc/implement_issue.py`
+
+**Change:** Pass errors forward.
+
+---
+
+## Enhancement 2: Increase Timeout
+
+**Problem:** Timeout too short.
+
+**File:** `ai-dlc/implement_issue.py` and `ai-dlc/triage_issues.py`
+
+**Change:** Make timeout configurable.
+
+---
+
+## Summary of Changes
+
+| Enhancement | File |
+|-------------|------|
+"""
+
+
+def test_parse_spec_enhancements_from_file(tmp_path):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SAMPLE_SPEC)
+    enhancements = parse_spec_enhancements(str(spec_file))
+    assert len(enhancements) == 2
+    assert enhancements[0]["title"] == "Feed Errors Back"
+    assert enhancements[1]["title"] == "Increase Timeout"
+    assert "Errors are lost" in enhancements[0]["body"]
+    assert "Timeout too short" in enhancements[1]["body"]
+
+
+def test_parse_spec_enhancements_stops_at_summary(tmp_path):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SAMPLE_SPEC)
+    enhancements = parse_spec_enhancements(str(spec_file))
+    for enh in enhancements:
+        assert "Summary of Changes" not in enh["body"]
+
+
+def test_parse_spec_enhancements_empty_file(tmp_path):
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text("# No enhancements here\n\nJust text.")
+    assert parse_spec_enhancements(str(spec_file)) == []
+
+
+# --- Pure function tests: extract_files_from_spec ---
+
+
+def test_extract_files_single():
+    body = "**File:** `ai-dlc/implement_issue.py`"
+    assert extract_files_from_spec(body) == ["ai-dlc/implement_issue.py"]
+
+
+def test_extract_files_multiple_with_and():
+    body = "**File:** `ai-dlc/implement_issue.py` and `ai-dlc/triage_issues.py`"
+    assert extract_files_from_spec(body) == [
+        "ai-dlc/implement_issue.py",
+        "ai-dlc/triage_issues.py",
+    ]
+
+
+def test_extract_files_none():
+    assert extract_files_from_spec("No files mentioned") == []
+
+
+# --- Pure function tests: extract_problem_from_spec ---
+
+
+def test_extract_problem():
+    body = "**Problem:** Errors are lost on retry.\n\n**File:** `x.py`"
+    assert extract_problem_from_spec(body) == "Errors are lost on retry."
+
+
+def test_extract_problem_multiline():
+    body = "**Problem:** Errors are lost.\nThis wastes retries.\n\n**Change:** Fix it."
+    result = extract_problem_from_spec(body)
+    assert "Errors are lost" in result
+    assert "wastes retries" in result
+
+
+def test_extract_problem_none():
+    assert extract_problem_from_spec("No problem here") == ""
 
 
 # --- Subprocess tests: suggest_fields ---

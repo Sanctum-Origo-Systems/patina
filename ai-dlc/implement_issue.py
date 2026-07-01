@@ -180,7 +180,14 @@ def build_implementation_prompt(issue: dict) -> str:
         data = json.loads(comments.stdout)
         for c in data.get("comments", []):
             body = c.get("body", "")
-            if "Auto-triage" in body:
+            if any(
+                tag in body
+                for tag in (
+                    "Auto-triage",
+                    "AI-DLC Attempt",
+                    "Implementation Detail",
+                )
+            ):
                 full_context += f"\n\n{body}"
 
     return (
