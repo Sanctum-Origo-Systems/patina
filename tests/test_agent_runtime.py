@@ -14,6 +14,21 @@ def test_runtime_initializes(tmp_path):
     assert runtime.soul == "Be helpful."
 
 
+def test_runtime_profile_loaded(tmp_path):
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md", profile_path=tmp_path / "PROFILE.md")
+    (tmp_path / "SOUL.md").write_text("Be helpful.")
+    (tmp_path / "PROFILE.md").write_text("User prefers concise replies.")
+    runtime = AgentRuntime(config)
+    assert runtime.profile == "User prefers concise replies."
+
+
+def test_runtime_profile_missing_returns_empty(tmp_path):
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md", profile_path=tmp_path / "PROFILE.md")
+    (tmp_path / "SOUL.md").write_text("Be helpful.")
+    runtime = AgentRuntime(config)
+    assert runtime.profile == ""
+
+
 def test_runtime_soul_fallback_empty(tmp_path):
     config = AgentConfig(soul_path=tmp_path / "nonexistent.md")
     runtime = AgentRuntime(config)
@@ -26,6 +41,34 @@ def test_build_options_includes_soul(tmp_path):
     runtime = AgentRuntime(config)
     opts = runtime._build_options(None)
     assert opts["system_prompt"].startswith("Be direct.")
+    assert "Operational Instructions" in opts["system_prompt"]
+
+
+def test_build_options_includes_profile(tmp_path):
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md", profile_path=tmp_path / "PROFILE.md")
+    (tmp_path / "SOUL.md").write_text("Be direct.")
+    (tmp_path / "PROFILE.md").write_text("Prefers bullet points.")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert "Prefers bullet points." in opts["system_prompt"]
+
+
+def test_build_options_profile_after_soul(tmp_path):
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md", profile_path=tmp_path / "PROFILE.md")
+    (tmp_path / "SOUL.md").write_text("Soul content.")
+    (tmp_path / "PROFILE.md").write_text("Profile content.")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    prompt = opts["system_prompt"]
+    assert prompt.index("Soul content.") < prompt.index("Profile content.")
+
+
+def test_build_options_no_profile_file(tmp_path):
+    config = AgentConfig(soul_path=tmp_path / "SOUL.md", profile_path=tmp_path / "PROFILE.md")
+    (tmp_path / "SOUL.md").write_text("Be direct.")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert "system_prompt" in opts
     assert "Operational Instructions" in opts["system_prompt"]
 
 
