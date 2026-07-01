@@ -9,6 +9,7 @@ from implement_issue import (
     build_branch_name,
     build_pr_body,
     collect_verification_errors,
+    create_branch,
     detect_issue_type,
     log_run,
     parse_dependency_numbers,
@@ -372,3 +373,51 @@ def test_log_run_rounds_cost(tmp_path, monkeypatch):
 
     entry = json.loads(log_path.read_text().strip())
     assert entry["estimated_cost"] == 2.56
+
+
+# --- Subprocess tests: create_branch ---
+
+
+def test_create_branch_calls_in_order(monkeypatch):
+    calls = []
+    issue = {"number": 18, "title": "Pull latest main before creating branch"}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    branch = create_branch(issue)
+
+    assert calls[0] == ["git", "checkout", "main"]
+    assert calls[1] == ["git", "pull", "origin", "main"]
+    assert calls[2][0:3] == ["git", "checkout", "-b"]
+    assert branch in calls[2]
+
+
+def test_create_branch_returns_correct_name(monkeypatch):
+    issue = {"number": 5, "title": "Add new feature"}
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0})(),
+    )
+    assert create_branch(issue) == "ai-dlc/5-add-new-feature"
+
+
+def test_create_branch_pulls_before_creating(monkeypatch):
+    """pull must happen before checkout -b, not after."""
+    order = []
+    issue = {"number": 7, "title": "Fix bug"}
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "pull", "origin", "main"]:
+            order.append("pull")
+        elif len(cmd) >= 3 and cmd[:2] == ["git", "checkout"] and cmd[2] == "-b":
+            order.append("create")
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    create_branch(issue)
+
+    assert order == ["pull", "create"]

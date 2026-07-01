@@ -193,8 +193,10 @@ def dependencies_met(issue: dict) -> bool:
 
 
 def create_branch(issue: dict) -> str:
-    """Create and checkout a feature branch for the issue."""
+    """Create feature branch from latest main."""
     branch = build_branch_name(issue)
+    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR, check=True)
+    subprocess.run(["git", "pull", "origin", "main"], cwd=REPO_DIR, check=True)
     subprocess.run(["git", "checkout", "-b", branch], cwd=REPO_DIR, check=True)
     return branch
 
