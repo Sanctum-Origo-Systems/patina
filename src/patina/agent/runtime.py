@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from patina.agent.config import AgentConfig, load_soul
+from patina.agent.config import AgentConfig, load_profile, load_soul
 from patina.agent.session_cache import SessionCache
 
 _OPERATIONAL_INSTRUCTIONS = """
@@ -61,6 +61,7 @@ class AgentRuntime:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
         self._soul: str | None = None
+        self._profile: str | None = None
         self.cache = SessionCache(ttl_seconds=config.session_ttl_seconds)
         self._repl_session_id: str | None = None
 
@@ -73,6 +74,12 @@ class AgentRuntime:
                 self._soul = ""
         return self._soul
 
+    @property
+    def profile(self) -> str:
+        if self._profile is None:
+            self._profile = load_profile(self.config)
+        return self._profile
+
     def _build_options(self, session_id: str | None) -> dict[str, Any]:
         mcp_cmd = self.config.mcp_server_command
         mcp_path = shutil.which(mcp_cmd)
@@ -84,7 +91,7 @@ class AgentRuntime:
                 "args": self.config.mcp_server_args,
             }
 
-        system_prompt = self.soul + _OPERATIONAL_INSTRUCTIONS + _build_tool_guide()
+        system_prompt = self.soul + self.profile + _OPERATIONAL_INSTRUCTIONS + _build_tool_guide()
 
         opts: dict[str, Any] = {
             "system_prompt": system_prompt,

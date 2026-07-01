@@ -152,6 +152,52 @@ def test_build_options_cwd_is_home(tmp_path):
     assert opts["cwd"] == str(Path.home())
 
 
+def test_profile_included_in_system_prompt(tmp_path):
+    config = AgentConfig(
+        soul_path=tmp_path / "SOUL.md",
+        profile_path=tmp_path / "PROFILE.md",
+    )
+    (tmp_path / "SOUL.md").write_text("Be direct.")
+    (tmp_path / "PROFILE.md").write_text("User prefers bullet points.")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert "User prefers bullet points." in opts["system_prompt"]
+
+
+def test_profile_absent_starts_without_error(tmp_path):
+    config = AgentConfig(
+        soul_path=tmp_path / "SOUL.md",
+        profile_path=tmp_path / "PROFILE.md",
+    )
+    (tmp_path / "SOUL.md").write_text("Be direct.")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    assert "system_prompt" in opts
+
+
+def test_profile_absent_omits_profile_content(tmp_path):
+    config = AgentConfig(
+        soul_path=tmp_path / "SOUL.md",
+        profile_path=tmp_path / "PROFILE.md",
+    )
+    (tmp_path / "SOUL.md").write_text("Be direct.")
+    runtime = AgentRuntime(config)
+    assert runtime.profile == ""
+
+
+def test_profile_appears_after_soul_in_system_prompt(tmp_path):
+    config = AgentConfig(
+        soul_path=tmp_path / "SOUL.md",
+        profile_path=tmp_path / "PROFILE.md",
+    )
+    (tmp_path / "SOUL.md").write_text("SOUL_CONTENT")
+    (tmp_path / "PROFILE.md").write_text("PROFILE_CONTENT")
+    runtime = AgentRuntime(config)
+    opts = runtime._build_options(None)
+    prompt = opts["system_prompt"]
+    assert prompt.index("SOUL_CONTENT") < prompt.index("PROFILE_CONTENT")
+
+
 class TestBuildToolGuide:
     def test_returns_non_empty(self):
         guide = _build_tool_guide()
