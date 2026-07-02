@@ -14,6 +14,15 @@
 - Commit verification before PR creation
 - Test count validation
 - Eval test awareness
+- Error feedback on retry — failed attempts feed errors into next attempt + post to GitHub
+- Configurable model and timeout via environment variables
+- Batch mode (`--max-issues N`) for clearing backlogs in one run
+- Cost/token tracking with `run_history.jsonl` and stats in PR description
+- Pull latest main before branching to prevent stale divergence
+- `--from-spec` flag to create issues from a spec markdown file
+- `--edit` flag to fix rejected issues interactively
+- `--no-suggest` flag to skip Claude-powered field suggestions
+- GitHub comment conventions: `Auto-triage`, `AI-DLC Attempt`, `Implementation Detail`
 
 ---
 
@@ -250,8 +259,8 @@ def dependencies_met(issue: dict) -> bool:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                GitHub Issues (Patina repo)                   │
-│  [untriaged] → [ready] → [in-progress] → [in-review]       │
+│                GitHub Issues (Patina repo)                  │
+│  [untriaged] → [ready] → [in-progress] → [in-review]        │
 │       ↓                                                     │
 │  [needs-decomposition] → human splits → sub-issues          │
 │  [needs-human] → agent failed, human takes over             │
@@ -263,14 +272,14 @@ def dependencies_met(issue: dict) -> bool:
 │  (every 6 hours)   │    │  (daily or on-demand)            │
 │                    │    │                                  │
 │  1. gh issue list  │    │  1. Acquire lockfile             │
-│  2. Validate       │    │  2. Pick top "ready" (≤2 pts)   │
-│     template       │    │  3. Check dependencies met      │
+│  2. Validate       │    │  2. Pick top "ready" (≤2 pts)    │
+│     template       │    │  3. Check dependencies met       │
 │  3. Estimate size  │    │  4. git checkout -b              │
 │  4. Discover files │    │  5. claude -p (agentic via       │
 │  5. Label or       │    │     settings.json permissions)   │
-│     decompose      │    │  6. Verify: commits exist,      │
+│     decompose      │    │  6. Verify: commits exist,       │
 │                    │    │     tests pass, lint clean       │
-└────────────────────┘    │  7. Verify: new tests added     │
+└────────────────────┘    │  7. Verify: new tests added      │
                           │  8. gh pr create                 │
                           │  9. Label "in-review"            │
                           │  10. Release lockfile            │
@@ -316,6 +325,20 @@ Create this file in the repo root:
 This allows the agent to read, edit, test, lint, and commit — but NOT push,
 force-reset, delete, or merge. The implementation script handles push and PR
 creation outside the agent.
+
+### Environment variables (optional)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PATINA_AIDLC_TRIAGE_MODEL` | `sonnet` | Model for triage evaluation and file discovery |
+| `PATINA_AIDLC_IMPL_MODEL` | `opus` | Model for implementation |
+| `PATINA_AIDLC_TIMEOUT` | `900` | Implementation timeout in seconds |
+
+```bash
+# Override for a single run
+PATINA_AIDLC_IMPL_MODEL=sonnet uv run python ai-dlc/implement_issue.py
+PATINA_AIDLC_TIMEOUT=1800 uv run python ai-dlc/implement_issue.py
+```
 
 ### GitHub labels
 
@@ -898,14 +921,16 @@ Examples:
 1. **Lockfile** — only one implementation runs at a time
 2. **≤2 story points** — large issues require human decomposition
 3. **Dependency check** — skips issues whose dependencies aren't merged
-4. **Max 3 retries** — labels `needs-human` and backs off
+4. **Max 3 retries** — labels `needs-human` and backs off; errors feed into next attempt
 5. **Verification gate** — commits exist, tests pass, lint clean, new tests added
 6. **Never merges own PR** — always requires human review
 7. **Never pushes inside agent** — push happens outside, in the script
 8. **`.claude/settings.json`** — denies `git push`, `git reset`, `rm -rf`, `gh pr merge`
 9. **Branch cleanup** — failed branches deleted locally and remotely
-10. **600s timeout** on agent invocation
+10. **Configurable timeout** — defaults to 900s, override via `PATINA_AIDLC_TIMEOUT`
 11. **Template validation** — rejects issues without structured criteria
+12. **Pull latest main** — always pulls before branching to prevent stale divergence
+13. **Cost tracking** — every run logs to `run_history.jsonl` and prints stats
 
 ---
 
@@ -936,6 +961,110 @@ engineer would have from attending standup.
 - [ ] `git add <specific files>` (no `git add .`)
 - [ ] Commit with conventional message: `<type>: <desc> (#<issue>)`
 - [ ] Do NOT run `git push`
+
+---
+
+## Error Feedback on Retry
+
+When implementation fails verification, errors are passed into the next attempt
+so Claude doesn't repeat the same mistake.
+
+**In-process:** `implement()` accepts a `previous_errors` parameter. The retry
+loop passes the last failure's error text into the next attempt, appended as a
+`## Previous Attempt Failed` section in the prompt.
+
+**Durable (GitHub):** Each failed attempt posts a comment on the issue:
+
+```
+**AI-DLC Attempt 2 failed:**
+```
+Tests failed: ...
+```
+```
+
+`build_implementation_prompt` reads these comments (matching `"AI-DLC Attempt"`)
+so errors survive process restarts. The next cron invocation picks up where the
+last one left off.
+
+---
+
+## Batch Mode
+
+```bash
+uv run python ai-dlc/implement_issue.py --max-issues 3
+```
+
+Processes up to N ready issues sequentially in one run. Stops if an issue fails
+(may indicate a systemic problem). Issues with unmet dependencies are skipped
+and labeled `blocked`.
+
+---
+
+## Cost/Token Tracking
+
+Every run logs timing and estimated cost to both console and
+`ai-dlc/run_history.jsonl`:
+
+```json
+{"timestamp":"2026-07-01T02:15:00Z","issue":14,"success":true,"attempts":1,"duration_seconds":180,"estimated_cost":2.5}
+```
+
+PR descriptions include an **AI-DLC Run Stats** section:
+
+```markdown
+## AI-DLC Run Stats
+- Attempts: 1/3
+- Claude calls: 1
+- Duration: 180s
+- Estimated cost: ~$2.50
+```
+
+---
+
+## GitHub Comment Conventions
+
+`build_implementation_prompt` reads issue comments matching these prefixes:
+
+| Prefix | Source | Purpose |
+|--------|--------|---------|
+| `**Auto-triage**` | Triage bot | File discovery, approval/rejection reasons |
+| `**AI-DLC Attempt N failed:**` | Implementation bot | Verification errors from prior attempts |
+| `**Implementation Detail:**` | Human | Specs, design notes, context not in the repo |
+
+The `**Implementation Detail:**` convention lets users post detailed guidance
+as a comment from any device. The VPS agent picks it up automatically.
+
+---
+
+## Issue Creator (`ai-dlc/create_issue.py`)
+
+### Modes
+
+```bash
+# Interactive — prompts for each field, submits via gh
+uv run python ai-dlc/create_issue.py
+
+# Skip suggestions
+uv run python ai-dlc/create_issue.py --type feature --no-suggest
+
+# Create issues from a spec file
+uv run python ai-dlc/create_issue.py --from-spec docs/features/spec.md --dry-run
+uv run python ai-dlc/create_issue.py --from-spec docs/features/spec.md --skip 1
+
+# Fix a rejected issue
+uv run python ai-dlc/create_issue.py --edit 10
+
+# Preview without submitting
+uv run python ai-dlc/create_issue.py --dry-run
+```
+
+### `--from-spec` behavior
+
+1. Parses `## Enhancement N:` sections from the spec file
+2. Calls Claude to generate structured issue fields (title, expected behavior, criteria)
+3. Creates each issue via `gh issue create`
+4. Posts the full spec section as an `**Implementation Detail:**` comment
+5. Use `--skip 1,2` to skip already-created enhancements
 
 ---
 
@@ -1237,11 +1366,11 @@ Rejection: "Needs (1) specific metric for 'faster', (2) which part is slow,
 
 | File | Purpose |
 |------|---------|
-| `ai-dlc/create_issue.py` | Interactive issue builder — validates template, submits via `gh` or prints for copy-paste |
-| `ai-dlc/triage_issues.py` | Cron 1: evaluate, discover files, label/decompose |
-| `ai-dlc/implement_issue.py` | Cron 2: implement, verify, PR |
+| `ai-dlc/create_issue.py` | Issue builder — interactive, `--from-spec`, `--edit`, `--dry-run` |
+| `ai-dlc/triage_issues.py` | Cron 1: evaluate, discover files, label/decompose, cost tracking |
+| `ai-dlc/implement_issue.py` | Cron 2: implement, verify, PR, error feedback, batch mode |
+| `ai-dlc/run_history.jsonl` | Auto-created — cost/timing log for all runs |
 | `.claude/settings.json` | Pre-approved tool permissions for agent |
-| `.github/ISSUE_TEMPLATE/feature.md` | GitHub issue template (optional) |
 | `tests/ai_dlc/` | Unit tests for all three scripts |
 
 **Dependencies:** `gh` CLI (authenticated), `claude` CLI (in PATH), `uv`
