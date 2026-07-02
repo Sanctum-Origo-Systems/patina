@@ -383,6 +383,42 @@ def create_pr(
     )
 
 
+def cleanup_merged_labels():
+    """Remove in-review label from closed issues whose PR already merged."""
+    result = subprocess.run(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            REPO,
+            "--label",
+            "in-review",
+            "--state",
+            "closed",
+            "--json",
+            "number",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return
+    for issue in json.loads(result.stdout):
+        subprocess.run(
+            [
+                "gh",
+                "issue",
+                "edit",
+                str(issue["number"]),
+                "--repo",
+                REPO,
+                "--remove-label",
+                "in-review",
+            ],
+        )
+
+
 def label_in_review(number: int):
     """Move issue from in-progress to in-review."""
     subprocess.run(
@@ -512,6 +548,8 @@ def main():
         return
 
     try:
+        cleanup_merged_labels()
+
         implemented = 0
         while implemented < args.max_issues:
             issue = get_top_ready_issue()

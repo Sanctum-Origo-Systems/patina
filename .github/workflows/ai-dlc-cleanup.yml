@@ -1,0 +1,29 @@
+name: AI-DLC Label Cleanup
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove in-review label from linked issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const matches = body.match(/Closes #(\d+)/g) || [];
+            for (const match of matches) {
+              const issueNumber = parseInt(match.replace('Closes #', ''));
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  name: 'in-review'
+                });
+              } catch (e) {
+                // Label may not exist, ignore
+              }
+            }

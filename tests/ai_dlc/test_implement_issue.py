@@ -9,6 +9,7 @@ from implement_issue import (
     acquire_lock,
     build_branch_name,
     build_pr_body,
+    cleanup_merged_labels,
     collect_verification_errors,
     create_branch,
     detect_issue_type,
@@ -562,6 +563,7 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
     monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_implement_single(issue):
         call_count[0] += 1
@@ -589,6 +591,7 @@ def test_main_max_issues_processes_multiple(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
     monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_implement_single(issue):
         call_count[0] += 1
@@ -619,6 +622,7 @@ def test_main_stops_when_no_more_issues(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
     monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_implement_single(issue):
         call_count[0] += 1
@@ -650,6 +654,7 @@ def test_main_breaks_on_failure(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
     monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_implement_single(issue):
         call_count[0] += 1
@@ -689,6 +694,7 @@ def test_main_labels_blocked_on_unmet_deps(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_deps_met(issue):
         return issue["number"] != 99
@@ -739,6 +745,7 @@ def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
     lock_path = tmp_path / ".ai-dlc.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
     monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
 
     implement_issue.main()
@@ -1018,3 +1025,95 @@ def test_implement_single_issue_calls_post_attempt_failure_on_error(monkeypatch,
     assert post_calls[0] == (42, 1, "verification failed")
     assert post_calls[1] == (42, 2, "verification failed")
     assert post_calls[2] == (42, 3, "verification failed")
+
+
+# --- cleanup_merged_labels tests ---
+
+
+def test_cleanup_merged_labels_removes_label_from_each_issue(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": '[{"number": 10}, {"number": 14}]', "stderr": ""},
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    cleanup_merged_labels()
+
+    edit_calls = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert len(edit_calls) == 2
+    assert edit_calls[0][3] == "10"
+    assert edit_calls[1][3] == "14"
+    for c in edit_calls:
+        assert "--remove-label" in c
+        assert c[c.index("--remove-label") + 1] == "in-review"
+
+
+def test_cleanup_merged_labels_queries_closed_in_review_issues(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "issue", "list"]:
+            captured["list_cmd"] = cmd
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    cleanup_merged_labels()
+
+    cmd = captured["list_cmd"]
+    assert "--label" in cmd and cmd[cmd.index("--label") + 1] == "in-review"
+    assert "--state" in cmd and cmd[cmd.index("--state") + 1] == "closed"
+
+
+def test_cleanup_merged_labels_no_issues_no_edits(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    cleanup_merged_labels()
+
+    edit_calls = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert edit_calls == []
+
+
+def test_cleanup_merged_labels_returns_early_on_list_failure(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    cleanup_merged_labels()
+
+    edit_calls = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert edit_calls == []
+
+
+def test_main_runs_cleanup_merged_labels(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+
+    ran = []
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: ran.append(True))
+
+    implement_issue.main()
+    assert ran == [True]
