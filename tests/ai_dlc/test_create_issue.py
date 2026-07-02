@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
 from unittest.mock import patch
@@ -562,3 +563,54 @@ def test_main_gh_failure_exits_1(monkeypatch):
     with patch.object(create_issue.subprocess, "run", return_value=FakeResult()):
         with pytest.raises(SystemExit, match="1"):
             main()
+
+
+# --- TRIAGE_MODEL env var tests ---
+
+
+def test_suggest_fields_uses_triage_model(monkeypatch):
+    captured = {}
+    call_count = [0]
+
+    class FakeFind:
+        returncode = 0
+        stdout = "src/patina/store.py\n"
+
+    class FakeClaude:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "files": ["src/patina/store.py"],
+                "current_behavior": "",
+                "expected_behavior": "works",
+                "acceptance_criteria": [],
+                "implementation_hints": "",
+            }
+        )
+
+    def selective_run(cmd, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return FakeFind()
+        captured["cmd"] = cmd
+        return FakeClaude()
+
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    monkeypatch.setattr(create_issue, "TRIAGE_MODEL", "opus")
+    with patch.object(create_issue.subprocess, "run", side_effect=selective_run):
+        suggest_fields("Fix something", "bug")
+
+    assert "--model" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "opus"
+
+
+def test_triage_model_default_from_env_create_issue(monkeypatch):
+    monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
+    importlib.reload(create_issue)
+    assert create_issue.TRIAGE_MODEL == "sonnet"
+
+
+def test_triage_model_override_from_env_create_issue(monkeypatch):
+    monkeypatch.setenv("PATINA_AIDLC_TRIAGE_MODEL", "haiku")
+    importlib.reload(create_issue)
+    assert create_issue.TRIAGE_MODEL == "haiku"

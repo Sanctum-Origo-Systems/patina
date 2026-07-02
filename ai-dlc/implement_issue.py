@@ -18,6 +18,8 @@ LOCKFILE = REPO_DIR / ".ai-dlc.lock"
 LOG_FILE = REPO_DIR / "ai-dlc" / "run_history.jsonl"
 MAX_RETRIES = 3
 IMPL_COST_PER_CALL = 2.50
+IMPLEMENT_MODEL = os.environ.get("PATINA_AIDLC_IMPL_MODEL", "opus")
+IMPLEMENT_TIMEOUT = int(os.environ.get("PATINA_AIDLC_TIMEOUT", "900"))
 
 
 # --- Pure functions (testable without mocking) ---
@@ -257,11 +259,11 @@ def implement(issue: dict) -> bool:
     """Run Claude to implement the issue."""
     prompt = build_implementation_prompt(issue)
     result = subprocess.run(
-        ["claude", "-p", "--model", "sonnet", prompt],
+        ["claude", "-p", "--model", IMPLEMENT_MODEL, prompt],
         cwd=REPO_DIR,
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=IMPLEMENT_TIMEOUT,
     )
     return result.returncode == 0
 
