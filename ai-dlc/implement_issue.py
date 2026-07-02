@@ -255,9 +255,25 @@ def build_implementation_prompt(issue: dict) -> str:
     )
 
 
-def implement(issue: dict) -> bool:
-    """Run Claude to implement the issue."""
+def post_attempt_failure(number: int, attempt: int, errors: str):
+    """Post verification failure as a comment on the issue."""
+    comment = f"**AI-DLC Attempt {attempt} failed:**\n\n```\n{errors[-2000:]}\n```"
+    subprocess.run(
+        ["gh", "issue", "comment", str(number), "--repo", REPO, "--body", comment],
+    )
+
+
+def implement(issue: dict, previous_errors: str | None = None) -> bool:
+    """Run Claude to implement the issue. Optionally includes prior failure context."""
     prompt = build_implementation_prompt(issue)
+    if previous_errors:
+        prompt += (
+            f"\n\n## Previous Attempt Failed\n\n"
+            f"The last implementation attempt failed verification with these errors:\n"
+            f"```\n{previous_errors[-2000:]}\n```\n\n"
+            f"Fix these specific issues. Do not start from scratch"
+            f" — build on what's already there.\n"
+        )
     result = subprocess.run(
         ["claude", "-p", "--model", IMPLEMENT_MODEL, prompt],
         cwd=REPO_DIR,
@@ -415,9 +431,10 @@ def implement_single_issue(issue: dict) -> bool:
     branch = create_branch(issue)
     print(f"  Branch: {branch}")
 
+    last_errors = None
     for attempt in range(1, MAX_RETRIES + 1):
         print(f"  Attempt {attempt}/{MAX_RETRIES}...")
-        implement(issue)
+        implement(issue, previous_errors=last_errors)
         claude_calls += 1
         final_attempt = attempt
 
@@ -428,6 +445,8 @@ def implement_single_issue(issue: dict) -> bool:
             break
         else:
             print(f"  Verification failed:\n{errors}")
+            last_errors = errors
+            post_attempt_failure(issue["number"], attempt, errors)
 
     elapsed = time.time() - start_time
     cost = claude_calls * IMPL_COST_PER_CALL
