@@ -485,7 +485,7 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    monkeypatch.setattr(implement_issue, "implement", lambda issue: None)
+    monkeypatch.setattr(implement_issue, "implement", lambda issue, previous_errors=None: None)
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
@@ -508,7 +508,7 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    monkeypatch.setattr(implement_issue, "implement", lambda issue: None)
+    monkeypatch.setattr(implement_issue, "implement", lambda issue, previous_errors=None: None)
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
 
@@ -532,7 +532,7 @@ def test_implement_single_issue_labels_needs_human_on_failure(monkeypatch, tmp_p
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    monkeypatch.setattr(implement_issue, "implement", lambda issue: None)
+    monkeypatch.setattr(implement_issue, "implement", lambda issue, previous_errors=None: None)
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
 
@@ -747,6 +747,59 @@ def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
     assert "Implemented 0 issue(s) this run." in out
 
 
+# --- post_attempt_failure tests ---
+
+
+def test_post_attempt_failure_calls_gh_comment(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    implement_issue.post_attempt_failure(42, 2, "Tests failed")
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[:4] == ["gh", "issue", "comment", "42"]
+    assert "--repo" in cmd
+    assert "--body" in cmd
+
+
+def test_post_attempt_failure_comment_includes_attempt_number(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    implement_issue.post_attempt_failure(7, 3, "lint error")
+
+    body_idx = captured["cmd"].index("--body") + 1
+    body = captured["cmd"][body_idx]
+    assert "AI-DLC Attempt 3 failed:" in body
+    assert "lint error" in body
+
+
+def test_post_attempt_failure_truncates_long_errors(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    long_errors = "x" * 5000
+    implement_issue.post_attempt_failure(1, 1, long_errors)
+
+    body_idx = captured["cmd"].index("--body") + 1
+    body = captured["cmd"][body_idx]
+    assert "x" * 2000 in body
+    assert "x" * 2001 not in body
+
+
 # --- implement() env var tests ---
 
 
@@ -826,3 +879,142 @@ def test_implement_timeout_override_from_env(monkeypatch):
     monkeypatch.setenv("PATINA_AIDLC_TIMEOUT", "1800")
     importlib.reload(implement_issue)
     assert implement_issue.IMPLEMENT_TIMEOUT == 1800
+
+
+# --- implement() with previous_errors tests ---
+
+
+def test_implement_appends_previous_errors_to_prompt(monkeypatch):
+    captured = {}
+
+    def fake_build_prompt(issue):
+        return "BASE_PROMPT"
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue, "build_implementation_prompt", fake_build_prompt)
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test", "body": ""}
+    implement_issue.implement(issue, previous_errors="test failure output")
+
+    prompt_arg = captured["cmd"][-1]
+    assert "Previous Attempt Failed" in prompt_arg
+    assert "test failure output" in prompt_arg
+    assert "Fix these specific issues" in prompt_arg
+
+
+def test_implement_no_previous_errors_omits_section(monkeypatch):
+    captured = {}
+
+    def fake_build_prompt(issue):
+        return "BASE_PROMPT"
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue, "build_implementation_prompt", fake_build_prompt)
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test", "body": ""}
+    implement_issue.implement(issue)
+
+    prompt_arg = captured["cmd"][-1]
+    assert "Previous Attempt Failed" not in prompt_arg
+    assert prompt_arg == "BASE_PROMPT"
+
+
+def test_implement_truncates_previous_errors(monkeypatch):
+    captured = {}
+
+    def fake_build_prompt(issue):
+        return "BASE"
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue, "build_implementation_prompt", fake_build_prompt)
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    issue = {"number": 1, "title": "Test", "body": ""}
+    implement_issue.implement(issue, previous_errors="e" * 5000)
+
+    prompt_arg = captured["cmd"][-1]
+    assert "e" * 2000 in prompt_arg
+    assert "e" * 2001 not in prompt_arg
+
+
+# --- Retry loop error passing tests ---
+
+
+def test_implement_single_issue_passes_errors_to_next_attempt(monkeypatch, tmp_path):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    received_errors = []
+
+    def fake_implement(issue, previous_errors=None):
+        received_errors.append(previous_errors)
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+
+    call_count = [0]
+
+    def fake_verify(branch):
+        call_count[0] += 1
+        if call_count[0] < 2:
+            return False, "test error on attempt 1"
+        return True, ""
+
+    monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+
+    implement_issue.implement_single_issue(_FAKE_ISSUE)
+
+    assert received_errors[0] is None
+    assert received_errors[1] == "test error on attempt 1"
+
+
+def test_implement_single_issue_calls_post_attempt_failure_on_error(monkeypatch, tmp_path):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    post_calls = []
+
+    def fake_post(number, attempt, errors):
+        post_calls.append((number, attempt, errors))
+
+    monkeypatch.setattr(implement_issue, "implement", lambda issue, previous_errors=None: None)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", fake_post)
+
+    def fake_verify(branch):
+        return False, "verification failed"
+
+    monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    implement_issue.implement_single_issue(_FAKE_ISSUE)
+
+    assert len(post_calls) == implement_issue.MAX_RETRIES
+    assert post_calls[0] == (42, 1, "verification failed")
+    assert post_calls[1] == (42, 2, "verification failed")
+    assert post_calls[2] == (42, 3, "verification failed")
