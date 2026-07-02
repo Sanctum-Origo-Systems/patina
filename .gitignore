@@ -9,7 +9,12 @@ dist/
 *.db-journal
 config.yaml
 logs/
-docs/
+docs/*
+!docs/app.md
+!docs/phases/
+!docs/features/
+docs/features/*
+!docs/features/ai-dlc-v2.md
 fixtures/**/*.zip
 
 .claude/scheduled_tasks.lock
