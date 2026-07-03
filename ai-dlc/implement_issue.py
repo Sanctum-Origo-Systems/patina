@@ -21,6 +21,7 @@ LOG_FILE = REPO_DIR / "ai-dlc" / "run_history.jsonl"
 MAX_RETRIES = 3
 IMPLEMENT_MODEL = os.environ.get("PATINA_AIDLC_IMPL_MODEL", "opus")
 IMPLEMENT_TIMEOUT = int(os.environ.get("PATINA_AIDLC_TIMEOUT", "900"))
+PR_REVIEWER = os.environ.get("PATINA_AIDLC_REVIEWER", "andywidjaja")
 
 
 # --- Pure functions (testable without mocking) ---
@@ -577,6 +578,8 @@ def create_pr(
             branch,
             "--base",
             "main",
+            "--assignee",
+            PR_REVIEWER,
         ],
         cwd=REPO_DIR,
     )
@@ -616,6 +619,17 @@ def cleanup_merged_labels():
                 "in-review",
             ],
         )
+
+
+def post_in_progress_comment(number: int):
+    """Comment on the issue noting the bot has started implementing it."""
+    comment = (
+        "**AI-DLC:** The Patina implementation bot has started working on "
+        "this issue. It will open a PR when implementation is complete."
+    )
+    subprocess.run(
+        ["gh", "issue", "comment", str(number), "--repo", REPO, "--body", comment],
+    )
 
 
 def label_in_review(number: int):
@@ -670,6 +684,7 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
             "in-progress",
         ],
     )
+    post_in_progress_comment(issue["number"])
 
     branch = create_branch(issue)
     print(f"  Branch: {branch}")
