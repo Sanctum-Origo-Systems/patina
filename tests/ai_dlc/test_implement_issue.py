@@ -30,10 +30,12 @@ from implement_issue import (
     log_run,
     parent_issue_number,
     parse_dependency_numbers,
+    parse_review_response,
     post_design,
     post_in_progress_comment,
     priority_rank,
     release_lock,
+    review_implementation,
     select_top_issue,
 )
 
@@ -546,6 +548,7 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
 
     result = implement_single_issue(_FAKE_ISSUE)
     assert result is True
@@ -622,6 +625,7 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
 
     verify_calls = [0]
 
@@ -1178,6 +1182,7 @@ def test_implement_single_issue_passes_errors_to_next_attempt(monkeypatch, tmp_p
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
 
     implement_issue.implement_single_issue(_FAKE_ISSUE)
 
@@ -2118,6 +2123,7 @@ def test_implement_single_issue_posts_in_progress_comment(monkeypatch, tmp_path)
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
     monkeypatch.setattr(implement_issue, "verify_implementation", lambda branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
     monkeypatch.setattr(
         implement_issue.subprocess,
         "run",
@@ -2127,3 +2133,275 @@ def test_implement_single_issue_posts_in_progress_comment(monkeypatch, tmp_path)
     implement_single_issue(_FAKE_ISSUE)
 
     assert posted == [42]
+
+
+# --- parse_review_response tests ---
+
+
+def test_parse_review_response_approved():
+    approved, feedback = parse_review_response(
+        '{"approved": true, "issues": [], "summary": "looks good"}'
+    )
+    assert approved is True
+    assert feedback == "looks good"
+
+
+def test_parse_review_response_rejected_lists_issues():
+    approved, feedback = parse_review_response(
+        '{"approved": false, "issues": ["missing test", "wrong pattern"], "summary": "no"}'
+    )
+    assert approved is False
+    assert "missing test" in feedback
+    assert "wrong pattern" in feedback
+
+
+def test_parse_review_response_strips_code_fence():
+    text = '```json\n{"approved": true, "issues": [], "summary": "ok"}\n```'
+    approved, feedback = parse_review_response(text)
+    assert approved is True
+    assert feedback == "ok"
+
+
+def test_parse_review_response_non_json_is_failure():
+    approved, feedback = parse_review_response("this is not json at all")
+    assert approved is False
+    assert "not valid JSON" in feedback
+
+
+def test_parse_review_response_malformed_missing_approved():
+    approved, feedback = parse_review_response('{"summary": "no approved field"}')
+    assert approved is False
+    assert "malformed" in feedback
+
+
+def test_parse_review_response_rejected_without_issues_uses_summary():
+    approved, feedback = parse_review_response(
+        '{"approved": false, "issues": [], "summary": "nope"}'
+    )
+    assert approved is False
+    assert feedback == "nope"
+
+
+# --- review_implementation tests ---
+
+
+def _review_fake_run(diff_stdout, review_json, captured=None):
+    """A single subprocess.run fake that serves both git diff and claude.
+
+    implement_issue and claude_runner share the same subprocess module, so one
+    fake must dispatch on the command. Captures the claude command in `captured`.
+    """
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            if captured is not None:
+                captured["diff_cmd"] = cmd
+            return type("R", (), {"returncode": 0, "stdout": diff_stdout, "stderr": ""})()
+        if captured is not None:
+            captured["claude_cmd"] = cmd
+        return _json_result(review_json)
+
+    return fake_run
+
+
+def test_review_implementation_prompt_includes_issue_and_diff(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        _review_fake_run(
+            "DIFF_CONTENT", '{"approved": true, "issues": [], "summary": "ok"}', captured
+        ),
+    )
+
+    issue = {"number": 31, "title": "Add review step", "body": "Issue body text"}
+    review_implementation(issue, "ai-dlc/31-add-review-step")
+
+    prompt = captured["claude_cmd"][-1]
+    assert "Issue #31: Add review step" in prompt
+    assert "Issue body text" in prompt
+    assert "DIFF_CONTENT" in prompt
+
+
+def test_review_implementation_truncates_diff_to_8000(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        _review_fake_run(
+            "d" * 20000, '{"approved": true, "issues": [], "summary": "ok"}', captured
+        ),
+    )
+
+    review_implementation({"number": 1, "title": "T", "body": ""}, "branch")
+
+    prompt = captured["claude_cmd"][-1]
+    assert "d" * 8000 in prompt
+    assert "d" * 8001 not in prompt
+
+
+def test_review_implementation_runs_git_diff_main_to_branch(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        _review_fake_run("", '{"approved": true, "issues": [], "summary": "ok"}', captured),
+    )
+
+    review_implementation({"number": 1, "title": "T", "body": ""}, "ai-dlc/1-x")
+    assert captured["diff_cmd"] == ["git", "diff", "main..ai-dlc/1-x"]
+
+
+def test_review_implementation_approved(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        _review_fake_run("diff", '{"approved": true, "issues": [], "summary": "great"}'),
+    )
+    approved, feedback = review_implementation({"number": 1, "title": "T", "body": ""}, "branch")
+    assert approved is True
+    assert feedback == "great"
+
+
+def test_review_implementation_rejected_returns_feedback(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        _review_fake_run("diff", '{"approved": false, "issues": ["stub test"], "summary": "bad"}'),
+    )
+    approved, feedback = review_implementation({"number": 1, "title": "T", "body": ""}, "branch")
+    assert approved is False
+    assert "stub test" in feedback
+
+
+def test_review_implementation_treats_claude_failure_as_review_failure(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            return type("R", (), {"returncode": 0, "stdout": "diff", "stderr": ""})()
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    approved, feedback = review_implementation({"number": 1, "title": "T", "body": ""}, "branch")
+    assert approved is False
+    assert "failed" in feedback.lower()
+
+
+def test_review_implementation_handles_missing_body(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        _review_fake_run("diff", '{"approved": true, "issues": [], "summary": "ok"}', captured),
+    )
+    # A None body must not raise.
+    review_implementation({"number": 5, "title": "No body", "body": None}, "branch")
+    assert "No body" in captured["claude_cmd"][-1]
+
+
+# --- Review step integration into the retry loop ---
+
+
+def test_failed_review_triggers_retry_with_feedback(monkeypatch, tmp_path):
+    """A rejected review re-attempts and feeds review issues into the next try."""
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    received_errors = []
+
+    def fake_implement(issue, previous_errors=None):
+        received_errors.append(previous_errors)
+        return _claude_result()
+
+    monkeypatch.setattr(implement_issue, "implement", fake_implement)
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    # Verification always passes; the review gates the first attempt.
+    monkeypatch.setattr(implement_issue, "verify_implementation", lambda branch: (True, ""))
+
+    review_calls = [0]
+
+    def fake_review(issue, branch):
+        review_calls[0] += 1
+        if review_calls[0] < 2:
+            return False, "Review found issues:\n- tests are stubs"
+        return True, "approved"
+
+    monkeypatch.setattr(implement_issue, "review_implementation", fake_review)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    assert implement_single_issue(_FAKE_ISSUE) is True
+    # First attempt had no prior errors; the retry received the review feedback.
+    assert received_errors[0] is None
+    assert received_errors[1] == "Review found issues:\n- tests are stubs"
+    assert review_calls[0] == 2
+
+
+def test_failed_review_all_attempts_labels_needs_human(monkeypatch, tmp_path):
+    """When every review rejects, the issue is flagged needs-human and no PR opens."""
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    gh_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "gh":
+            gh_calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(implement_issue, "verify_implementation", lambda branch: (True, ""))
+
+    pr_calls = []
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: pr_calls.append(True))
+    monkeypatch.setattr(
+        implement_issue, "review_implementation", lambda issue, branch: (False, "still bad")
+    )
+
+    assert implement_single_issue(_FAKE_ISSUE) is False
+    assert pr_calls == []
+    assert [c for c in gh_calls if "needs-human" in c], "Expected needs-human label"
+
+
+def test_passed_review_creates_pr(monkeypatch, tmp_path):
+    """A passing review lets the flow reach PR creation."""
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
+    monkeypatch.setattr(implement_issue, "verify_implementation", lambda branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+
+    review_seen = []
+
+    def fake_review(issue, branch):
+        review_seen.append(branch)
+        return True, "approved"
+
+    monkeypatch.setattr(implement_issue, "review_implementation", fake_review)
+
+    pr_calls = []
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: pr_calls.append(True))
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    assert implement_single_issue(_FAKE_ISSUE) is True
+    assert review_seen == ["ai-dlc/42-test"]
+    assert pr_calls == [True]

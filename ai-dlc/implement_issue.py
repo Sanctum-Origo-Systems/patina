@@ -532,6 +532,85 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
     return True, ""
 
 
+REVIEW_PROMPT = """\
+Review this implementation against the original issue.
+
+Issue #{number}: {title}
+{issue_body}
+
+Diff:
+{diff}
+
+Evaluate:
+1. Does the implementation satisfy each acceptance criterion?
+2. Are the tests meaningful (not just pass-through stubs)?
+3. Does the code follow existing patterns in the codebase?
+
+Respond with JSON only:
+{{
+  "approved": true | false,
+  "issues": ["issue 1", "issue 2"],
+  "summary": "one line"
+}}
+"""
+
+
+def parse_review_response(text: str) -> tuple[bool, str]:
+    """Parse the review verdict JSON into an (approved, feedback) pair.
+
+    Strips a single wrapping code fence if present (Claude often wraps JSON in
+    ```json ... ```). Returns (True, summary) when the review approves. Returns
+    (False, feedback) when the review rejects — feedback lists the review's
+    issues — or when the response is not valid JSON or lacks the 'approved'
+    field, so a malformed response counts as a review failure.
+    """
+    stripped = text.strip()
+    if "```" in stripped:
+        stripped = stripped.split("```")[1].replace("json", "").strip()
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, IndexError):
+        return False, f"Review response was not valid JSON:\n{text[:500]}"
+    if not isinstance(data, dict) or "approved" not in data:
+        return False, f"Review response was malformed:\n{text[:500]}"
+    if data.get("approved"):
+        return True, data.get("summary", "") or ""
+    issues = data.get("issues") or []
+    if isinstance(issues, list) and issues:
+        feedback = "Review found issues:\n" + "\n".join(f"- {i}" for i in issues)
+    else:
+        feedback = data.get("summary") or "Review rejected the implementation."
+    return False, feedback
+
+
+def review_implementation(issue: dict, branch: str) -> tuple[bool, str]:
+    """Review the implementation for semantic quality via Claude.
+
+    Runs `git diff main..<branch>` and sends the diff (truncated to 8000 chars)
+    plus the issue number, title, and body to `claude -p`. Returns (True,
+    summary) when the review approves the work and (False, feedback) otherwise.
+    A subprocess failure or a malformed/non-JSON response is treated as a review
+    failure so the retry loop reattempts with the feedback in its error context.
+    """
+    diff = subprocess.run(
+        ["git", "diff", f"main..{branch}"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_DIR,
+    ).stdout
+
+    prompt = REVIEW_PROMPT.format(
+        number=issue["number"],
+        title=issue["title"],
+        issue_body=issue.get("body", "") or "",
+        diff=diff[:8000],
+    )
+    result = run_claude(prompt, IMPLEMENT_MODEL, IMPLEMENT_TIMEOUT)
+    if not result.success:
+        return False, "Review call failed (timeout or non-zero exit)."
+    return parse_review_response(result.text)
+
+
 def cleanup_branch(branch: str):
     """Delete failed branch locally and remotely."""
     subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
@@ -696,14 +775,23 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
         final_attempt = attempt
 
         valid, errors = verify_implementation(branch)
-        if valid:
-            success = True
-            print("  Verification passed.")
-            break
-        else:
+        if not valid:
             print(f"  Verification failed:\n{errors}")
             last_errors = errors
             post_attempt_failure(issue["number"], attempt, errors)
+            continue
+
+        print("  Verification passed. Reviewing implementation...")
+        approved, feedback = review_implementation(issue, branch)
+        if not approved:
+            print(f"  Review failed:\n{feedback}")
+            last_errors = feedback
+            post_attempt_failure(issue["number"], attempt, feedback)
+            continue
+
+        success = True
+        print("  Review passed.")
+        break
 
     elapsed = time.time() - start_time
     total_cost = sum(r.cost_usd for r in claude_results)
