@@ -13,7 +13,9 @@ from triage_issues import (
     decompose_issue,
     log_run,
     parse_file_discovery_response,
+    parse_sub_issue_response,
     parse_triage_response,
+    suggest_sub_issue_fields,
     triage_issue,
     validate_discovered_files,
 )
@@ -27,6 +29,18 @@ def _cr(cost_usd=0.02, input_tokens=2000, output_tokens=60, cache_read_tokens=16
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
+        success=success,
+    )
+
+
+def _cr_text(text, success=True):
+    """Build a successful ClaudeResult carrying a text payload."""
+    return ClaudeResult(
+        text=text,
+        cost_usd=0.01,
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_tokens=0,
         success=success,
     )
 
@@ -200,6 +214,7 @@ def test_create_sub_issues_returns_numbers_in_order(monkeypatch):
         ]
     }
     state = {"n": 0, "calls": []}
+    monkeypatch.setattr(triage_issues, "suggest_sub_issue_fields", lambda *a, **k: None)
     monkeypatch.setattr(triage_issues.subprocess, "run", _gh_create_stub(state))
 
     created = create_sub_issues(42, result)
@@ -214,6 +229,7 @@ def test_create_sub_issues_body_has_parent_hint_and_deps(monkeypatch):
         ]
     }
     state = {"n": 0, "calls": []}
+    monkeypatch.setattr(triage_issues, "suggest_sub_issue_fields", lambda *a, **k: None)
     monkeypatch.setattr(triage_issues.subprocess, "run", _gh_create_stub(state))
 
     create_sub_issues(42, result)
@@ -235,6 +251,7 @@ def test_create_sub_issues_skips_unmet_dependency(monkeypatch):
         ]
     }
     state = {"n": 0, "calls": []}
+    monkeypatch.setattr(triage_issues, "suggest_sub_issue_fields", lambda *a, **k: None)
     monkeypatch.setattr(triage_issues.subprocess, "run", _gh_create_stub(state))
 
     create_sub_issues(42, result)
@@ -249,12 +266,147 @@ def test_create_sub_issues_omits_failed_creations(monkeypatch):
         ]
     }
     state = {"n": 0, "calls": []}
+    monkeypatch.setattr(triage_issues, "suggest_sub_issue_fields", lambda *a, **k: None)
     monkeypatch.setattr(
         triage_issues.subprocess, "run", _gh_create_stub(state, fail_titles={"Bad"})
     )
 
     created = create_sub_issues(42, result)
     assert created == [101]
+
+
+# --- parse_sub_issue_response tests ---
+
+
+def test_parse_sub_issue_response_plain_json():
+    raw = '{"expected_behavior":"emits a report","acceptance_criteria":["foo() returns 3"]}'
+    fields = parse_sub_issue_response(raw)
+    assert fields["expected_behavior"] == "emits a report"
+    assert fields["acceptance_criteria"] == ["foo() returns 3"]
+
+
+def test_parse_sub_issue_response_markdown_fenced():
+    raw = (
+        "Here you go:\n```json\n"
+        '{"expected_behavior":"writes rows to store","acceptance_criteria":["a","b"]}\n```'
+    )
+    fields = parse_sub_issue_response(raw)
+    assert fields["expected_behavior"] == "writes rows to store"
+    assert fields["acceptance_criteria"] == ["a", "b"]
+
+
+def test_parse_sub_issue_response_invalid_json_returns_none():
+    assert parse_sub_issue_response("not json at all") is None
+
+
+def test_parse_sub_issue_response_missing_field_returns_none():
+    assert parse_sub_issue_response('{"acceptance_criteria":["a"]}') is None
+
+
+# --- suggest_sub_issue_fields tests ---
+
+
+def _step(title="Add design_issue()", files=("a.py",), why_first="foundational"):
+    return {
+        "order": 1,
+        "title": title,
+        "points": 2,
+        "depends_on": [],
+        "files": list(files),
+        "why_first": why_first,
+    }
+
+
+def test_suggest_sub_issue_fields_returns_none_without_claude(monkeypatch):
+    monkeypatch.setattr(triage_issues.shutil, "which", lambda name: None)
+    assert suggest_sub_issue_fields(42, "parent summary", _step()) is None
+
+
+def test_suggest_sub_issue_fields_parses_claude_json(monkeypatch):
+    monkeypatch.setattr(triage_issues.shutil, "which", lambda name: "/usr/bin/claude")
+    payload = '{"expected_behavior":"prints a table","acceptance_criteria":["render() emits rows"]}'
+    monkeypatch.setattr(triage_issues, "run_claude", lambda *a, **k: _cr_text(payload))
+
+    fields = suggest_sub_issue_fields(42, "parent summary", _step())
+    assert fields["expected_behavior"] == "prints a table"
+    assert fields["acceptance_criteria"] == ["render() emits rows"]
+
+
+def test_suggest_sub_issue_fields_returns_none_on_failed_call(monkeypatch):
+    monkeypatch.setattr(triage_issues.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(triage_issues, "run_claude", lambda *a, **k: _cr(success=False))
+    assert suggest_sub_issue_fields(42, "parent summary", _step()) is None
+
+
+def test_suggest_sub_issue_fields_returns_none_on_bad_json(monkeypatch):
+    monkeypatch.setattr(triage_issues.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(triage_issues, "run_claude", lambda *a, **k: _cr_text("garbage"))
+    assert suggest_sub_issue_fields(42, "parent summary", _step()) is None
+
+
+def test_suggest_sub_issue_fields_prompt_includes_context(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(triage_issues.shutil, "which", lambda name: "/usr/bin/claude")
+
+    def fake_run_claude(prompt, model, timeout):
+        captured["prompt"] = prompt
+        return _cr_text('{"expected_behavior":"x","acceptance_criteria":[]}')
+
+    monkeypatch.setattr(triage_issues, "run_claude", fake_run_claude)
+    suggest_sub_issue_fields(42, "Ship the widget", _step(title="Wire the button"))
+
+    assert "#42" in captured["prompt"]
+    assert "Ship the widget" in captured["prompt"]
+    assert "Wire the button" in captured["prompt"]
+    assert "foundational" in captured["prompt"]
+
+
+# --- create_sub_issues LLM enrichment tests ---
+
+
+def test_create_sub_issues_uses_llm_fields_in_body(monkeypatch):
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "Step 1", "points": 2, "depends_on": [], "files": ["a.py"]},
+        ]
+    }
+    state = {"n": 0, "calls": []}
+    monkeypatch.setattr(
+        triage_issues,
+        "suggest_sub_issue_fields",
+        lambda *a, **k: {
+            "expected_behavior": "render() returns a formatted table string",
+            "acceptance_criteria": [
+                "render([]) returns an empty string",
+                "render(rows) has a header",
+            ],
+        },
+    )
+    monkeypatch.setattr(triage_issues.subprocess, "run", _gh_create_stub(state))
+
+    create_sub_issues(42, result, "parent summary")
+
+    body = state["calls"][0]["body"]
+    assert "render() returns a formatted table string" in body
+    assert "Step 1" not in body.split("## Expected Behavior")[1].split("##")[0]
+    assert "render([]) returns an empty string" in body
+    assert "render(rows) has a header" in body
+
+
+def test_create_sub_issues_falls_back_to_title_on_none(monkeypatch):
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "Step 1", "points": 2, "depends_on": [], "files": ["a.py"]},
+        ]
+    }
+    state = {"n": 0, "calls": []}
+    monkeypatch.setattr(triage_issues, "suggest_sub_issue_fields", lambda *a, **k: None)
+    monkeypatch.setattr(triage_issues.subprocess, "run", _gh_create_stub(state))
+
+    create_sub_issues(42, result, "parent summary")
+
+    expected_section = state["calls"][0]["body"].split("## Expected Behavior")[1].split("##")[0]
+    assert "Step 1" in expected_section
 
 
 # --- decompose_issue tests ---
@@ -268,7 +420,7 @@ def test_decompose_issue_labels_and_posts_summary(monkeypatch):
         ],
     }
     calls = []
-    monkeypatch.setattr(triage_issues, "create_sub_issues", lambda n, r: [101, 102])
+    monkeypatch.setattr(triage_issues, "create_sub_issues", lambda n, r, s="": [101, 102])
     monkeypatch.setattr(
         triage_issues.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or _FakeProc(0)
     )
@@ -285,7 +437,7 @@ def test_decompose_issue_labels_and_posts_summary(monkeypatch):
 def test_decompose_issue_skips_summary_when_no_sub_issues(monkeypatch):
     result = {"points": 5, "decomposition": []}
     calls = []
-    monkeypatch.setattr(triage_issues, "create_sub_issues", lambda n, r: [])
+    monkeypatch.setattr(triage_issues, "create_sub_issues", lambda n, r, s="": [])
     monkeypatch.setattr(
         triage_issues.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or _FakeProc(0)
     )
@@ -350,7 +502,7 @@ def test_triage_issue_needs_decomposition(monkeypatch):
     monkeypatch.setattr(
         triage_issues,
         "decompose_issue",
-        lambda n, r: calls.append(("decompose", n)),
+        lambda n, r, s="": calls.append(("decompose", n)),
     )
 
     triage_issue(_make_issue())

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from datetime import UTC, datetime
@@ -90,6 +91,29 @@ Respond with JSON only:
 }}
 """
 
+SUB_ISSUE_PROMPT = """\
+Generate structured issue fields for this sub-issue of a decomposed parent.
+
+Parent issue: #{parent_number}
+Parent summary: {parent_summary}
+
+Sub-issue: {step_title}
+Files: {step_files}
+Reason for ordering: {step_reason}
+
+Respond with JSON only:
+{{
+  "expected_behavior": "specific, testable description",
+  "acceptance_criteria": ["criterion 1", "criterion 2"]
+}}
+
+Rules:
+- Expected behavior must describe observable outputs, not repeat the title.
+- Acceptance criteria must be verifiable by running a test or command.
+- Do not include generic criteria like "tests pass" or "lint clean".
+- Reference function names and modules, not line numbers.
+"""
+
 
 # --- Pure functions (testable without mocking) ---
 
@@ -119,6 +143,24 @@ def parse_file_discovery_response(stdout: str) -> list[dict]:
 def validate_discovered_files(files: list[dict], repo_dir: Path) -> list[dict]:
     """Filter to files that exist or are new test files."""
     return [f for f in files if (repo_dir / f["path"]).exists() or f["path"].startswith("tests/")]
+
+
+def parse_sub_issue_response(stdout: str) -> dict | None:
+    """Extract sub-issue fields JSON from Claude's output.
+
+    Returns a dict with 'expected_behavior' and 'acceptance_criteria', or None
+    if the response is not valid JSON or is missing the expected fields.
+    """
+    text = stdout.strip()
+    if "```" in text:
+        text = text.split("```")[1].replace("json", "").strip()
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, IndexError):
+        return None
+    if not isinstance(data, dict) or "expected_behavior" not in data:
+        return None
+    return data
 
 
 def build_decomposition_comment(result: dict) -> str:
@@ -304,12 +346,41 @@ def approve_issue(number: int, priority: str, reason: str):
     )
 
 
-def create_sub_issues(parent_number: int, result: dict) -> list[int]:
+def suggest_sub_issue_fields(parent_number: int, parent_summary: str, step: dict) -> dict | None:
+    """Ask Claude for a specific Expected Behavior + Acceptance Criteria.
+
+    Returns a dict with 'expected_behavior' and 'acceptance_criteria' keys, or
+    None if claude is unavailable, the call fails, or the response is not valid
+    JSON. Callers fall back to the step title on None.
+    """
+    if not shutil.which("claude"):
+        return None
+
+    why = step.get("why_first") or step.get("why_after", "")
+    prompt = SUB_ISSUE_PROMPT.format(
+        parent_number=parent_number,
+        parent_summary=parent_summary,
+        step_title=step["title"],
+        step_files=", ".join(step.get("files", [])),
+        step_reason=why,
+    )
+    result = run_claude(prompt, TRIAGE_MODEL, 90)
+    if not result.success:
+        return None
+    return parse_sub_issue_response(result.text)
+
+
+def create_sub_issues(parent_number: int, result: dict, parent_summary: str = "") -> list[int]:
     """Create sub-issues from a decomposition and return their numbers.
 
     Sub-issues are created in decomposition order. Each body references the
     parent issue and lists 'Depends on: #N' for any earlier steps in the same
     decomposition that have already been created.
+
+    For each step, an LLM call generates a specific Expected Behavior and
+    feature-specific Acceptance Criteria so the sub-issue survives triage. If
+    that call fails or returns invalid JSON, the step title is used as the
+    Expected Behavior with no extra criteria (the prior behavior).
     """
     step_to_issue: dict[int, int] = {}
     created: list[int] = []
@@ -319,14 +390,22 @@ def create_sub_issues(parent_number: int, result: dict) -> list[int]:
         ]
         deps = "Depends on: " + ", ".join(dep_refs) if dep_refs else ""
 
+        fields = suggest_sub_issue_fields(parent_number, parent_summary, step)
+        if fields:
+            expected = fields.get("expected_behavior") or step["title"]
+            extra_criteria = "\n".join(fields.get("acceptance_criteria", []))
+        else:
+            expected = step["title"]
+            extra_criteria = ""
+
         why = step.get("why_first") or step.get("why_after", "")
         body = build_issue_body(
             summary=step["title"],
             issue_type="feature",
             files="\n".join(step.get("files", [])),
             current_behavior="",
-            expected=step["title"],
-            extra_criteria="",
+            expected=expected,
+            extra_criteria=extra_criteria,
             hints=f"Sub-issue of #{parent_number}. {why}".strip(),
             deps=deps,
             context=f"Parent issue: #{parent_number}",
@@ -346,7 +425,7 @@ def create_sub_issues(parent_number: int, result: dict) -> list[int]:
     return created
 
 
-def decompose_issue(number: int, result: dict):
+def decompose_issue(number: int, result: dict, parent_summary: str = ""):
     """Label the parent needs-decomposition, create sub-issues, post summary."""
     subprocess.run(
         ["gh", "issue", "edit", str(number), "--repo", REPO, "--add-label", "needs-decomposition"],
@@ -355,7 +434,7 @@ def decompose_issue(number: int, result: dict):
     subprocess.run(
         ["gh", "issue", "comment", str(number), "--repo", REPO, "--body", comment],
     )
-    sub_issues = create_sub_issues(number, result)
+    sub_issues = create_sub_issues(number, result, parent_summary)
     if sub_issues:
         subprocess.run(
             [
@@ -396,7 +475,7 @@ def triage_issue(issue: dict) -> list[ClaudeResult]:
     if verdict["verdict"] == "ready":
         approve_issue(issue["number"], verdict["priority"], verdict["reason"])
     elif verdict["verdict"] == "needs-decomposition":
-        decompose_issue(issue["number"], verdict)
+        decompose_issue(issue["number"], verdict, issue.get("body") or "")
 
     return results
 
