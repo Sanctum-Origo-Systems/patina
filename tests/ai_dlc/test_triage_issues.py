@@ -891,6 +891,69 @@ def test_discover_files_uses_triage_model(monkeypatch, tmp_path):
     assert isinstance(result, ClaudeResult)
 
 
+# --- load_project_context tests ---
+
+
+def test_load_project_context_returns_tree_and_claude_md(monkeypatch, tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("# CLAUDE\nProject instructions")
+
+    def fake_find(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "src/patina/store.py\n"})()
+
+    monkeypatch.setattr(triage_issues, "REPO_DIR", tmp_path)
+    monkeypatch.setattr(triage_issues.subprocess, "run", fake_find)
+
+    tree, claude_md = triage_issues.load_project_context()
+    assert "src/patina/store.py" in tree
+    assert "Project instructions" in claude_md
+
+
+# --- evaluate_issue codebase-context tests ---
+
+
+def test_evaluate_issue_prompt_includes_tree_and_claude_md_before_issue(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        triage_issues,
+        "load_project_context",
+        lambda: ("src/patina/store.py\nsrc/patina/graph.py", "# CLAUDE\nCognitive assistant"),
+    )
+
+    def fake_run_claude(prompt, model, timeout):
+        captured["prompt"] = prompt
+        return _cr_text('{"verdict":"ready","points":1,"priority":"p1","reason":"ok"}')
+
+    monkeypatch.setattr(triage_issues, "run_claude", fake_run_claude)
+
+    triage_issues.evaluate_issue(_make_issue(number=7, title="Add flag", body="## Summary\nx"))
+
+    prompt = captured["prompt"]
+    # Both the project tree and CLAUDE.md contents are present.
+    assert "src/patina/store.py" in prompt
+    assert "Cognitive assistant" in prompt
+    # The codebase context appears before the issue text is appended.
+    assert prompt.index("src/patina/store.py") < prompt.index("Issue #7: Add flag")
+    assert prompt.index("Cognitive assistant") < prompt.index("Issue #7: Add flag")
+
+
+def test_evaluate_issue_prompt_guides_file_reference_and_duplication_checks(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(triage_issues, "load_project_context", lambda: ("tree", "claude"))
+
+    def fake_run_claude(prompt, model, timeout):
+        captured["prompt"] = prompt
+        return _cr_text('{"verdict":"ready","points":1,"priority":"p1","reason":"ok"}')
+
+    monkeypatch.setattr(triage_issues, "run_claude", fake_run_claude)
+    triage_issues.evaluate_issue(_make_issue())
+
+    prompt = captured["prompt"].lower()
+    # The prompt instructs the model to validate references and flag duplication.
+    assert "invalid" in prompt
+    assert "duplication" in prompt
+
+
 def test_triage_model_default_from_env(monkeypatch):
     monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
     importlib.reload(triage_issues)
