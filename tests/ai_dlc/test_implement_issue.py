@@ -1825,6 +1825,37 @@ def test_design_gate_skips_when_awaiting_approval(monkeypatch):
     assert design_gate(issue, require_design=True) is False
 
 
+def test_design_gate_require_design_no_comment_calls_design_and_labels(monkeypatch):
+    """--require-design with no design comment: design_issue() runs and needs-design is added."""
+    issue = {"number": 44, "title": "Add flag", "body": "b", "labels": []}
+    calls = []
+
+    monkeypatch.setattr(implement_issue, "has_design_comment", lambda n: False)
+    monkeypatch.setattr(
+        implement_issue, "design_issue", lambda i: calls.append("design") or "the design"
+    )
+    monkeypatch.setattr(implement_issue, "post_design", lambda n, d: calls.append("post"))
+    monkeypatch.setattr(implement_issue, "add_needs_design_label", lambda n: calls.append("label"))
+
+    assert design_gate(issue, require_design=True) is False
+    assert "design" in calls
+    assert "label" in calls
+
+
+def test_design_gate_empty_design_skips_comment(monkeypatch):
+    """design_issue() returning an empty string: no comment is posted."""
+    issue = {"number": 44, "title": "T", "body": "b", "labels": []}
+    posted = []
+
+    monkeypatch.setattr(implement_issue, "has_design_comment", lambda n: False)
+    monkeypatch.setattr(implement_issue, "design_issue", lambda i: "")
+    monkeypatch.setattr(implement_issue, "post_design", lambda n, d: posted.append(d))
+    monkeypatch.setattr(implement_issue, "add_needs_design_label", lambda n: None)
+
+    assert design_gate(issue, require_design=True) is False
+    assert posted == []
+
+
 # --- implement_single_issue design gate integration ---
 
 

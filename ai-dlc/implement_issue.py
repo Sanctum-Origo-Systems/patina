@@ -426,9 +426,10 @@ def design_gate(issue: dict, require_design: bool = False) -> bool:
 
     print(f"#{number}: no design found, generating implementation design.")
     design = design_issue(issue)
-    post_design(number, design)
+    if design:
+        post_design(number, design)
     add_needs_design_label(number)
-    print(f"#{number}: design posted and needs-design added, skipping implementation.")
+    print(f"#{number}: design generated and needs-design added, skipping implementation.")
     return False
 
 
