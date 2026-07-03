@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from claude_runner import ClaudeResult, run_claude
+from create_issue import build_issue_body
 
 REPO = "Sanctum-Origo-Systems/patina"
 REPO_DIR = Path(__file__).resolve().parent.parent
@@ -146,6 +147,15 @@ def build_decomposition_comment(result: dict) -> str:
         "skips issues whose dependencies aren't merged yet."
     )
     return table
+
+
+def build_sub_issue_summary_comment(parent_number: int, sub_issues: list[int]) -> str:
+    """Build the parent comment listing the created sub-issue numbers."""
+    lines = "\n".join(f"- #{n}" for n in sub_issues)
+    return (
+        f"**Auto-triage — Sub-issues created:**\n\n"
+        f"Decomposed #{parent_number} into {len(sub_issues)} sub-issue(s):\n{lines}"
+    )
 
 
 def log_run(
@@ -294,8 +304,50 @@ def approve_issue(number: int, priority: str, reason: str):
     )
 
 
+def create_sub_issues(parent_number: int, result: dict) -> list[int]:
+    """Create sub-issues from a decomposition and return their numbers.
+
+    Sub-issues are created in decomposition order. Each body references the
+    parent issue and lists 'Depends on: #N' for any earlier steps in the same
+    decomposition that have already been created.
+    """
+    step_to_issue: dict[int, int] = {}
+    created: list[int] = []
+    for step in result.get("decomposition", []):
+        dep_refs = [
+            f"#{step_to_issue[d]}" for d in step.get("depends_on", []) if d in step_to_issue
+        ]
+        deps = "Depends on: " + ", ".join(dep_refs) if dep_refs else ""
+
+        why = step.get("why_first") or step.get("why_after", "")
+        body = build_issue_body(
+            summary=step["title"],
+            issue_type="feature",
+            files="\n".join(step.get("files", [])),
+            current_behavior="",
+            expected=step["title"],
+            extra_criteria="",
+            hints=f"Sub-issue of #{parent_number}. {why}".strip(),
+            deps=deps,
+            context=f"Parent issue: #{parent_number}",
+        )
+
+        proc = subprocess.run(
+            ["gh", "issue", "create", "--repo", REPO, "--title", step["title"], "--body", body],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            issue_url = proc.stdout.strip()
+            issue_num = int(issue_url.rstrip("/").split("/")[-1])
+            step_to_issue[step["order"]] = issue_num
+            created.append(issue_num)
+
+    return created
+
+
 def decompose_issue(number: int, result: dict):
-    """Label issue as needs-decomposition and post breakdown comment."""
+    """Label the parent needs-decomposition, create sub-issues, post summary."""
     subprocess.run(
         ["gh", "issue", "edit", str(number), "--repo", REPO, "--add-label", "needs-decomposition"],
     )
@@ -303,6 +355,20 @@ def decompose_issue(number: int, result: dict):
     subprocess.run(
         ["gh", "issue", "comment", str(number), "--repo", REPO, "--body", comment],
     )
+    sub_issues = create_sub_issues(number, result)
+    if sub_issues:
+        subprocess.run(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(number),
+                "--repo",
+                REPO,
+                "--body",
+                build_sub_issue_summary_comment(number, sub_issues),
+            ],
+        )
 
 
 # --- Orchestration ---
