@@ -3,6 +3,11 @@ on:
   pull_request:
     types: [closed]
 
+permissions:
+  issues: write
+  contents: read
+  pull-requests: read
+
 jobs:
   cleanup:
     if: github.event.pull_request.merged == true
@@ -32,3 +37,18 @@ jobs:
                 } catch (e) {}
               }
             }
+
+  auto-close-parent:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Auto-close parent issue when last sub-issue completes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python ai-dlc/auto_close_parent.py "${{ github.event.pull_request.number }}"
