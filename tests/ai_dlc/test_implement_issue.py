@@ -4,7 +4,9 @@ import importlib
 import json
 import os
 
+import claude_runner
 import implement_issue
+from claude_runner import ClaudeResult
 from implement_issue import (
     acquire_lock,
     build_branch_name,
@@ -21,6 +23,21 @@ from implement_issue import (
     parse_dependency_numbers,
     release_lock,
 )
+
+
+def _claude_result(
+    cost_usd=1.5, input_tokens=1000, output_tokens=200, cache_read_tokens=500, success=True
+):
+    """Build a ClaudeResult for mocking implement()/run_claude()."""
+    return ClaudeResult(
+        text="",
+        cost_usd=cost_usd,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        success=success,
+    )
+
 
 # --- Pure function tests: parse_dependency_numbers ---
 
@@ -104,12 +121,20 @@ def test_build_pr_body_includes_closes():
 
 def test_build_pr_body_includes_stats():
     issue = {"number": 42, "title": "Add flag"}
-    body = build_pr_body(issue, attempts=2, claude_calls=3, duration=120.5)
+    body = build_pr_body(
+        issue,
+        attempts=2,
+        duration=120.5,
+        cost_usd=3.42,
+        input_tokens=45000,
+        output_tokens=2300,
+    )
     assert "## AI-DLC Run Stats" in body
     assert "Attempts: 2/" in body
-    assert "Claude calls: 3" in body
     assert "Duration: 120s" in body
-    assert "Estimated cost: ~$" in body
+    assert "Input tokens: 45,000" in body
+    assert "Output tokens: 2,300" in body
+    assert "Cost: $3.42" in body
 
 
 def test_build_pr_body_no_stats_when_zero_calls():
@@ -338,7 +363,7 @@ def test_dependencies_met_no_deps():
 def test_log_run_writes_json_entry(tmp_path, monkeypatch):
     log_path = tmp_path / "run_history.jsonl"
     monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
-    log_run(17, True, 2, 120.0, 5.00)
+    log_run(17, True, 2, 120.0, 5.00, 45000, 2300, 16832)
 
     lines = log_path.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -347,8 +372,22 @@ def test_log_run_writes_json_entry(tmp_path, monkeypatch):
     assert entry["success"] is True
     assert entry["attempts"] == 2
     assert entry["duration_seconds"] == 120
-    assert entry["estimated_cost"] == 5.00
+    assert entry["cost_usd"] == 5.00
+    assert entry["input_tokens"] == 45000
+    assert entry["output_tokens"] == 2300
+    assert entry["cache_read_tokens"] == 16832
     assert "timestamp" in entry
+
+
+def test_log_run_token_fields_default_to_zero(tmp_path, monkeypatch):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    log_run(1, True, 1, 10.0, 2.50)
+
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["input_tokens"] == 0
+    assert entry["output_tokens"] == 0
+    assert entry["cache_read_tokens"] == 0
 
 
 def test_log_run_appends_multiple_entries(tmp_path, monkeypatch):
@@ -378,7 +417,7 @@ def test_log_run_rounds_cost(tmp_path, monkeypatch):
     log_run(1, True, 1, 10.0, 2.555)
 
     entry = json.loads(log_path.read_text().strip())
-    assert entry["estimated_cost"] == 2.56
+    assert entry["cost_usd"] == 2.56
 
 
 # --- Subprocess tests: create_branch ---
@@ -488,7 +527,9 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    monkeypatch.setattr(implement_issue, "implement", lambda issue, previous_errors=None: None)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
@@ -511,7 +552,9 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    monkeypatch.setattr(implement_issue, "implement", lambda issue, previous_errors=None: None)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
 
@@ -535,7 +578,9 @@ def test_implement_single_issue_labels_needs_human_on_failure(monkeypatch, tmp_p
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    monkeypatch.setattr(implement_issue, "implement", lambda issue, previous_errors=None: None)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
 
@@ -543,6 +588,49 @@ def test_implement_single_issue_labels_needs_human_on_failure(monkeypatch, tmp_p
 
     needs_human_calls = [c for c in gh_calls if "needs-human" in c]
     assert needs_human_calls, "Expected a gh call adding needs-human label"
+
+
+def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
+    """run_history entry sums real token/cost data across all attempts."""
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    results = iter(
+        [
+            _claude_result(cost_usd=1.0, input_tokens=100, output_tokens=10, cache_read_tokens=5),
+            _claude_result(cost_usd=2.5, input_tokens=250, output_tokens=30, cache_read_tokens=15),
+        ]
+    )
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: next(results)
+    )
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
+    monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
+    monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+
+    verify_calls = [0]
+
+    def fake_verify(branch):
+        verify_calls[0] += 1
+        if verify_calls[0] < 2:
+            return False, "attempt 1 failed"
+        return True, ""
+
+    monkeypatch.setattr(implement_issue, "verify_implementation", fake_verify)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    assert implement_single_issue(_FAKE_ISSUE) is True
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["cost_usd"] == 3.5
+    assert entry["input_tokens"] == 350
+    assert entry["output_tokens"] == 40
+    assert entry["cache_read_tokens"] == 20
 
 
 # --- main() loop tests ---
@@ -823,7 +911,7 @@ def test_implement_uses_default_model_and_timeout(monkeypatch):
     monkeypatch.setattr(implement_issue, "IMPLEMENT_MODEL", "opus")
     monkeypatch.setattr(implement_issue, "IMPLEMENT_TIMEOUT", 900)
     monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "prompt")
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     implement({"number": 1, "title": "Test", "body": ""})
 
@@ -842,7 +930,7 @@ def test_implement_uses_env_model(monkeypatch):
     monkeypatch.setattr(implement_issue, "IMPLEMENT_MODEL", "haiku")
     monkeypatch.setattr(implement_issue, "IMPLEMENT_TIMEOUT", 900)
     monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "prompt")
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     implement({"number": 1, "title": "Test", "body": ""})
 
@@ -859,7 +947,7 @@ def test_implement_uses_env_timeout(monkeypatch):
     monkeypatch.setattr(implement_issue, "IMPLEMENT_MODEL", "opus")
     monkeypatch.setattr(implement_issue, "IMPLEMENT_TIMEOUT", 1800)
     monkeypatch.setattr(implement_issue, "build_implementation_prompt", lambda issue: "prompt")
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     implement({"number": 1, "title": "Test", "body": ""})
 
@@ -904,7 +992,7 @@ def test_implement_appends_previous_errors_to_prompt(monkeypatch):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue, "build_implementation_prompt", fake_build_prompt)
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     issue = {"number": 1, "title": "Test", "body": ""}
     implement_issue.implement(issue, previous_errors="test failure output")
@@ -926,7 +1014,7 @@ def test_implement_no_previous_errors_omits_section(monkeypatch):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue, "build_implementation_prompt", fake_build_prompt)
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     issue = {"number": 1, "title": "Test", "body": ""}
     implement_issue.implement(issue)
@@ -947,7 +1035,7 @@ def test_implement_truncates_previous_errors(monkeypatch):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue, "build_implementation_prompt", fake_build_prompt)
-    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
     issue = {"number": 1, "title": "Test", "body": ""}
     implement_issue.implement(issue, previous_errors="e" * 5000)
@@ -968,6 +1056,7 @@ def test_implement_single_issue_passes_errors_to_next_attempt(monkeypatch, tmp_p
 
     def fake_implement(issue, previous_errors=None):
         received_errors.append(previous_errors)
+        return _claude_result()
 
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
@@ -1006,7 +1095,9 @@ def test_implement_single_issue_calls_post_attempt_failure_on_error(monkeypatch,
     def fake_post(number, attempt, errors):
         post_calls.append((number, attempt, errors))
 
-    monkeypatch.setattr(implement_issue, "implement", lambda issue, previous_errors=None: None)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
     monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
     monkeypatch.setattr(implement_issue, "post_attempt_failure", fake_post)

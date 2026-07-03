@@ -12,12 +12,13 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from claude_runner import ClaudeResult, run_claude
+
 REPO = "Sanctum-Origo-Systems/patina"
 REPO_DIR = Path(__file__).resolve().parent.parent
 LOCKFILE = REPO_DIR / ".ai-dlc.lock"
 LOG_FILE = REPO_DIR / "ai-dlc" / "run_history.jsonl"
 MAX_RETRIES = 3
-IMPL_COST_PER_CALL = 2.50
 IMPLEMENT_MODEL = os.environ.get("PATINA_AIDLC_IMPL_MODEL", "opus")
 IMPLEMENT_TIMEOUT = int(os.environ.get("PATINA_AIDLC_TIMEOUT", "900"))
 
@@ -49,8 +50,10 @@ def detect_issue_type(body: str) -> str:
 def build_pr_body(
     issue: dict,
     attempts: int = 0,
-    claude_calls: int = 0,
     duration: float = 0,
+    cost_usd: float = 0.0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> str:
     """Build the PR description markdown."""
     body = (
@@ -62,14 +65,14 @@ def build_pr_body(
         f"- `uv run pytest eval/deterministic/` — eval tests pass\n"
         f"- `uv run ruff check && uv run ruff format --check` — clean\n\n"
     )
-    if claude_calls > 0:
-        cost = claude_calls * IMPL_COST_PER_CALL
+    if attempts > 0:
         body += (
             f"## AI-DLC Run Stats\n"
             f"- Attempts: {attempts}/{MAX_RETRIES}\n"
-            f"- Claude calls: {claude_calls}\n"
             f"- Duration: {duration:.0f}s\n"
-            f"- Estimated cost: ~${cost:.2f}\n\n"
+            f"- Input tokens: {input_tokens:,}\n"
+            f"- Output tokens: {output_tokens:,}\n"
+            f"- Cost: ${cost_usd:.2f}\n\n"
         )
     body += "Automated implementation by Patina AI-DLC."
     return body
@@ -122,7 +125,16 @@ def release_lock():
     LOCKFILE.unlink(missing_ok=True)
 
 
-def log_run(issue_number: int, success: bool, attempts: int, duration: float, cost: float):
+def log_run(
+    issue_number: int,
+    success: bool,
+    attempts: int,
+    duration: float,
+    cost_usd: float,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+):
     """Append a JSON entry to the run history log."""
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -130,7 +142,10 @@ def log_run(issue_number: int, success: bool, attempts: int, duration: float, co
         "success": success,
         "attempts": attempts,
         "duration_seconds": round(duration),
-        "estimated_cost": round(cost, 2),
+        "cost_usd": round(cost_usd, 2),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
     }
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -284,7 +299,7 @@ def post_attempt_failure(number: int, attempt: int, errors: str):
     )
 
 
-def implement(issue: dict, previous_errors: str | None = None) -> bool:
+def implement(issue: dict, previous_errors: str | None = None) -> ClaudeResult:
     """Run Claude to implement the issue. Optionally includes prior failure context."""
     prompt = build_implementation_prompt(issue)
     if previous_errors:
@@ -295,14 +310,7 @@ def implement(issue: dict, previous_errors: str | None = None) -> bool:
             f"Fix these specific issues. Do not start from scratch"
             f" — build on what's already there.\n"
         )
-    result = subprocess.run(
-        ["claude", "-p", "--model", IMPLEMENT_MODEL, prompt],
-        cwd=REPO_DIR,
-        capture_output=True,
-        text=True,
-        timeout=IMPLEMENT_TIMEOUT,
-    )
-    return result.returncode == 0
+    return run_claude(prompt, IMPLEMENT_MODEL, IMPLEMENT_TIMEOUT)
 
 
 def verify_implementation(branch: str) -> tuple[bool, str]:
@@ -377,13 +385,22 @@ def create_pr(
     issue: dict,
     branch: str,
     attempts: int = 0,
-    claude_calls: int = 0,
     duration: float = 0,
+    cost_usd: float = 0.0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ):
     """Create PR with conventional format."""
     issue_type = detect_issue_type(issue.get("body", ""))
     title = f"{issue_type}: {issue['title'][:60]} (#{issue['number']})"
-    body = build_pr_body(issue, attempts=attempts, claude_calls=claude_calls, duration=duration)
+    body = build_pr_body(
+        issue,
+        attempts=attempts,
+        duration=duration,
+        cost_usd=cost_usd,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
     subprocess.run(
         [
             "gh",
@@ -464,7 +481,7 @@ def label_in_review(number: int):
 def implement_single_issue(issue: dict) -> bool:
     """Implement one issue end-to-end. Returns True if PR created successfully."""
     start_time = time.time()
-    claude_calls = 0
+    claude_results: list[ClaudeResult] = []
     final_attempt = 0
     success = False
 
@@ -491,8 +508,7 @@ def implement_single_issue(issue: dict) -> bool:
     last_errors = None
     for attempt in range(1, MAX_RETRIES + 1):
         print(f"  Attempt {attempt}/{MAX_RETRIES}...")
-        implement(issue, previous_errors=last_errors)
-        claude_calls += 1
+        claude_results.append(implement(issue, previous_errors=last_errors))
         final_attempt = attempt
 
         valid, errors = verify_implementation(branch)
@@ -506,7 +522,10 @@ def implement_single_issue(issue: dict) -> bool:
             post_attempt_failure(issue["number"], attempt, errors)
 
     elapsed = time.time() - start_time
-    cost = claude_calls * IMPL_COST_PER_CALL
+    total_cost = sum(r.cost_usd for r in claude_results)
+    total_input = sum(r.input_tokens for r in claude_results)
+    total_output = sum(r.output_tokens for r in claude_results)
+    total_cache_read = sum(r.cache_read_tokens for r in claude_results)
 
     if not success:
         print("  All retries exhausted. Labeling needs-human.")
@@ -527,7 +546,16 @@ def implement_single_issue(issue: dict) -> bool:
             ],
         )
         cleanup_branch(branch)
-        log_run(issue["number"], False, final_attempt, elapsed, cost)
+        log_run(
+            issue["number"],
+            False,
+            final_attempt,
+            elapsed,
+            total_cost,
+            total_input,
+            total_output,
+            total_cache_read,
+        )
         return False
 
     subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
@@ -535,8 +563,10 @@ def implement_single_issue(issue: dict) -> bool:
         issue,
         branch,
         attempts=final_attempt,
-        claude_calls=claude_calls,
         duration=elapsed,
+        cost_usd=total_cost,
+        input_tokens=total_input,
+        output_tokens=total_output,
     )
     label_in_review(issue["number"])
     print(f"  PR created for #{issue['number']}.")
@@ -545,9 +575,20 @@ def implement_single_issue(issue: dict) -> bool:
 
     print(f"\n--- AI-DLC Run Stats (#{issue['number']}) ---")
     print(f"  Duration: {elapsed:.0f}s")
-    print(f"  Claude calls: {claude_calls}")
-    print(f"  Estimated cost: ~${cost:.2f}")
-    log_run(issue["number"], True, final_attempt, elapsed, cost)
+    print(f"  Claude calls: {len(claude_results)}")
+    print(f"  Input tokens: {total_input:,}")
+    print(f"  Output tokens: {total_output:,}")
+    print(f"  Cost: ${total_cost:.2f}")
+    log_run(
+        issue["number"],
+        True,
+        final_attempt,
+        elapsed,
+        total_cost,
+        total_input,
+        total_output,
+        total_cache_read,
+    )
 
     return True
 
