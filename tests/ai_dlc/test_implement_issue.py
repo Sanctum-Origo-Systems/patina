@@ -1575,14 +1575,55 @@ def test_select_top_issue_falls_back_to_priority_when_all_standalone():
     assert chosen["number"] == 11
 
 
-def test_select_top_issue_prefers_parented_over_standalone():
-    # Standalone is p0 (highest priority) but a sub-issue still wins.
+def test_select_top_issue_prefers_parented_over_standalone_same_priority():
+    # Standalone and sub-issue share priority; group preference wins.
     issues = [
-        _standalone(10, priority="p0"),
-        _sub(20, parent=28, priority="p2"),
+        _standalone(10, priority="p1"),
+        _sub(20, parent=28, priority="p1"),
     ]
     chosen = select_top_issue(issues)
     assert chosen["number"] == 20
+
+
+def test_select_top_issue_higher_priority_standalone_beats_sub_issue():
+    # p0 standalone must not be blocked by a lower-priority sub-issue group.
+    issues = [
+        _standalone(10, priority="p0"),
+        _sub(20, parent=28, priority="p1"),
+    ]
+    chosen = select_top_issue(issues)
+    assert chosen["number"] == 10
+
+
+def test_select_top_issue_higher_priority_sub_issue_beats_standalone():
+    # p0 sub-issue outranks a p1 standalone.
+    issues = [
+        _standalone(10, priority="p1"),
+        _sub(20, parent=28, priority="p0"),
+    ]
+    chosen = select_top_issue(issues)
+    assert chosen["number"] == 20
+
+
+def test_select_top_issue_only_sub_issues_returns_largest_group():
+    # No standalone issues: largest group still wins, earliest step within it.
+    issues = [
+        _sub(101, parent=30, priority="p1"),
+        _sub(102, parent=28, priority="p2"),
+        _sub(103, parent=28, priority="p2"),
+    ]
+    chosen = select_top_issue(issues)
+    assert chosen["number"] == 102
+
+
+def test_select_top_issue_only_standalone_returns_highest_priority():
+    issues = [
+        _standalone(10, priority="p2"),
+        _standalone(11, priority="p0"),
+        _standalone(12, priority="p1"),
+    ]
+    chosen = select_top_issue(issues)
+    assert chosen["number"] == 11
 
 
 def test_select_top_issue_single_standalone():
