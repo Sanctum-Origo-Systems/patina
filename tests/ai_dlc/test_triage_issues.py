@@ -7,14 +7,17 @@ import claude_runner
 import triage_issues
 from claude_runner import ClaudeResult
 from triage_issues import (
+    apply_rewrite,
     build_decomposition_comment,
     build_sub_issue_summary_comment,
     create_sub_issues,
     decompose_issue,
     log_run,
     parse_file_discovery_response,
+    parse_rewritten_body,
     parse_sub_issue_response,
     parse_triage_response,
+    rewrite_issue_body,
     suggest_sub_issue_fields,
     triage_issue,
     validate_discovered_files,
@@ -477,7 +480,8 @@ def test_triage_issue_rejected(monkeypatch):
     monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
     monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: calls.append(("reject", n, r)))
 
-    triage_issue(_make_issue())
+    # auto_fix=False models the re-triage pass: a rejection is final.
+    triage_issue(_make_issue(), auto_fix=False)
     assert ("reject", 42, "incomplete") in calls
 
 
@@ -551,7 +555,7 @@ def test_triage_issue_returns_1_result_for_rejected(monkeypatch):
     monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
     monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: None)
 
-    results = triage_issue(_make_issue())
+    results = triage_issue(_make_issue(), auto_fix=False)
     assert len(results) == 1
     assert all(isinstance(r, ClaudeResult) for r in results)
 
@@ -607,6 +611,201 @@ def test_triage_issue_accumulates_token_data(monkeypatch):
     assert sum(r.cost_usd for r in results) == 0.05
     assert sum(r.input_tokens for r in results) == 5000
     assert sum(r.output_tokens for r in results) == 150
+
+
+# --- parse_rewritten_body tests ---
+
+
+def test_parse_rewritten_body_plain_markdown():
+    raw = "## Summary\nAdd a flag\n\n## Expected Behavior\nEmits a report"
+    assert parse_rewritten_body(raw) == raw
+
+
+def test_parse_rewritten_body_strips_wrapping_fence():
+    raw = "```markdown\n## Summary\nAdd a flag\n\n## Expected Behavior\nx\n```"
+    result = parse_rewritten_body(raw)
+    assert result == "## Summary\nAdd a flag\n\n## Expected Behavior\nx"
+
+
+def test_parse_rewritten_body_strips_bare_fence():
+    raw = "```\n## Summary\nAdd a flag\n```"
+    assert parse_rewritten_body(raw) == "## Summary\nAdd a flag"
+
+
+def test_parse_rewritten_body_without_header_returns_none():
+    assert parse_rewritten_body("I could not rewrite this issue.") is None
+
+
+def test_parse_rewritten_body_empty_returns_none():
+    assert parse_rewritten_body("") is None
+
+
+# --- rewrite_issue_body tests ---
+
+
+def test_rewrite_issue_body_parses_claude_output(monkeypatch):
+    body = "## Summary\nfixed\n\n## Expected Behavior\nEmits rows"
+    monkeypatch.setattr(triage_issues, "run_claude", lambda *a, **k: _cr_text(body))
+
+    new_body, result = rewrite_issue_body(_make_issue(), "vague expected behavior")
+    assert new_body == body
+    assert isinstance(result, ClaudeResult)
+
+
+def test_rewrite_issue_body_prompt_includes_reason_and_body(monkeypatch):
+    captured = {}
+
+    def fake_run_claude(prompt, model, timeout):
+        captured["prompt"] = prompt
+        return _cr_text("## Summary\nx\n\n## Expected Behavior\ny")
+
+    monkeypatch.setattr(triage_issues, "run_claude", fake_run_claude)
+    issue = _make_issue(body="## Summary\noriginal body here")
+    rewrite_issue_body(issue, "Acceptance Criteria missing checkbox")
+
+    assert "Acceptance Criteria missing checkbox" in captured["prompt"]
+    assert "original body here" in captured["prompt"]
+
+
+def test_rewrite_issue_body_returns_none_on_failed_call(monkeypatch):
+    monkeypatch.setattr(triage_issues, "run_claude", lambda *a, **k: _cr(success=False))
+    new_body, result = rewrite_issue_body(_make_issue(), "reason")
+    assert new_body is None
+    assert result.success is False
+
+
+def test_rewrite_issue_body_returns_none_on_unusable_output(monkeypatch):
+    monkeypatch.setattr(triage_issues, "run_claude", lambda *a, **k: _cr_text("sorry, cannot"))
+    new_body, _ = rewrite_issue_body(_make_issue(), "reason")
+    assert new_body is None
+
+
+# --- triage_issue auto-fix tests ---
+
+
+def _sequenced_evaluate(verdicts):
+    """Return an evaluate_issue stub that yields verdicts in order plus a counter."""
+    state = {"n": 0}
+
+    def evaluate(issue):
+        verdict = verdicts[min(state["n"], len(verdicts) - 1)]
+        state["n"] += 1
+        return verdict, _cr()
+
+    return evaluate, state
+
+
+def test_triage_issue_auto_fix_rewrites_and_reapproves(monkeypatch):
+    verdicts = [
+        {"verdict": "rejected", "reason": "vague expected behavior"},
+        {"verdict": "ready", "priority": "p2", "reason": "ok", "files_missing": False},
+    ]
+    evaluate, state = _sequenced_evaluate(verdicts)
+    new_body = "## Summary\nfixed\n\n## Expected Behavior\nEmits rows"
+    applied = []
+    approved = []
+    rejected = []
+    monkeypatch.setattr(triage_issues, "evaluate_issue", evaluate)
+    monkeypatch.setattr(triage_issues, "rewrite_issue_body", lambda i, r: (new_body, _cr()))
+    monkeypatch.setattr(triage_issues, "apply_rewrite", lambda n, b: applied.append((n, b)))
+    monkeypatch.setattr(triage_issues, "approve_issue", lambda n, p, r: approved.append((n, p)))
+    monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: rejected.append(n))
+
+    results = triage_issue(_make_issue())
+
+    # Re-triage happens exactly once (two evaluate calls total).
+    assert state["n"] == 2
+    # Issue body updated with the rewritten body before re-triage.
+    assert applied == [(42, new_body)]
+    # Re-triage saw the rewritten body and approved.
+    assert approved == [(42, "p2")]
+    assert rejected == []
+    # eval + rewrite + re-eval.
+    assert len(results) == 3
+
+
+def test_triage_issue_auto_fix_second_rejection_is_final(monkeypatch):
+    verdicts = [
+        {"verdict": "rejected", "reason": "first reason"},
+        {"verdict": "rejected", "reason": "second reason"},
+    ]
+    evaluate, state = _sequenced_evaluate(verdicts)
+    rewrite_calls = []
+    rejected = []
+    monkeypatch.setattr(triage_issues, "evaluate_issue", evaluate)
+    monkeypatch.setattr(
+        triage_issues,
+        "rewrite_issue_body",
+        lambda i, r: rewrite_calls.append(r) or ("## Summary\nx\n\n## Expected Behavior\ny", _cr()),
+    )
+    monkeypatch.setattr(triage_issues, "apply_rewrite", lambda n, b: None)
+    monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: rejected.append((n, r)))
+
+    results = triage_issue(_make_issue())
+
+    # Exactly one re-triage and exactly one auto-fix attempt.
+    assert state["n"] == 2
+    assert rewrite_calls == ["first reason"]
+    # The second rejection is final and keeps the rejected label.
+    assert rejected == [(42, "second reason")]
+    assert len(results) == 3
+
+
+def test_triage_issue_auto_fix_falls_back_to_reject_when_rewrite_fails(monkeypatch):
+    verdict = {"verdict": "rejected", "reason": "incomplete"}
+    applied = []
+    rejected = []
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
+    monkeypatch.setattr(triage_issues, "rewrite_issue_body", lambda i, r: (None, _cr()))
+    monkeypatch.setattr(triage_issues, "apply_rewrite", lambda n, b: applied.append(n))
+    monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: rejected.append((n, r)))
+
+    results = triage_issue(_make_issue())
+
+    # No update when the rewrite is unusable; the issue is rejected normally.
+    assert applied == []
+    assert rejected == [(42, "incomplete")]
+    # eval + failed rewrite (still counted for cost tracking).
+    assert len(results) == 2
+
+
+def test_triage_issue_no_auto_fix_when_disabled(monkeypatch):
+    verdict = {"verdict": "rejected", "reason": "incomplete"}
+    rewrite_calls = []
+    rejected = []
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
+    monkeypatch.setattr(
+        triage_issues, "rewrite_issue_body", lambda i, r: rewrite_calls.append(r) or (None, _cr())
+    )
+    monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: rejected.append((n, r)))
+
+    triage_issue(_make_issue(), auto_fix=False)
+
+    # With auto_fix disabled, no rewrite is attempted.
+    assert rewrite_calls == []
+    assert rejected == [(42, "incomplete")]
+
+
+# --- apply_rewrite tests ---
+
+
+def test_apply_rewrite_edits_body_and_removes_label(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        triage_issues.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or _FakeProc(0)
+    )
+
+    apply_rewrite(42, "## Summary\nnew body")
+
+    joined = [" ".join(c) for c in calls]
+    # Body updated with the rewritten content.
+    edit_calls = [c for c in calls if "edit" in c and "--body" in c]
+    assert edit_calls[0][edit_calls[0].index("--body") + 1] == "## Summary\nnew body"
+    # 'rejected' label removed before re-triage.
+    assert any("--remove-label rejected" in c for c in joined)
+    # An auto-fix comment is posted.
+    comment_calls = [c for c in calls if "comment" in c]
+    assert any("Auto-fix" in c[c.index("--body") + 1] for c in comment_calls)
 
 
 # --- log_run tests ---
