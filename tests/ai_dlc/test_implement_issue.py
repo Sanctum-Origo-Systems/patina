@@ -10,20 +10,26 @@ import implement_issue
 from claude_runner import ClaudeResult
 from implement_issue import (
     acquire_lock,
+    add_needs_design_label,
     build_branch_name,
     build_pr_body,
     cleanup_merged_labels,
     collect_verification_errors,
     create_branch,
+    design_gate,
     design_issue,
+    design_required,
     detect_issue_type,
     get_issue_by_number,
+    has_design_comment,
+    has_needs_design_label,
     implement,
     implement_single_issue,
     implement_targeted_issue,
     log_run,
     parent_issue_number,
     parse_dependency_numbers,
+    post_design,
     priority_rank,
     release_lock,
     select_top_issue,
@@ -660,7 +666,7 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
-    def fake_implement_single(issue):
+    def fake_implement_single(issue, require_design=False):
         call_count[0] += 1
         return True
 
@@ -688,7 +694,7 @@ def test_main_max_issues_processes_multiple(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
-    def fake_implement_single(issue):
+    def fake_implement_single(issue, require_design=False):
         call_count[0] += 1
         return True
 
@@ -719,7 +725,7 @@ def test_main_stops_when_no_more_issues(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
-    def fake_implement_single(issue):
+    def fake_implement_single(issue, require_design=False):
         call_count[0] += 1
         return True
 
@@ -751,7 +757,7 @@ def test_main_breaks_on_failure(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
-    def fake_implement_single(issue):
+    def fake_implement_single(issue, require_design=False):
         call_count[0] += 1
         return False  # always fails
 
@@ -798,7 +804,7 @@ def test_main_labels_blocked_on_unmet_deps(monkeypatch, tmp_path, capsys):
 
     implement_count = [0]
 
-    def fake_implement_single(issue):
+    def fake_implement_single(issue, require_design=False):
         get_count[0] += 1
         implement_count[0] += 1
         return True
@@ -1358,7 +1364,7 @@ def test_implement_targeted_issue_bypasses_ready_and_points(monkeypatch, capsys)
     monkeypatch.setattr(
         implement_issue,
         "implement_single_issue",
-        lambda issue: implemented.append(issue["number"]) or True,
+        lambda issue, require_design=False: implemented.append(issue["number"]) or True,
     )
 
     assert implement_targeted_issue(28) is True
@@ -1415,7 +1421,7 @@ def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue,
         "implement_targeted_issue",
-        lambda number: targeted.append(number) or True,
+        lambda number, require_design=False: targeted.append(number) or True,
     )
 
     implement_issue.main()
@@ -1435,7 +1441,7 @@ def test_main_issue_flag_with_max_issues_runs_without_error(monkeypatch, tmp_pat
     monkeypatch.setattr(
         implement_issue,
         "implement_targeted_issue",
-        lambda number: targeted.append(number) or True,
+        lambda number, require_design=False: targeted.append(number) or True,
     )
 
     implement_issue.main()
@@ -1620,3 +1626,327 @@ def test_get_top_ready_issue_empty_list(monkeypatch):
         lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "[]"})(),
     )
     assert implement_issue.get_top_ready_issue() is None
+
+
+# --- design_required tests ---
+
+
+def test_design_required_true_with_flag():
+    issue = {"number": 1, "labels": []}
+    assert design_required(issue, require_design=True) is True
+
+
+def test_design_required_true_with_label():
+    issue = {"number": 1, "labels": [{"name": "design-required"}]}
+    assert design_required(issue) is True
+
+
+def test_design_required_false_without_flag_or_label():
+    issue = {"number": 1, "labels": [{"name": "ready"}]}
+    assert design_required(issue) is False
+    assert design_required(issue, require_design=False) is False
+
+
+def test_design_required_missing_labels_key():
+    assert design_required({"number": 1}) is False
+
+
+# --- has_needs_design_label tests ---
+
+
+def test_has_needs_design_label_true():
+    issue = {"labels": [{"name": "needs-design"}, {"name": "ready"}]}
+    assert has_needs_design_label(issue) is True
+
+
+def test_has_needs_design_label_false():
+    issue = {"labels": [{"name": "ready"}]}
+    assert has_needs_design_label(issue) is False
+
+
+def test_has_needs_design_label_missing_labels_key():
+    assert has_needs_design_label({}) is False
+
+
+# --- has_design_comment tests ---
+
+
+def test_has_design_comment_true(monkeypatch):
+    payload = json.dumps(
+        {"comments": [{"body": "unrelated"}, {"body": "**Implementation Design:**\n\nAdd a flag"}]}
+    )
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": payload, "stderr": ""})(),
+    )
+    assert has_design_comment(44) is True
+
+
+def test_has_design_comment_false_when_absent(monkeypatch):
+    payload = json.dumps({"comments": [{"body": "just a normal comment"}]})
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": payload, "stderr": ""})(),
+    )
+    assert has_design_comment(44) is False
+
+
+def test_has_design_comment_false_on_gh_failure(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": "boom"})(),
+    )
+    assert has_design_comment(44) is False
+
+
+def test_has_design_comment_queries_comments(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0, "stdout": '{"comments": []}', "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    has_design_comment(44)
+
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["gh", "issue", "view", "44"]
+    assert "comments" in cmd
+
+
+# --- post_design tests ---
+
+
+def test_post_design_posts_marker_and_body(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    post_design(44, "Here is the design")
+
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["gh", "issue", "comment", "44"]
+    body = cmd[cmd.index("--body") + 1]
+    assert "Implementation Design:" in body
+    assert "Here is the design" in body
+
+
+# --- add_needs_design_label tests ---
+
+
+def test_add_needs_design_label_adds_label(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    add_needs_design_label(44)
+
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["gh", "issue", "edit", "44"]
+    assert "--add-label" in cmd
+    assert cmd[cmd.index("--add-label") + 1] == "needs-design"
+
+
+# --- design_gate tests ---
+
+
+def test_design_gate_skips_when_not_required():
+    """No flag and no label: gate does nothing and proceeds."""
+    issue = {"number": 44, "title": "Add flag", "body": "b", "labels": []}
+    assert design_gate(issue, require_design=False) is True
+
+
+def test_design_gate_generates_design_when_missing(monkeypatch):
+    """Flag set, no design comment: generate, post, label, and skip."""
+    issue = {"number": 44, "title": "Add flag", "body": "b", "labels": []}
+    events = {}
+
+    monkeypatch.setattr(implement_issue, "has_design_comment", lambda n: False)
+    monkeypatch.setattr(implement_issue, "design_issue", lambda i: "generated design")
+    monkeypatch.setattr(implement_issue, "post_design", lambda n, d: events.update(posted=(n, d)))
+    monkeypatch.setattr(
+        implement_issue, "add_needs_design_label", lambda n: events.update(labeled=n)
+    )
+
+    assert design_gate(issue, require_design=True) is False
+    assert events["posted"] == (44, "generated design")
+    assert events["labeled"] == 44
+
+
+def test_design_gate_triggers_on_label_without_flag(monkeypatch):
+    """design-required label triggers the gate even without the flag."""
+    issue = {"number": 44, "title": "T", "body": "b", "labels": [{"name": "design-required"}]}
+    calls = []
+
+    monkeypatch.setattr(implement_issue, "has_design_comment", lambda n: False)
+    monkeypatch.setattr(implement_issue, "design_issue", lambda i: "d")
+    monkeypatch.setattr(implement_issue, "post_design", lambda n, d: calls.append("post"))
+    monkeypatch.setattr(implement_issue, "add_needs_design_label", lambda n: calls.append("label"))
+
+    assert design_gate(issue, require_design=False) is False
+    assert calls == ["post", "label"]
+
+
+def test_design_gate_proceeds_when_design_approved(monkeypatch):
+    """Design comment exists and needs-design is gone: human approved, proceed."""
+    issue = {"number": 44, "title": "T", "body": "b", "labels": [{"name": "design-required"}]}
+    monkeypatch.setattr(implement_issue, "has_design_comment", lambda n: True)
+
+    def boom(i):
+        raise AssertionError("design_issue must not be called when a design exists")
+
+    monkeypatch.setattr(implement_issue, "design_issue", boom)
+    assert design_gate(issue, require_design=True) is True
+
+
+def test_design_gate_skips_when_awaiting_approval(monkeypatch):
+    """Design comment exists but needs-design still present: skip, do not regenerate."""
+    issue = {
+        "number": 44,
+        "title": "T",
+        "body": "b",
+        "labels": [{"name": "design-required"}, {"name": "needs-design"}],
+    }
+    monkeypatch.setattr(implement_issue, "has_design_comment", lambda n: True)
+
+    def boom(i):
+        raise AssertionError("design_issue must not be called while awaiting approval")
+
+    monkeypatch.setattr(implement_issue, "design_issue", boom)
+    assert design_gate(issue, require_design=True) is False
+
+
+# --- implement_single_issue design gate integration ---
+
+
+def test_implement_single_issue_skips_when_design_gate_blocks(monkeypatch):
+    """A blocked design gate returns False without touching the branch/labels."""
+    issue = {"number": 44, "title": "T", "body": "b", "labels": []}
+    monkeypatch.setattr(implement_issue, "design_gate", lambda i, require_design=False: False)
+
+    def boom(issue):
+        raise AssertionError("create_branch must not run when the design gate blocks")
+
+    monkeypatch.setattr(implement_issue, "create_branch", boom)
+
+    assert implement_single_issue(issue, require_design=True) is False
+
+
+def test_implement_single_issue_passes_require_design_to_gate(monkeypatch, tmp_path):
+    """The require_design flag reaches the design gate."""
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    captured = {}
+
+    def fake_gate(issue, require_design=False):
+        captured["require_design"] = require_design
+        return False
+
+    monkeypatch.setattr(implement_issue, "design_gate", fake_gate)
+    implement_single_issue(_FAKE_ISSUE, require_design=True)
+    assert captured["require_design"] is True
+
+
+# --- main() --require-design flag tests ---
+
+
+def test_main_require_design_flag_threads_to_implement(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--require-design"])
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+
+    issue = {"number": 1, "title": "One", "body": "", "labels": []}
+    served = [issue, None]
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: served.pop(0))
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
+
+    captured = {}
+
+    def fake_single(issue, require_design=False):
+        captured["require_design"] = require_design
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_single)
+
+    implement_issue.main()
+    assert captured["require_design"] is True
+
+
+def test_main_require_design_flag_threads_to_targeted(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--issue", "28", "--require-design"])
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+
+    captured = {}
+
+    def fake_targeted(number, require_design=False):
+        captured["number"] = number
+        captured["require_design"] = require_design
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_targeted_issue", fake_targeted)
+
+    implement_issue.main()
+    assert captured["number"] == 28
+    assert captured["require_design"] is True
+
+
+def test_main_defaults_require_design_false(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+
+    issue = {"number": 1, "title": "One", "body": "", "labels": []}
+    served = [issue, None]
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: served.pop(0))
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
+
+    captured = {}
+
+    def fake_single(issue, require_design=False):
+        captured["require_design"] = require_design
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_single)
+
+    implement_issue.main()
+    assert captured["require_design"] is False
+
+
+# --- implement_targeted_issue design gate threading ---
+
+
+def test_implement_targeted_issue_threads_require_design(monkeypatch, capsys):
+    targeted = {"number": 28, "title": "T", "body": "", "labels": []}
+    monkeypatch.setattr(implement_issue, "get_issue_by_number", lambda n: targeted)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+
+    captured = {}
+
+    def fake_single(issue, require_design=False):
+        captured["require_design"] = require_design
+        return True
+
+    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_single)
+
+    assert implement_targeted_issue(28, require_design=True) is True
+    assert captured["require_design"] is True

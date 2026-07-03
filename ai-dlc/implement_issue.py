@@ -292,6 +292,7 @@ def build_implementation_prompt(issue: dict) -> str:
                     "Auto-triage",
                     "AI-DLC Attempt",
                     "Implementation Detail",
+                    DESIGN_COMMENT_MARKER,
                 )
             ):
                 full_context += f"\n\n{body}"
@@ -335,6 +336,9 @@ DESIGN_PROMPT = (
 )
 
 
+DESIGN_COMMENT_MARKER = "Implementation Design:"
+
+
 def design_issue(issue: dict) -> str:
     """Generate an implementation design proposal for the issue via Claude.
 
@@ -351,6 +355,81 @@ def design_issue(issue: dict) -> str:
         conventions=claude_md,
     )
     return run_claude(prompt, IMPLEMENT_MODEL, IMPLEMENT_TIMEOUT).text
+
+
+def design_required(issue: dict, require_design: bool = False) -> bool:
+    """Whether the issue must pass a design review before implementation.
+
+    True when the --require-design flag is set or the issue carries the
+    'design-required' label.
+    """
+    if require_design:
+        return True
+    labels = {lbl["name"] for lbl in issue.get("labels", [])}
+    return "design-required" in labels
+
+
+def has_needs_design_label(issue: dict) -> bool:
+    """Whether the issue still carries the 'needs-design' label."""
+    labels = {lbl["name"] for lbl in issue.get("labels", [])}
+    return "needs-design" in labels
+
+
+def has_design_comment(number: int) -> bool:
+    """Check the issue's comments for an existing Implementation Design."""
+    result = subprocess.run(
+        ["gh", "issue", "view", str(number), "--repo", REPO, "--json", "comments"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False
+    data = json.loads(result.stdout)
+    return any(DESIGN_COMMENT_MARKER in c.get("body", "") for c in data.get("comments", []))
+
+
+def post_design(number: int, design: str):
+    """Post the implementation design as a comment on the issue."""
+    comment = f"**{DESIGN_COMMENT_MARKER}**\n\n{design}"
+    subprocess.run(
+        ["gh", "issue", "comment", str(number), "--repo", REPO, "--body", comment],
+    )
+
+
+def add_needs_design_label(number: int):
+    """Add the 'needs-design' label to flag the issue for human review."""
+    subprocess.run(
+        ["gh", "issue", "edit", str(number), "--repo", REPO, "--add-label", "needs-design"],
+    )
+
+
+def design_gate(issue: dict, require_design: bool = False) -> bool:
+    """Enforce the optional design review before implementation.
+
+    Returns True if implementation should proceed, False if it should be
+    skipped this run. Issues without the flag or the 'design-required' label
+    skip the gate entirely. When a design is required but no Implementation
+    Design comment exists, a design is generated, posted, and the issue is
+    flagged with 'needs-design' — implementation is skipped until a human
+    clears that label. Once the comment exists and 'needs-design' is gone,
+    implementation proceeds.
+    """
+    if not design_required(issue, require_design):
+        return True
+
+    number = issue["number"]
+    if has_design_comment(number):
+        if has_needs_design_label(issue):
+            print(f"#{number}: design awaiting human approval, skipping.")
+            return False
+        return True
+
+    print(f"#{number}: no design found, generating implementation design.")
+    design = design_issue(issue)
+    post_design(number, design)
+    add_needs_design_label(number)
+    print(f"#{number}: design posted and needs-design added, skipping implementation.")
+    return False
 
 
 def post_attempt_failure(number: int, attempt: int, errors: str):
@@ -540,8 +619,16 @@ def label_in_review(number: int):
 # --- Orchestration ---
 
 
-def implement_single_issue(issue: dict) -> bool:
-    """Implement one issue end-to-end. Returns True if PR created successfully."""
+def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
+    """Implement one issue end-to-end. Returns True if PR created successfully.
+
+    When a design review is required (via --require-design or the
+    'design-required' label) and not yet approved, the design gate posts a
+    design proposal and skips implementation, returning False.
+    """
+    if not design_gate(issue, require_design):
+        return False
+
     start_time = time.time()
     claude_results: list[ClaudeResult] = []
     final_attempt = 0
@@ -655,7 +742,7 @@ def implement_single_issue(issue: dict) -> bool:
     return True
 
 
-def implement_targeted_issue(number: int) -> bool:
+def implement_targeted_issue(number: int, require_design: bool = False) -> bool:
     """Implement a specific issue by number, bypassing label and point checks."""
     issue = get_issue_by_number(number)
     if not issue:
@@ -666,7 +753,7 @@ def implement_targeted_issue(number: int) -> bool:
         print(f"#{number}: dependencies not met, aborting.")
         return False
 
-    success = implement_single_issue(issue)
+    success = implement_single_issue(issue, require_design=require_design)
     print(f"\nImplemented {1 if success else 0} issue(s) this run.")
     return success
 
@@ -686,6 +773,11 @@ def main():
         default=None,
         help="Implement a specific issue by number (bypasses auto-pick and point limit)",
     )
+    parser.add_argument(
+        "--require-design",
+        action="store_true",
+        help="Require an approved implementation design before implementing",
+    )
     args = parser.parse_args()
 
     os.chdir(REPO_DIR)
@@ -698,7 +790,7 @@ def main():
         cleanup_merged_labels()
 
         if args.issue is not None:
-            implement_targeted_issue(args.issue)
+            implement_targeted_issue(args.issue, require_design=args.require_design)
             return
 
         implemented = 0
@@ -724,7 +816,7 @@ def main():
                 )
                 continue
 
-            success = implement_single_issue(issue)
+            success = implement_single_issue(issue, require_design=args.require_design)
             if success:
                 implemented += 1
             else:
