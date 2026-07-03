@@ -154,8 +154,53 @@ def log_run(
 # --- Subprocess functions ---
 
 
+def parent_issue_number(issue: dict) -> int | None:
+    """Extract the parent issue number from a sub-issue body, if any."""
+    body = issue.get("body", "") or ""
+    match = re.search(r"Parent issue: #(\d+)", body)
+    return int(match.group(1)) if match else None
+
+
+def priority_rank(issue: dict) -> int:
+    """Rank an issue by its priority label (p0 < p1 < p2 < unlabeled)."""
+    priority_order = {"p0": 0, "p1": 1, "p2": 2}
+    labels = {lbl["name"] for lbl in issue.get("labels", [])}
+    for p, rank in priority_order.items():
+        if p in labels:
+            return rank
+    return 99
+
+
+def select_top_issue(issues: list[dict]) -> dict | None:
+    """Pick the top issue, keeping sub-issues of one parent together.
+
+    Sub-issues (those with 'Parent issue: #N' in the body) are preferred over
+    standalone issues so a decomposed issue is finished before the bot moves
+    on. Among parent groups, the group with the most ready sub-issues wins;
+    ties break toward the lowest parent number. Within a group the
+    lowest-numbered sub-issue (earliest step) is returned. When no sub-issues
+    are ready, falls back to priority-label sorting.
+    """
+    if not issues:
+        return None
+
+    groups: dict[int, list[dict]] = {}
+    for issue in issues:
+        parent = parent_issue_number(issue)
+        if parent is not None:
+            groups.setdefault(parent, []).append(issue)
+
+    if groups:
+        # Most ready sub-issues wins; ties break toward the lowest parent.
+        best_parent = max(groups, key=lambda p: (len(groups[p]), -p))
+        # Earliest step first (lowest issue number).
+        return min(groups[best_parent], key=lambda i: i["number"])
+
+    return sorted(issues, key=priority_rank)[0]
+
+
 def get_top_ready_issue() -> dict | None:
-    """Pick the highest-priority ready issue."""
+    """Pick the top ready issue, grouping sub-issues by parent."""
     result = subprocess.run(
         [
             "gh",
@@ -177,20 +222,7 @@ def get_top_ready_issue() -> dict | None:
     )
     if result.returncode != 0:
         return None
-    issues = json.loads(result.stdout)
-    if not issues:
-        return None
-    priority_order = {"p0": 0, "p1": 1, "p2": 2}
-
-    def sort_key(issue):
-        labels = {lbl["name"] for lbl in issue.get("labels", [])}
-        for p, rank in priority_order.items():
-            if p in labels:
-                return rank
-        return 99
-
-    issues.sort(key=sort_key)
-    return issues[0]
+    return select_top_issue(json.loads(result.stdout))
 
 
 def get_issue_by_number(number: int) -> dict | None:
