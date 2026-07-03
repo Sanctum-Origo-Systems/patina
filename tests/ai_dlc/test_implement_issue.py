@@ -20,8 +20,11 @@ from implement_issue import (
     implement_single_issue,
     implement_targeted_issue,
     log_run,
+    parent_issue_number,
     parse_dependency_numbers,
+    priority_rank,
     release_lock,
+    select_top_issue,
 )
 
 
@@ -1375,3 +1378,157 @@ def test_main_without_issue_flag_uses_auto_pick(monkeypatch, tmp_path):
 
     implement_issue.main()
     assert auto_pick_called == [True]
+
+
+# --- parent_issue_number tests ---
+
+
+def test_parent_issue_number_found():
+    issue = {"body": "Some text\nParent issue: #28\nmore"}
+    assert parent_issue_number(issue) == 28
+
+
+def test_parent_issue_number_none_when_standalone():
+    issue = {"body": "A standalone issue with no parent reference"}
+    assert parent_issue_number(issue) is None
+
+
+def test_parent_issue_number_none_when_body_missing():
+    assert parent_issue_number({}) is None
+    assert parent_issue_number({"body": None}) is None
+
+
+# --- priority_rank tests ---
+
+
+def test_priority_rank_orders_labels():
+    p0 = {"labels": [{"name": "p0"}]}
+    p1 = {"labels": [{"name": "p1"}]}
+    p2 = {"labels": [{"name": "p2"}]}
+    assert priority_rank(p0) < priority_rank(p1) < priority_rank(p2)
+
+
+def test_priority_rank_unlabeled_is_lowest():
+    unlabeled = {"labels": [{"name": "ready"}]}
+    assert priority_rank(unlabeled) == 99
+
+
+# --- select_top_issue tests ---
+
+
+def _sub(number, parent, priority=None):
+    labels = [{"name": priority}] if priority else []
+    return {
+        "number": number,
+        "title": f"Step for #{parent}",
+        "body": f"Parent issue: #{parent}",
+        "labels": labels,
+    }
+
+
+def _standalone(number, priority=None):
+    labels = [{"name": priority}] if priority else []
+    return {
+        "number": number,
+        "title": f"Standalone #{number}",
+        "body": "No parent here",
+        "labels": labels,
+    }
+
+
+def test_select_top_issue_empty_returns_none():
+    assert select_top_issue([]) is None
+
+
+def test_select_top_issue_prefers_group_with_most_sub_issues():
+    # Parent 28 has two ready sub-issues, parent 30 has one.
+    issues = [
+        _sub(101, parent=30),
+        _sub(102, parent=28),
+        _sub(103, parent=28),
+    ]
+    chosen = select_top_issue(issues)
+    assert parent_issue_number(chosen) == 28
+
+
+def test_select_top_issue_returns_lowest_step_within_group():
+    issues = [
+        _sub(103, parent=28),
+        _sub(101, parent=28),
+        _sub(102, parent=28),
+    ]
+    chosen = select_top_issue(issues)
+    assert chosen["number"] == 101
+
+
+def test_select_top_issue_ties_break_to_lowest_parent():
+    # Both groups have one ready sub-issue; lowest parent number wins.
+    issues = [
+        _sub(200, parent=30),
+        _sub(201, parent=28),
+    ]
+    chosen = select_top_issue(issues)
+    assert parent_issue_number(chosen) == 28
+
+
+def test_select_top_issue_falls_back_to_priority_when_all_standalone():
+    issues = [
+        _standalone(10, priority="p2"),
+        _standalone(11, priority="p0"),
+        _standalone(12, priority="p1"),
+    ]
+    chosen = select_top_issue(issues)
+    assert chosen["number"] == 11
+
+
+def test_select_top_issue_prefers_parented_over_standalone():
+    # Standalone is p0 (highest priority) but a sub-issue still wins.
+    issues = [
+        _standalone(10, priority="p0"),
+        _sub(20, parent=28, priority="p2"),
+    ]
+    chosen = select_top_issue(issues)
+    assert chosen["number"] == 20
+
+
+def test_select_top_issue_single_standalone():
+    issues = [_standalone(10)]
+    assert select_top_issue(issues)["number"] == 10
+
+
+# --- get_top_ready_issue tests ---
+
+
+def test_get_top_ready_issue_returns_none_on_gh_failure(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 1, "stdout": ""})(),
+    )
+    assert implement_issue.get_top_ready_issue() is None
+
+
+def test_get_top_ready_issue_groups_sub_issues(monkeypatch):
+    payload = json.dumps(
+        [
+            _sub(102, parent=28),
+            _sub(101, parent=28),
+            _sub(200, parent=30),
+        ]
+    )
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": payload})(),
+    )
+    chosen = implement_issue.get_top_ready_issue()
+    assert chosen["number"] == 101
+
+
+def test_get_top_ready_issue_empty_list(monkeypatch):
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "[]"})(),
+    )
+    assert implement_issue.get_top_ready_issue() is None
