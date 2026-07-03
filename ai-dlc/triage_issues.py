@@ -31,6 +31,16 @@ TRIAGE_LABELS = {
 TRIAGE_PROMPT = """\
 Evaluate this GitHub issue for implementation readiness.
 
+The project source tree and CLAUDE.md are provided below the requirements. Use
+them as ground truth about the codebase:
+- Validate file references. If the issue names a module, path, or function that
+  does not appear in the project tree, treat the reference as invalid: lower your
+  confidence in the estimate and call out the invalid reference in "reason".
+- Assess feasibility. Judge whether the acceptance criteria are realistic for the
+  codebase's actual architecture.
+- Detect duplication. If the issue requests functionality that already exists in
+  the tree, note the duplication in "reason" and reduce the readiness accordingly.
+
 TEMPLATE REQUIREMENTS — reject if missing:
 - Summary (one clear sentence)
 - Type (bug/feature/refactor)
@@ -272,6 +282,23 @@ def log_run(
 # --- Subprocess functions ---
 
 
+def load_project_context() -> tuple[str, str]:
+    """Return the project source tree and CLAUDE.md contents for prompt context.
+
+    The tree lists the Python files under ``src/`` and ``tests/`` (excluding
+    ``__pycache__``). Both are used to give the triage and file-discovery prompts
+    enough codebase context to validate file references and spot duplication.
+    """
+    tree = subprocess.run(
+        ["find", "src/", "tests/", "-name", "*.py", "-not", "-path", "*__pycache__*"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_DIR,
+    ).stdout
+    claude_md = (REPO_DIR / "CLAUDE.md").read_text()
+    return tree, claude_md
+
+
 def list_untriaged_issues() -> list[dict]:
     """Fetch open issues that have no triage labels yet."""
     result = subprocess.run(
@@ -300,9 +327,19 @@ def list_untriaged_issues() -> list[dict]:
 
 
 def evaluate_issue(issue: dict) -> tuple[dict, ClaudeResult]:
-    """Run Claude to evaluate an issue against the triage prompt."""
+    """Run Claude to evaluate an issue against the triage prompt.
+
+    The project tree and CLAUDE.md are injected before the issue text so the
+    model can validate file references, judge architectural feasibility, and
+    detect duplication against existing functionality.
+    """
+    tree, claude_md = load_project_context()
     prompt = (
         TRIAGE_PROMPT
+        + "\n\nPROJECT STRUCTURE:\n"
+        + tree[:3000]
+        + "\n\nCLAUDE.md:\n"
+        + claude_md
         + f"\n\nIssue #{issue['number']}: {issue['title']}\n\n"
         + (issue.get("body") or "")
     )
@@ -318,14 +355,7 @@ def evaluate_issue(issue: dict) -> tuple[dict, ClaudeResult]:
 
 def discover_files(issue: dict) -> tuple[list[dict], ClaudeResult]:
     """Ask Claude to identify relevant files for an issue."""
-    tree = subprocess.run(
-        ["find", "src/", "tests/", "-name", "*.py", "-not", "-path", "*__pycache__*"],
-        capture_output=True,
-        text=True,
-        cwd=REPO_DIR,
-    ).stdout
-
-    claude_md = (REPO_DIR / "CLAUDE.md").read_text()
+    tree, claude_md = load_project_context()
     prompt = FILE_DISCOVERY_PROMPT.format(
         tree=tree[:3000],
         claude_md=claude_md,
