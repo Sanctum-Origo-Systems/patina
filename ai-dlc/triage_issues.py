@@ -114,6 +114,30 @@ Rules:
 - Reference function names and modules, not line numbers.
 """
 
+REWRITE_PROMPT = """\
+This GitHub issue was rejected by automated triage. Rewrite the issue body so it
+addresses the rejection reason and passes triage on the next attempt.
+
+REJECTION REASON:
+{reason}
+
+CURRENT ISSUE BODY:
+{body}
+
+The rewritten body MUST satisfy every template requirement:
+- Summary (one clear sentence)
+- Type (bug/feature/refactor)
+- Expected Behavior (specific and testable — describe observable output)
+- Acceptance Criteria (at least one checkbox item, each verifiable)
+
+Rules:
+- Fix only what the rejection flagged; preserve the original intent and scope.
+- Keep the existing `## ` section headers.
+- Reference function names and modules, not line numbers.
+- Respond with the full rewritten issue body as markdown ONLY — no preamble,
+  no surrounding code fences, no commentary.
+"""
+
 
 # --- Pure functions (testable without mocking) ---
 
@@ -161,6 +185,25 @@ def parse_sub_issue_response(stdout: str) -> dict | None:
     if not isinstance(data, dict) or "expected_behavior" not in data:
         return None
     return data
+
+
+def parse_rewritten_body(stdout: str) -> str | None:
+    """Extract a rewritten issue body from Claude's output.
+
+    Strips a single wrapping code fence if present. Returns None when the output
+    has no markdown section header, which signals an unusable rewrite.
+    """
+    text = stdout.strip()
+    if text.startswith("```"):
+        newline = text.find("\n")
+        if newline != -1:
+            text = text[newline + 1 :]
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+        text = text.strip()
+    if "## " not in text:
+        return None
+    return text
 
 
 def build_decomposition_comment(result: dict) -> str:
@@ -327,6 +370,44 @@ def reject_issue(number: int, reason: str):
     )
 
 
+def rewrite_issue_body(issue: dict, reason: str) -> tuple[str | None, ClaudeResult]:
+    """Ask Claude to rewrite a rejected issue body to address the reason.
+
+    Returns (new_body, result). new_body is None when the claude call fails or
+    the response contains no usable issue body, signalling that the auto-fix
+    should be abandoned and the issue rejected normally.
+    """
+    prompt = REWRITE_PROMPT.format(reason=reason, body=issue.get("body") or "")
+    result = run_claude(prompt, TRIAGE_MODEL, 90)
+    if not result.success:
+        return None, result
+    return parse_rewritten_body(result.text), result
+
+
+def apply_rewrite(number: int, body: str):
+    """Update the issue body, drop the 'rejected' label, and note the auto-fix."""
+    subprocess.run(
+        ["gh", "issue", "edit", str(number), "--repo", REPO, "--body", body],
+    )
+    subprocess.run(
+        ["gh", "issue", "edit", str(number), "--repo", REPO, "--remove-label", "rejected"],
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "gh",
+            "issue",
+            "comment",
+            str(number),
+            "--repo",
+            REPO,
+            "--body",
+            "**Auto-triage — Auto-fix:** Rewrote the issue body to address the "
+            "rejection reason and re-triaging once.",
+        ],
+    )
+
+
 def approve_issue(number: int, priority: str, reason: str):
     """Label issue as ready with priority and comment."""
     subprocess.run(
@@ -453,8 +534,14 @@ def decompose_issue(number: int, result: dict, parent_summary: str = ""):
 # --- Orchestration ---
 
 
-def triage_issue(issue: dict) -> list[ClaudeResult]:
+def triage_issue(issue: dict, auto_fix: bool = True) -> list[ClaudeResult]:
     """Evaluate a single issue and apply the appropriate label.
+
+    On rejection, when ``auto_fix`` is set, Claude rewrites the issue body to
+    address the rejection reason, the issue is updated, the ``rejected`` label is
+    removed, and the issue is re-triaged exactly once with ``auto_fix`` disabled.
+    A second rejection is final — the ``rejected`` label stays and no further
+    auto-fix is attempted.
 
     Returns the ClaudeResult of every claude call made for this issue.
     """
@@ -463,6 +550,13 @@ def triage_issue(issue: dict) -> list[ClaudeResult]:
     results.append(eval_result)
 
     if verdict["verdict"] == "rejected":
+        if auto_fix:
+            new_body, rewrite_result = rewrite_issue_body(issue, verdict["reason"])
+            results.append(rewrite_result)
+            if new_body:
+                apply_rewrite(issue["number"], new_body)
+                results.extend(triage_issue({**issue, "body": new_body}, auto_fix=False))
+                return results
         reject_issue(issue["number"], verdict["reason"])
         return results
 
