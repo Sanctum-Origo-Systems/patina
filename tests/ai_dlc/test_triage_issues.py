@@ -8,6 +8,9 @@ import triage_issues
 from claude_runner import ClaudeResult
 from triage_issues import (
     build_decomposition_comment,
+    build_sub_issue_summary_comment,
+    create_sub_issues,
+    decompose_issue,
     log_run,
     parse_file_discovery_response,
     parse_triage_response,
@@ -152,6 +155,145 @@ def test_build_decomposition_comment_single_step():
     comment = build_decomposition_comment(result)
     assert "| 1 | Do the thing | 3 | — |" in comment
     assert "`a.py`, `b.py`" in comment
+
+
+# --- build_sub_issue_summary_comment tests ---
+
+
+def test_build_sub_issue_summary_comment_lists_numbers():
+    comment = build_sub_issue_summary_comment(42, [101, 102])
+    assert "Decomposed #42 into 2 sub-issue(s)" in comment
+    assert "- #101" in comment
+    assert "- #102" in comment
+
+
+# --- create_sub_issues tests ---
+
+
+class _FakeProc:
+    def __init__(self, returncode, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _gh_create_stub(state, fail_titles=()):
+    """subprocess.run stub that mints incrementing issue URLs for gh create."""
+
+    def run(cmd, **kwargs):
+        title = cmd[cmd.index("--title") + 1]
+        body = cmd[cmd.index("--body") + 1]
+        if title in fail_titles:
+            return _FakeProc(1, "")
+        state["n"] += 1
+        num = 100 + state["n"]
+        state["calls"].append({"title": title, "body": body, "number": num})
+        return _FakeProc(0, f"https://github.com/owner/repo/issues/{num}\n")
+
+    return run
+
+
+def test_create_sub_issues_returns_numbers_in_order(monkeypatch):
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "Step 1", "points": 2, "depends_on": [], "files": ["a.py"]},
+            {"order": 2, "title": "Step 2", "points": 1, "depends_on": [1], "files": ["b.py"]},
+        ]
+    }
+    state = {"n": 0, "calls": []}
+    monkeypatch.setattr(triage_issues.subprocess, "run", _gh_create_stub(state))
+
+    created = create_sub_issues(42, result)
+    assert created == [101, 102]
+
+
+def test_create_sub_issues_body_has_parent_hint_and_deps(monkeypatch):
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "Step 1", "points": 2, "depends_on": [], "files": ["a.py"]},
+            {"order": 2, "title": "Step 2", "points": 1, "depends_on": [1], "files": ["b.py"]},
+        ]
+    }
+    state = {"n": 0, "calls": []}
+    monkeypatch.setattr(triage_issues.subprocess, "run", _gh_create_stub(state))
+
+    create_sub_issues(42, result)
+
+    first_body = state["calls"][0]["body"]
+    second_body = state["calls"][1]["body"]
+    assert "Sub-issue of #42" in first_body
+    assert "Parent issue: #42" in first_body
+    # First step has no deps; second depends on the already-created first (#101).
+    assert "Depends on:" not in first_body
+    assert "Depends on: #101" in second_body
+
+
+def test_create_sub_issues_skips_unmet_dependency(monkeypatch):
+    # depends_on references a step that has not been created yet (or at all).
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "Step 1", "points": 2, "depends_on": [9], "files": []},
+        ]
+    }
+    state = {"n": 0, "calls": []}
+    monkeypatch.setattr(triage_issues.subprocess, "run", _gh_create_stub(state))
+
+    create_sub_issues(42, result)
+    assert "Depends on:" not in state["calls"][0]["body"]
+
+
+def test_create_sub_issues_omits_failed_creations(monkeypatch):
+    result = {
+        "decomposition": [
+            {"order": 1, "title": "Good", "points": 1, "depends_on": [], "files": []},
+            {"order": 2, "title": "Bad", "points": 1, "depends_on": [], "files": []},
+        ]
+    }
+    state = {"n": 0, "calls": []}
+    monkeypatch.setattr(
+        triage_issues.subprocess, "run", _gh_create_stub(state, fail_titles={"Bad"})
+    )
+
+    created = create_sub_issues(42, result)
+    assert created == [101]
+
+
+# --- decompose_issue tests ---
+
+
+def test_decompose_issue_labels_and_posts_summary(monkeypatch):
+    result = {
+        "points": 5,
+        "decomposition": [
+            {"order": 1, "title": "Step 1", "points": 2, "depends_on": [], "files": ["a.py"]},
+        ],
+    }
+    calls = []
+    monkeypatch.setattr(triage_issues, "create_sub_issues", lambda n, r: [101, 102])
+    monkeypatch.setattr(
+        triage_issues.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or _FakeProc(0)
+    )
+
+    decompose_issue(42, result)
+
+    joined = [" ".join(c) for c in calls]
+    assert any("--add-label needs-decomposition" in c for c in joined)
+    summary_calls = [c for c in calls if "issue" in c and "comment" in c]
+    bodies = [c[c.index("--body") + 1] for c in summary_calls]
+    assert any("#101" in b and "#102" in b for b in bodies)
+
+
+def test_decompose_issue_skips_summary_when_no_sub_issues(monkeypatch):
+    result = {"points": 5, "decomposition": []}
+    calls = []
+    monkeypatch.setattr(triage_issues, "create_sub_issues", lambda n, r: [])
+    monkeypatch.setattr(
+        triage_issues.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or _FakeProc(0)
+    )
+
+    decompose_issue(42, result)
+
+    bodies = [c[c.index("--body") + 1] for c in calls if "--body" in c]
+    assert not any("Sub-issues created" in b for b in bodies)
 
 
 # --- Orchestrator tests: triage_issue ---
