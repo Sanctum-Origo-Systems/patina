@@ -178,25 +178,44 @@ def select_top_issue(issues: list[dict]) -> dict | None:
     standalone issues so a decomposed issue is finished before the bot moves
     on. Among parent groups, the group with the most ready sub-issues wins;
     ties break toward the lowest parent number. Within a group the
-    lowest-numbered sub-issue (earliest step) is returned. When no sub-issues
-    are ready, falls back to priority-label sorting.
+    lowest-numbered sub-issue (earliest step) is returned.
+
+    Group preference is overridden only when a standalone issue has a strictly
+    higher priority (lower priority_rank) than the best sub-issue: a p0
+    standalone issue is never blocked by lower-priority decomposed work. When
+    no sub-issues are ready, falls back to priority-label sorting.
     """
     if not issues:
         return None
 
     groups: dict[int, list[dict]] = {}
+    standalone: list[dict] = []
     for issue in issues:
         parent = parent_issue_number(issue)
         if parent is not None:
             groups.setdefault(parent, []).append(issue)
+        else:
+            standalone.append(issue)
 
+    best_sub = None
     if groups:
         # Most ready sub-issues wins; ties break toward the lowest parent.
         best_parent = max(groups, key=lambda p: (len(groups[p]), -p))
         # Earliest step first (lowest issue number).
-        return min(groups[best_parent], key=lambda i: i["number"])
+        best_sub = min(groups[best_parent], key=lambda i: i["number"])
 
-    return sorted(issues, key=priority_rank)[0]
+    best_standalone = None
+    if standalone:
+        best_standalone = sorted(standalone, key=priority_rank)[0]
+
+    if best_sub and best_standalone:
+        # A strictly higher-priority standalone issue is not blocked by the
+        # decomposed group; otherwise keep the group together.
+        if priority_rank(best_standalone) < priority_rank(best_sub):
+            return best_standalone
+        return best_sub
+
+    return best_sub or best_standalone
 
 
 def get_top_ready_issue() -> dict | None:
