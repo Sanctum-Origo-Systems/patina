@@ -10,10 +10,11 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from claude_runner import ClaudeResult, run_claude
+
 REPO = "Sanctum-Origo-Systems/patina"
 REPO_DIR = Path(__file__).resolve().parent.parent
 LOG_FILE = REPO_DIR / "ai-dlc" / "run_history.jsonl"
-TRIAGE_COST_PER_CALL = 0.03
 TRIAGE_MODEL = os.environ.get("PATINA_AIDLC_TRIAGE_MODEL", "sonnet")
 
 TRIAGE_LABELS = {
@@ -147,7 +148,16 @@ def build_decomposition_comment(result: dict) -> str:
     return table
 
 
-def log_run(issue_number: int, success: bool, attempts: int, duration: float, cost: float):
+def log_run(
+    issue_number: int,
+    success: bool,
+    attempts: int,
+    duration: float,
+    cost_usd: float,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+):
     """Append a JSON entry to the run history log."""
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -155,7 +165,10 @@ def log_run(issue_number: int, success: bool, attempts: int, duration: float, co
         "success": success,
         "attempts": attempts,
         "duration_seconds": round(duration),
-        "estimated_cost": round(cost, 2),
+        "cost_usd": round(cost_usd, 2),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
     }
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -191,26 +204,24 @@ def list_untriaged_issues() -> list[dict]:
     ]
 
 
-def evaluate_issue(issue: dict) -> dict:
+def evaluate_issue(issue: dict) -> tuple[dict, ClaudeResult]:
     """Run Claude to evaluate an issue against the triage prompt."""
     prompt = (
         TRIAGE_PROMPT
         + f"\n\nIssue #{issue['number']}: {issue['title']}\n\n"
         + (issue.get("body") or "")
     )
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", TRIAGE_MODEL, prompt],
-            capture_output=True,
-            text=True,
-            timeout=90,
-        )
-    except subprocess.TimeoutExpired:
-        return {"verdict": "rejected", "reason": "Triage timed out — issue body may be too large"}
-    return parse_triage_response(result.stdout)
+    result = run_claude(prompt, TRIAGE_MODEL, 90)
+    if not result.success:
+        verdict = {
+            "verdict": "rejected",
+            "reason": "Triage timed out — issue body may be too large",
+        }
+        return verdict, result
+    return parse_triage_response(result.text), result
 
 
-def discover_files(issue: dict) -> list[dict]:
+def discover_files(issue: dict) -> tuple[list[dict], ClaudeResult]:
     """Ask Claude to identify relevant files for an issue."""
     tree = subprocess.run(
         ["find", "src/", "tests/", "-name", "*.py", "-not", "-path", "*__pycache__*"],
@@ -228,18 +239,12 @@ def discover_files(issue: dict) -> list[dict]:
         body=issue["body"] or "",
     )
 
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", TRIAGE_MODEL, prompt],
-            capture_output=True,
-            text=True,
-            timeout=90,
-        )
-    except subprocess.TimeoutExpired:
-        return []
+    result = run_claude(prompt, TRIAGE_MODEL, 90)
+    if not result.success:
+        return [], result
 
-    files = parse_file_discovery_response(result.stdout)
-    return validate_discovered_files(files, REPO_DIR)
+    files = parse_file_discovery_response(result.text)
+    return validate_discovered_files(files, REPO_DIR), result
 
 
 def enrich_issue_with_files(number: int, files: list[dict]):
@@ -303,32 +308,36 @@ def decompose_issue(number: int, result: dict):
 # --- Orchestration ---
 
 
-def triage_issue(issue: dict) -> int:
-    """Evaluate a single issue and apply the appropriate label. Returns claude call count."""
-    claude_calls = 1  # evaluate_issue always makes one claude call
-    result = evaluate_issue(issue)
+def triage_issue(issue: dict) -> list[ClaudeResult]:
+    """Evaluate a single issue and apply the appropriate label.
 
-    if result["verdict"] == "rejected":
-        reject_issue(issue["number"], result["reason"])
-        return claude_calls
+    Returns the ClaudeResult of every claude call made for this issue.
+    """
+    results: list[ClaudeResult] = []
+    verdict, eval_result = evaluate_issue(issue)
+    results.append(eval_result)
 
-    if result.get("files_missing", False):
-        files = discover_files(issue)
-        claude_calls += 1  # discover_files makes one claude call
+    if verdict["verdict"] == "rejected":
+        reject_issue(issue["number"], verdict["reason"])
+        return results
+
+    if verdict.get("files_missing", False):
+        files, disc_result = discover_files(issue)
+        results.append(disc_result)
         if files:
             enrich_issue_with_files(issue["number"], files)
 
-    if result["verdict"] == "ready":
-        approve_issue(issue["number"], result["priority"], result["reason"])
-    elif result["verdict"] == "needs-decomposition":
-        decompose_issue(issue["number"], result)
+    if verdict["verdict"] == "ready":
+        approve_issue(issue["number"], verdict["priority"], verdict["reason"])
+    elif verdict["verdict"] == "needs-decomposition":
+        decompose_issue(issue["number"], verdict)
 
-    return claude_calls
+    return results
 
 
 def main():
     start_time = time.time()
-    claude_calls = 0
+    results: list[ClaudeResult] = []
 
     issues = list_untriaged_issues()
     if not issues:
@@ -336,16 +345,30 @@ def main():
         return
     for issue in issues:
         print(f"Triaging #{issue['number']}: {issue['title']}")
-        claude_calls += triage_issue(issue)
+        results.extend(triage_issue(issue))
 
-    if claude_calls > 0:
+    if results:
         elapsed = time.time() - start_time
-        cost = claude_calls * TRIAGE_COST_PER_CALL
+        total_cost = sum(r.cost_usd for r in results)
+        total_input = sum(r.input_tokens for r in results)
+        total_output = sum(r.output_tokens for r in results)
+        total_cache_read = sum(r.cache_read_tokens for r in results)
         print("\n--- AI-DLC Run Stats ---")
         print(f"  Duration: {elapsed:.0f}s")
-        print(f"  Claude calls: {claude_calls}")
-        print(f"  Estimated cost: ~${cost:.2f}")
-        log_run(0, True, len(issues), elapsed, cost)
+        print(f"  Claude calls: {len(results)}")
+        print(f"  Input tokens: {total_input:,}")
+        print(f"  Output tokens: {total_output:,}")
+        print(f"  Cost: ${total_cost:.2f}")
+        log_run(
+            0,
+            True,
+            len(issues),
+            elapsed,
+            total_cost,
+            total_input,
+            total_output,
+            total_cache_read,
+        )
 
 
 if __name__ == "__main__":

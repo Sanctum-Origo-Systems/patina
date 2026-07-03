@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib
 import json
 
+import claude_runner
 import triage_issues
+from claude_runner import ClaudeResult
 from triage_issues import (
     build_decomposition_comment,
     log_run,
@@ -12,6 +14,19 @@ from triage_issues import (
     triage_issue,
     validate_discovered_files,
 )
+
+
+def _cr(cost_usd=0.02, input_tokens=2000, output_tokens=60, cache_read_tokens=16000, success=True):
+    """Build a ClaudeResult for mocking run_claude()."""
+    return ClaudeResult(
+        text="",
+        cost_usd=cost_usd,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        success=success,
+    )
+
 
 # --- Pure function tests: parse_triage_response ---
 
@@ -149,13 +164,13 @@ def _make_issue(number=42, title="Add flag", body="## Summary\nAdd a flag"):
 def test_triage_issue_ready_approves(monkeypatch):
     verdict = {"verdict": "ready", "priority": "p1", "reason": "ok", "files_missing": False}
     calls = []
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
     monkeypatch.setattr(
         triage_issues,
         "approve_issue",
         lambda n, p, r: calls.append(("approve", n, p)),
     )
-    monkeypatch.setattr(triage_issues, "discover_files", lambda i: [])
+    monkeypatch.setattr(triage_issues, "discover_files", lambda i: ([], _cr()))
     monkeypatch.setattr(triage_issues, "enrich_issue_with_files", lambda n, f: None)
 
     triage_issue(_make_issue())
@@ -165,7 +180,7 @@ def test_triage_issue_ready_approves(monkeypatch):
 def test_triage_issue_rejected(monkeypatch):
     verdict = {"verdict": "rejected", "reason": "incomplete"}
     calls = []
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
     monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: calls.append(("reject", n, r)))
 
     triage_issue(_make_issue())
@@ -189,7 +204,7 @@ def test_triage_issue_needs_decomposition(monkeypatch):
         ],
     }
     calls = []
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
     monkeypatch.setattr(
         triage_issues,
         "decompose_issue",
@@ -204,8 +219,8 @@ def test_triage_issue_discovers_files_when_missing(monkeypatch):
     verdict = {"verdict": "ready", "priority": "p2", "reason": "ok", "files_missing": True}
     discovered = [{"path": "src/patina/store.py", "reason": "schema"}]
     enriched = []
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
-    monkeypatch.setattr(triage_issues, "discover_files", lambda i: discovered)
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
+    monkeypatch.setattr(triage_issues, "discover_files", lambda i: (discovered, _cr()))
     monkeypatch.setattr(
         triage_issues,
         "enrich_issue_with_files",
@@ -221,8 +236,8 @@ def test_triage_issue_discovers_files_when_missing(monkeypatch):
 def test_triage_issue_skips_enrich_when_no_files_found(monkeypatch):
     verdict = {"verdict": "ready", "priority": "p2", "reason": "ok", "files_missing": True}
     enriched = []
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
-    monkeypatch.setattr(triage_issues, "discover_files", lambda i: [])
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
+    monkeypatch.setattr(triage_issues, "discover_files", lambda i: ([], _cr()))
     monkeypatch.setattr(
         triage_issues,
         "enrich_issue_with_files",
@@ -234,45 +249,70 @@ def test_triage_issue_skips_enrich_when_no_files_found(monkeypatch):
     assert len(enriched) == 0
 
 
-# --- triage_issue call count tests ---
+# --- triage_issue result-accumulation tests ---
 
 
-def test_triage_issue_returns_1_for_rejected(monkeypatch):
+def test_triage_issue_returns_1_result_for_rejected(monkeypatch):
     verdict = {"verdict": "rejected", "reason": "incomplete"}
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
     monkeypatch.setattr(triage_issues, "reject_issue", lambda n, r: None)
 
-    assert triage_issue(_make_issue()) == 1
+    results = triage_issue(_make_issue())
+    assert len(results) == 1
+    assert all(isinstance(r, ClaudeResult) for r in results)
 
 
-def test_triage_issue_returns_1_for_ready_no_file_discovery(monkeypatch):
+def test_triage_issue_returns_1_result_for_ready_no_file_discovery(monkeypatch):
     verdict = {"verdict": "ready", "priority": "p1", "reason": "ok", "files_missing": False}
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
     monkeypatch.setattr(triage_issues, "approve_issue", lambda n, p, r: None)
 
-    assert triage_issue(_make_issue()) == 1
+    assert len(triage_issue(_make_issue())) == 1
 
 
-def test_triage_issue_returns_2_when_files_missing(monkeypatch):
+def test_triage_issue_returns_2_results_when_files_missing(monkeypatch):
     verdict = {"verdict": "ready", "priority": "p1", "reason": "ok", "files_missing": True}
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
     monkeypatch.setattr(
-        triage_issues, "discover_files", lambda i: [{"path": "tests/test_x.py", "reason": "x"}]
+        triage_issues,
+        "discover_files",
+        lambda i: ([{"path": "tests/test_x.py", "reason": "x"}], _cr()),
     )
     monkeypatch.setattr(triage_issues, "enrich_issue_with_files", lambda n, f: None)
     monkeypatch.setattr(triage_issues, "approve_issue", lambda n, p, r: None)
 
-    assert triage_issue(_make_issue()) == 2
+    assert len(triage_issue(_make_issue())) == 2
 
 
-def test_triage_issue_returns_2_when_files_missing_but_none_found(monkeypatch):
+def test_triage_issue_returns_2_results_when_files_missing_but_none_found(monkeypatch):
     verdict = {"verdict": "ready", "priority": "p1", "reason": "ok", "files_missing": True}
-    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: verdict)
-    monkeypatch.setattr(triage_issues, "discover_files", lambda i: [])
+    monkeypatch.setattr(triage_issues, "evaluate_issue", lambda i: (verdict, _cr()))
+    monkeypatch.setattr(triage_issues, "discover_files", lambda i: ([], _cr()))
     monkeypatch.setattr(triage_issues, "enrich_issue_with_files", lambda n, f: None)
     monkeypatch.setattr(triage_issues, "approve_issue", lambda n, p, r: None)
 
-    assert triage_issue(_make_issue()) == 2
+    assert len(triage_issue(_make_issue())) == 2
+
+
+def test_triage_issue_accumulates_token_data(monkeypatch):
+    verdict = {"verdict": "ready", "priority": "p1", "reason": "ok", "files_missing": True}
+    monkeypatch.setattr(
+        triage_issues,
+        "evaluate_issue",
+        lambda i: (verdict, _cr(cost_usd=0.02, input_tokens=2000, output_tokens=60)),
+    )
+    monkeypatch.setattr(
+        triage_issues,
+        "discover_files",
+        lambda i: ([], _cr(cost_usd=0.03, input_tokens=3000, output_tokens=90)),
+    )
+    monkeypatch.setattr(triage_issues, "enrich_issue_with_files", lambda n, f: None)
+    monkeypatch.setattr(triage_issues, "approve_issue", lambda n, p, r: None)
+
+    results = triage_issue(_make_issue())
+    assert sum(r.cost_usd for r in results) == 0.05
+    assert sum(r.input_tokens for r in results) == 5000
+    assert sum(r.output_tokens for r in results) == 150
 
 
 # --- log_run tests ---
@@ -281,7 +321,7 @@ def test_triage_issue_returns_2_when_files_missing_but_none_found(monkeypatch):
 def test_log_run_triage_writes_json_entry(tmp_path, monkeypatch):
     log_path = tmp_path / "run_history.jsonl"
     monkeypatch.setattr(triage_issues, "LOG_FILE", log_path)
-    log_run(0, True, 3, 45.0, 0.09)
+    log_run(0, True, 3, 45.0, 0.09, 5000, 150, 16000)
 
     lines = log_path.read_text().strip().splitlines()
     assert len(lines) == 1
@@ -290,7 +330,10 @@ def test_log_run_triage_writes_json_entry(tmp_path, monkeypatch):
     assert entry["success"] is True
     assert entry["attempts"] == 3
     assert entry["duration_seconds"] == 45
-    assert entry["estimated_cost"] == 0.09
+    assert entry["cost_usd"] == 0.09
+    assert entry["input_tokens"] == 5000
+    assert entry["output_tokens"] == 150
+    assert entry["cache_read_tokens"] == 16000
     assert "timestamp" in entry
 
 
@@ -312,40 +355,47 @@ def test_log_run_triage_appends_multiple_entries(tmp_path, monkeypatch):
 def test_evaluate_issue_uses_triage_model(monkeypatch):
     captured = {}
 
+    stdout = json.dumps({"result": '{"verdict":"ready"}'})
+
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
-        return type("R", (), {"returncode": 0, "stdout": '{"verdict":"ready"}'})()
+        return type("R", (), {"returncode": 0, "stdout": stdout})()
 
     monkeypatch.setattr(triage_issues, "TRIAGE_MODEL", "opus")
-    monkeypatch.setattr(triage_issues.subprocess, "run", fake_run)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
 
-    triage_issues.evaluate_issue({"number": 1, "title": "T", "body": "B"})
+    verdict, result = triage_issues.evaluate_issue({"number": 1, "title": "T", "body": "B"})
 
     assert "--model" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--model") + 1] == "opus"
+    assert "--output-format" in captured["cmd"]
+    assert isinstance(result, ClaudeResult)
 
 
 def test_discover_files_uses_triage_model(monkeypatch, tmp_path):
     captured = {}
-    call_count = [0]
 
-    def fake_run(cmd, **kwargs):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            # first call is `find` for tree
-            return type("R", (), {"returncode": 0, "stdout": ""})()
+    def fake_find(cmd, **kwargs):
+        # `find` for the project tree runs via triage_issues.subprocess
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    claude_stdout = json.dumps({"result": '{"files_to_modify": []}'})
+
+    def fake_claude(cmd, **kwargs):
         captured["cmd"] = cmd
-        return type("R", (), {"returncode": 0, "stdout": '{"files_to_modify": []}'})()
+        return type("R", (), {"returncode": 0, "stdout": claude_stdout})()
 
     monkeypatch.setattr(triage_issues, "TRIAGE_MODEL", "haiku")
-    monkeypatch.setattr(triage_issues.subprocess, "run", fake_run)
+    monkeypatch.setattr(triage_issues.subprocess, "run", fake_find)
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_claude)
     monkeypatch.setattr(triage_issues, "REPO_DIR", tmp_path)
     (tmp_path / "CLAUDE.md").write_text("# CLAUDE")
 
-    triage_issues.discover_files({"number": 1, "title": "T", "body": "B"})
+    files, result = triage_issues.discover_files({"number": 1, "title": "T", "body": "B"})
 
     assert "--model" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--model") + 1] == "haiku"
+    assert isinstance(result, ClaudeResult)
 
 
 def test_triage_model_default_from_env(monkeypatch):
