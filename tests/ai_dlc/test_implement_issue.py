@@ -16,6 +16,7 @@ from implement_issue import (
     cleanup_merged_labels,
     collect_verification_errors,
     create_branch,
+    create_pr,
     design_gate,
     design_issue,
     design_required,
@@ -30,6 +31,7 @@ from implement_issue import (
     parent_issue_number,
     parse_dependency_numbers,
     post_design,
+    post_in_progress_comment,
     priority_rank,
     release_lock,
     select_top_issue,
@@ -2022,3 +2024,106 @@ def test_implement_targeted_issue_threads_require_design(monkeypatch, capsys):
 
     assert implement_targeted_issue(28, require_design=True) is True
     assert captured["require_design"] is True
+
+
+# --- create_pr assignee tests ---
+
+
+def _capture_pr_run(monkeypatch):
+    """Patch subprocess.run to capture the gh pr create command."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    return calls
+
+
+def test_create_pr_assigns_default_reviewer(monkeypatch):
+    monkeypatch.setattr(implement_issue, "PR_REVIEWER", "andywidjaja")
+    calls = _capture_pr_run(monkeypatch)
+
+    create_pr({"number": 42, "title": "Add feature", "body": "## Type\nfeature"}, "ai-dlc/42-x")
+
+    pr_calls = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
+    assert len(pr_calls) == 1
+    cmd = pr_calls[0]
+    assert "--assignee" in cmd
+    assert cmd[cmd.index("--assignee") + 1] == "andywidjaja"
+
+
+def test_create_pr_assigns_override_reviewer(monkeypatch):
+    monkeypatch.setattr(implement_issue, "PR_REVIEWER", "otheruser")
+    calls = _capture_pr_run(monkeypatch)
+
+    create_pr({"number": 7, "title": "Fix bug", "body": "## Type\nbug"}, "ai-dlc/7-x")
+
+    pr_calls = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
+    cmd = pr_calls[0]
+    assert cmd[cmd.index("--assignee") + 1] == "otheruser"
+
+
+def test_pr_reviewer_defaults_to_andywidjaja(monkeypatch):
+    monkeypatch.delenv("PATINA_AIDLC_REVIEWER", raising=False)
+    reloaded = importlib.reload(implement_issue)
+    try:
+        assert reloaded.PR_REVIEWER == "andywidjaja"
+    finally:
+        importlib.reload(implement_issue)
+
+
+def test_pr_reviewer_reads_env_override(monkeypatch):
+    monkeypatch.setenv("PATINA_AIDLC_REVIEWER", "otheruser")
+    reloaded = importlib.reload(implement_issue)
+    try:
+        assert reloaded.PR_REVIEWER == "otheruser"
+    finally:
+        monkeypatch.delenv("PATINA_AIDLC_REVIEWER", raising=False)
+        importlib.reload(implement_issue)
+
+
+# --- post_in_progress_comment tests ---
+
+
+def test_post_in_progress_comment_posts_to_issue(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    post_in_progress_comment(42)
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[:4] == ["gh", "issue", "comment", "42"]
+    body = cmd[cmd.index("--body") + 1]
+    assert "bot" in body.lower()
+
+
+def test_implement_single_issue_posts_in_progress_comment(monkeypatch, tmp_path):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    posted = []
+    monkeypatch.setattr(implement_issue, "post_in_progress_comment", lambda n: posted.append(n))
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-x")
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "verify_implementation", lambda branch: (True, ""))
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    implement_single_issue(_FAKE_ISSUE)
+
+    assert posted == [42]
