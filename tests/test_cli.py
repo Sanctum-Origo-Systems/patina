@@ -5,9 +5,31 @@ import zipfile
 
 from typer.testing import CliRunner
 
-from patina.cli import app
+from patina.cli import _bootstrap_home, app
 
 runner = CliRunner()
+
+
+def test_bootstrap_home_soul_context_persistence(tmp_path):
+    _bootstrap_home(tmp_path)
+    soul_text = (tmp_path / "SOUL.md").read_text()
+    assert "## Context Persistence" in soul_text
+    assert "## Journal Search" in soul_text
+
+
+def test_bootstrap_home_soul_references_journal_tools(tmp_path):
+    _bootstrap_home(tmp_path)
+    soul_text = (tmp_path / "SOUL.md").read_text()
+    persistence, _, search = soul_text.partition("## Journal Search")
+    assert "journal_write" in persistence.partition("## Context Persistence")[2]
+    assert "journal_search" in search
+
+
+def test_bootstrap_home_does_not_overwrite_existing_soul(tmp_path):
+    soul = tmp_path / "SOUL.md"
+    soul.write_text("custom soul content")
+    _bootstrap_home(tmp_path)
+    assert soul.read_text() == "custom soul content"
 
 
 def test_init_creates_database(tmp_path):
