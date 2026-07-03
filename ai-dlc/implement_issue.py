@@ -323,6 +323,36 @@ def build_implementation_prompt(issue: dict) -> str:
     )
 
 
+DESIGN_PROMPT = (
+    "## Task\n\n"
+    "Propose an implementation design for GitHub issue #{number}: {title}\n\n"
+    "## Issue Details\n\n{body}\n\n"
+    "## Project Conventions\n\n{conventions}\n\n"
+    "## Instructions\n\n"
+    "Write a concise implementation design proposal. Describe the approach, the\n"
+    "functions or files to add or change, and the key edge cases to handle.\n"
+    "Do not write the code — only the design. Do not modify any files.\n"
+)
+
+
+def design_issue(issue: dict) -> str:
+    """Generate an implementation design proposal for the issue via Claude.
+
+    Reads CLAUDE.md for project conventions, formats DESIGN_PROMPT with the
+    issue details, and invokes `claude -p --model IMPLEMENT_MODEL`. Returns the
+    proposal text, or an empty string on subprocess timeout or a non-zero exit
+    code (run_claude handles both without raising).
+    """
+    claude_md = (REPO_DIR / "CLAUDE.md").read_text()
+    prompt = DESIGN_PROMPT.format(
+        number=issue["number"],
+        title=issue["title"],
+        body=issue.get("body", "") or "",
+        conventions=claude_md,
+    )
+    return run_claude(prompt, IMPLEMENT_MODEL, IMPLEMENT_TIMEOUT).text
+
+
 def post_attempt_failure(number: int, attempt: int, errors: str):
     """Post verification failure as a comment on the issue."""
     comment = f"**AI-DLC Attempt {attempt} failed:**\n\n```\n{errors[-2000:]}\n```"

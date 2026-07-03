@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import subprocess
 
 import claude_runner
 import implement_issue
@@ -14,6 +15,7 @@ from implement_issue import (
     cleanup_merged_labels,
     collect_verification_errors,
     create_branch,
+    design_issue,
     detect_issue_type,
     get_issue_by_number,
     implement,
@@ -1046,6 +1048,92 @@ def test_implement_truncates_previous_errors(monkeypatch):
     prompt_arg = captured["cmd"][-1]
     assert "e" * 2000 in prompt_arg
     assert "e" * 2001 not in prompt_arg
+
+
+# --- design_issue tests ---
+
+
+def _json_result(text):
+    """A claude_runner subprocess result carrying JSON with a result field."""
+    return type(
+        "R",
+        (),
+        {"returncode": 0, "stdout": json.dumps({"result": text}), "stderr": ""},
+    )()
+
+
+def test_design_issue_prompt_contains_issue_and_claude_md(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _json_result("design proposal")
+
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
+
+    issue = {"number": 43, "title": "Add design_issue function", "body": "Design body details"}
+    design_issue(issue)
+
+    prompt = captured["cmd"][-1]
+    assert captured["cmd"][:2] == ["claude", "-p"]
+    assert "Add design_issue function" in prompt
+    assert "Design body details" in prompt
+    # CLAUDE.md content is embedded as project conventions.
+    assert "Cognitive assistant" in prompt
+
+
+def test_design_issue_uses_implement_model(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _json_result("design proposal")
+
+    monkeypatch.setattr(implement_issue, "IMPLEMENT_MODEL", "opus")
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
+
+    design_issue({"number": 1, "title": "Test", "body": ""})
+
+    cmd = captured["cmd"]
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == "opus"
+
+
+def test_design_issue_returns_text_on_success(monkeypatch):
+    monkeypatch.setattr(
+        claude_runner.subprocess, "run", lambda *a, **kw: _json_result("proposed design")
+    )
+    result = design_issue({"number": 1, "title": "Test", "body": "b"})
+    assert result == "proposed design"
+
+
+def test_design_issue_returns_empty_on_timeout(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
+    assert design_issue({"number": 1, "title": "Test", "body": "b"}) == ""
+
+
+def test_design_issue_returns_empty_on_nonzero_exit(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
+
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
+    assert design_issue({"number": 1, "title": "Test", "body": "b"}) == ""
+
+
+def test_design_issue_handles_missing_body(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _json_result("design proposal")
+
+    monkeypatch.setattr(claude_runner.subprocess, "run", fake_run)
+    # A None body must not raise and must still produce a prompt.
+    design_issue({"number": 5, "title": "No body issue", "body": None})
+    assert "No body issue" in captured["cmd"][-1]
 
 
 # --- Retry loop error passing tests ---
