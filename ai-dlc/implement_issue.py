@@ -178,6 +178,27 @@ def get_top_ready_issue() -> dict | None:
     return issues[0]
 
 
+def get_issue_by_number(number: int) -> dict | None:
+    """Fetch a specific issue by number, ignoring labels and story points."""
+    result = subprocess.run(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(number),
+            "--repo",
+            REPO,
+            "--json",
+            "number,title,body,labels",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return json.loads(result.stdout)
+
+
 def dependencies_met(issue: dict) -> bool:
     """Check if all issues in Dependencies field are closed."""
     body = issue.get("body", "") or ""
@@ -531,6 +552,22 @@ def implement_single_issue(issue: dict) -> bool:
     return True
 
 
+def implement_targeted_issue(number: int) -> bool:
+    """Implement a specific issue by number, bypassing label and point checks."""
+    issue = get_issue_by_number(number)
+    if not issue:
+        print(f"#{number}: could not fetch issue, aborting.")
+        return False
+
+    if not dependencies_met(issue):
+        print(f"#{number}: dependencies not met, aborting.")
+        return False
+
+    success = implement_single_issue(issue)
+    print(f"\nImplemented {1 if success else 0} issue(s) this run.")
+    return success
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -538,6 +575,13 @@ def main():
         type=int,
         default=1,
         help="Maximum issues to implement in one run (default: 1)",
+    )
+    parser.add_argument(
+        "--issue",
+        type=int,
+        metavar="NUMBER",
+        default=None,
+        help="Implement a specific issue by number (bypasses auto-pick and point limit)",
     )
     args = parser.parse_args()
 
@@ -549,6 +593,10 @@ def main():
 
     try:
         cleanup_merged_labels()
+
+        if args.issue is not None:
+            implement_targeted_issue(args.issue)
+            return
 
         implemented = 0
         while implemented < args.max_issues:

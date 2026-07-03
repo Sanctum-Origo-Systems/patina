@@ -13,8 +13,10 @@ from implement_issue import (
     collect_verification_errors,
     create_branch,
     detect_issue_type,
+    get_issue_by_number,
     implement,
     implement_single_issue,
+    implement_targeted_issue,
     log_run,
     parse_dependency_numbers,
     release_lock,
@@ -1117,3 +1119,168 @@ def test_main_runs_cleanup_merged_labels(monkeypatch, tmp_path):
 
     implement_issue.main()
     assert ran == [True]
+
+
+# --- get_issue_by_number tests ---
+
+
+def test_get_issue_by_number_returns_issue(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": '{"number": 28, "title": "Big issue", "body": "b", "labels": []}',
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    issue = get_issue_by_number(28)
+
+    assert issue["number"] == 28
+    assert issue["title"] == "Big issue"
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["gh", "issue", "view", "28"]
+    # Fetches directly without filtering on the ready label.
+    assert "--label" not in cmd
+
+
+def test_get_issue_by_number_returns_none_on_failure(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "not found"})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    assert get_issue_by_number(999) is None
+
+
+# --- implement_targeted_issue tests ---
+
+
+def test_implement_targeted_issue_bypasses_ready_and_points(monkeypatch, capsys):
+    targeted = {"number": 28, "title": "Five point issue", "body": "", "labels": []}
+    monkeypatch.setattr(implement_issue, "get_issue_by_number", lambda n: targeted)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
+
+    # get_top_ready_issue must NOT be consulted for a targeted run.
+    def boom():
+        raise AssertionError("get_top_ready_issue should not be called")
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", boom)
+
+    implemented = []
+    monkeypatch.setattr(
+        implement_issue,
+        "implement_single_issue",
+        lambda issue: implemented.append(issue["number"]) or True,
+    )
+
+    assert implement_targeted_issue(28) is True
+    assert implemented == [28]
+    assert "Implemented 1 issue(s) this run." in capsys.readouterr().out
+
+
+def test_implement_targeted_issue_aborts_on_unmet_deps(monkeypatch, capsys):
+    targeted = {"number": 28, "title": "Blocked", "body": "Depends on: #5", "labels": []}
+    monkeypatch.setattr(implement_issue, "get_issue_by_number", lambda n: targeted)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: False)
+
+    called = []
+    monkeypatch.setattr(
+        implement_issue, "implement_single_issue", lambda issue: called.append(True)
+    )
+
+    assert implement_targeted_issue(28) is False
+    assert called == []
+    assert "dependencies not met" in capsys.readouterr().out
+
+
+def test_implement_targeted_issue_aborts_when_fetch_fails(monkeypatch, capsys):
+    monkeypatch.setattr(implement_issue, "get_issue_by_number", lambda n: None)
+
+    called = []
+    monkeypatch.setattr(
+        implement_issue, "implement_single_issue", lambda issue: called.append(True)
+    )
+
+    assert implement_targeted_issue(28) is False
+    assert called == []
+    assert "could not fetch issue" in capsys.readouterr().out
+
+
+# --- main() --issue flag tests ---
+
+
+def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--issue", "28"])
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+
+    # Auto-pick path must not be used when --issue is given.
+    def boom():
+        raise AssertionError("get_top_ready_issue should not be called with --issue")
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", boom)
+
+    targeted = []
+    monkeypatch.setattr(
+        implement_issue,
+        "implement_targeted_issue",
+        lambda number: targeted.append(number) or True,
+    )
+
+    implement_issue.main()
+    assert targeted == [28]
+
+
+def test_main_issue_flag_with_max_issues_runs_without_error(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--issue", "28", "--max-issues", "1"])
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+
+    targeted = []
+    monkeypatch.setattr(
+        implement_issue,
+        "implement_targeted_issue",
+        lambda number: targeted.append(number) or True,
+    )
+
+    implement_issue.main()
+    assert targeted == [28]
+
+
+def test_main_without_issue_flag_uses_auto_pick(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+
+    auto_pick_called = []
+
+    def fake_get_top():
+        auto_pick_called.append(True)
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    # Targeted path must not be used without --issue.
+    def boom(number):
+        raise AssertionError("implement_targeted_issue should not be called without --issue")
+
+    monkeypatch.setattr(implement_issue, "implement_targeted_issue", boom)
+
+    implement_issue.main()
+    assert auto_pick_called == [True]
