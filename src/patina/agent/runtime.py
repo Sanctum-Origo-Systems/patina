@@ -24,6 +24,19 @@ Format all responses in markdown:
 - Use headers, bullet lists, and bold for structure
 - Use `code` formatting for IDs, commands, and technical terms
 - Use blockquotes for message excerpts
+
+## Context Persistence
+- After significant decisions, corrections, or insights: call `journal_write`
+- Before a session ends or context gets long: checkpoint key takeaways
+- When the user shares preferences or corrections: journal them immediately
+- Never rely on conversation context alone for anything that matters
+  beyond this session
+
+## Journal as Memory
+- Before saying "I don't know" or "we haven't discussed this": call
+  `journal_search` first
+- The journal is long-term memory — always check it before claiming ignorance
+- When a user references a prior conversation: search the journal
 """
 
 

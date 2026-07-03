@@ -4,7 +4,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from patina.agent.config import AgentConfig
-from patina.agent.runtime import AgentRuntime, _build_tool_guide
+from patina.agent.runtime import (
+    _OPERATIONAL_INSTRUCTIONS,
+    AgentRuntime,
+    _build_tool_guide,
+)
 
 
 def test_runtime_initializes(tmp_path):
@@ -196,6 +200,48 @@ def test_profile_appears_after_soul_in_system_prompt(tmp_path):
     opts = runtime._build_options(None)
     prompt = opts["system_prompt"]
     assert prompt.index("SOUL_CONTENT") < prompt.index("PROFILE_CONTENT")
+
+
+class TestJournalDirectives:
+    def test_context_persistence_section_present(self):
+        assert "## Context Persistence" in _OPERATIONAL_INSTRUCTIONS
+
+    def test_context_persistence_has_journal_write(self):
+        assert "journal_write" in _OPERATIONAL_INSTRUCTIONS
+
+    def test_journal_as_memory_section_present(self):
+        assert "## Journal as Memory" in _OPERATIONAL_INSTRUCTIONS
+
+    def test_journal_as_memory_has_journal_search(self):
+        assert "journal_search" in _OPERATIONAL_INSTRUCTIONS
+
+    def test_journal_directives_in_system_prompt_with_soul(self, tmp_path):
+        config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+        (tmp_path / "SOUL.md").write_text("Be direct.")
+        runtime = AgentRuntime(config)
+        prompt = runtime._build_options(None)["system_prompt"]
+        assert "## Context Persistence" in prompt
+        assert "## Journal as Memory" in prompt
+        assert "journal_write" in prompt
+        assert "journal_search" in prompt
+
+    def test_journal_directives_survive_missing_soul(self, tmp_path):
+        config = AgentConfig(soul_path=tmp_path / "nonexistent.md")
+        runtime = AgentRuntime(config)
+        prompt = runtime._build_options(None)["system_prompt"]
+        assert runtime.soul == ""
+        assert "## Context Persistence" in prompt
+        assert "## Journal as Memory" in prompt
+        assert "journal_write" in prompt
+        assert "journal_search" in prompt
+
+    def test_journal_directives_survive_empty_soul(self, tmp_path):
+        config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+        (tmp_path / "SOUL.md").write_text("")
+        runtime = AgentRuntime(config)
+        prompt = runtime._build_options(None)["system_prompt"]
+        assert "journal_write" in prompt
+        assert "journal_search" in prompt
 
 
 class TestBuildToolGuide:
