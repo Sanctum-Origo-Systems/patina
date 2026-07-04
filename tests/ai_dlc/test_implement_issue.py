@@ -974,7 +974,7 @@ def test_implement_uses_env_timeout(monkeypatch):
 def test_implement_model_default_from_env(monkeypatch):
     monkeypatch.delenv("PATINA_AIDLC_IMPL_MODEL", raising=False)
     importlib.reload(implement_issue)
-    assert implement_issue.IMPLEMENT_MODEL == "opus"
+    assert implement_issue.IMPLEMENT_MODEL == "claude-opus-4-6[1m]"
 
 
 def test_implement_timeout_default_from_env(monkeypatch):
