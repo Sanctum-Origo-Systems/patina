@@ -19,7 +19,7 @@ REPO_DIR = Path(__file__).resolve().parent.parent
 LOCKFILE = REPO_DIR / ".ai-dlc.lock"
 LOG_FILE = REPO_DIR / "ai-dlc" / "run_history.jsonl"
 MAX_RETRIES = 3
-IMPLEMENT_MODEL = os.environ.get("PATINA_AIDLC_IMPL_MODEL", "opus")
+IMPLEMENT_MODEL = os.environ.get("PATINA_AIDLC_IMPL_MODEL", "claude-opus-4-6[1m]")
 IMPLEMENT_TIMEOUT = int(os.environ.get("PATINA_AIDLC_TIMEOUT", "900"))
 PR_REVIEWER = os.environ.get("PATINA_AIDLC_REVIEWER", "andywidjaja")
 
