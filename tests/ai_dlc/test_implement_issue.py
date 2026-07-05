@@ -39,6 +39,13 @@ from implement_issue import (
     select_top_issue,
 )
 
+# --- Smoke test: module docstring ---
+
+
+def test_module_docstring_mentions_vps_deployment():
+    assert implement_issue.__doc__ is not None
+    assert "VPS" in implement_issue.__doc__
+
 
 def _claude_result(
     cost_usd=1.5, input_tokens=1000, output_tokens=200, cache_read_tokens=500, success=True
