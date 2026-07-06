@@ -943,6 +943,8 @@ def main():
                         str(issue["number"]),
                         "--repo",
                         REPO,
+                        "--remove-label",
+                        "ready",
                         "--add-label",
                         "blocked",
                     ],
