@@ -775,7 +775,6 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
         return None
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
-    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_implement_single(issue, require_design=False):
@@ -803,7 +802,6 @@ def test_main_max_issues_processes_multiple(monkeypatch, tmp_path, capsys):
         return None
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
-    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_implement_single(issue, require_design=False):
@@ -834,7 +832,6 @@ def test_main_stops_when_no_more_issues(monkeypatch, tmp_path, capsys):
         return None
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
-    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_implement_single(issue, require_design=False):
@@ -866,7 +863,6 @@ def test_main_breaks_on_failure(monkeypatch, tmp_path, capsys):
         return None
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
-    monkeypatch.setattr(implement_issue, "dependencies_met", lambda issue: True)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
 
     def fake_implement_single(issue, require_design=False):
@@ -884,19 +880,10 @@ def test_main_breaks_on_failure(monkeypatch, tmp_path, capsys):
     assert call_count[0] == 1  # stops after first failure
 
 
-def test_main_labels_blocked_on_unmet_deps(monkeypatch, tmp_path, capsys):
+def test_main_no_blocked_label_on_unmet_deps(monkeypatch, tmp_path, capsys):
+    """main() never applies the 'blocked' label — deps are filtered in select_top_issue()."""
     lock_path = tmp_path / ".ai-dlc.lock"
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
-
-    blocked_issue = {"number": 99, "title": "Blocked issue", "body": "", "labels": []}
-    ready_issue = {"number": 100, "title": "Ready issue", "body": "", "labels": []}
-    get_count = [0]
-
-    def fake_get_top():
-        issues = [blocked_issue, ready_issue]
-        if get_count[0] < len(issues):
-            return issues[get_count[0]]
-        return None
 
     gh_calls = []
 
@@ -906,50 +893,18 @@ def test_main_labels_blocked_on_unmet_deps(monkeypatch, tmp_path, capsys):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_subprocess_run)
-    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
-
-    def fake_deps_met(issue):
-        return issue["number"] != 99
-
-    monkeypatch.setattr(implement_issue, "dependencies_met", fake_deps_met)
-
-    implement_count = [0]
-
-    def fake_implement_single(issue, require_design=False):
-        get_count[0] += 1
-        implement_count[0] += 1
-        return True
-
-    monkeypatch.setattr(implement_issue, "implement_single_issue", fake_implement_single)
 
     import sys
 
-    monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--max-issues", "1"])
-
-    # Advance past the blocked issue when get_top is called
-    def controlled_get_top():
-        idx = get_count[0]
-        issues = [blocked_issue, ready_issue]
-        if idx < len(issues):
-            return issues[idx]
-        return None
-
-    monkeypatch.setattr(implement_issue, "get_top_ready_issue", controlled_get_top)
-
-    def fake_deps_met2(issue):
-        if issue["number"] == 99:
-            get_count[0] += 1  # advance past blocked
-            return False
-        return True
-
-    monkeypatch.setattr(implement_issue, "dependencies_met", fake_deps_met2)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
 
     implement_issue.main()
     out = capsys.readouterr().out
     blocked_label_calls = [c for c in gh_calls if "blocked" in c]
-    assert blocked_label_calls, "Expected gh call adding blocked label"
-    assert "Implemented 1 issue(s) this run." in out
+    assert not blocked_label_calls, "main() should never apply the 'blocked' label"
+    assert "No more ready issues." in out
 
 
 def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
@@ -1647,7 +1602,8 @@ def test_select_top_issue_empty_returns_none():
     assert select_top_issue([]) is None
 
 
-def test_select_top_issue_prefers_group_with_most_sub_issues():
+def test_select_top_issue_prefers_group_with_most_sub_issues(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     # Parent 28 has two ready sub-issues, parent 30 has one.
     issues = [
         _sub(101, parent=30),
@@ -1658,7 +1614,8 @@ def test_select_top_issue_prefers_group_with_most_sub_issues():
     assert parent_issue_number(chosen) == 28
 
 
-def test_select_top_issue_returns_lowest_step_within_group():
+def test_select_top_issue_returns_lowest_step_within_group(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     issues = [
         _sub(103, parent=28),
         _sub(101, parent=28),
@@ -1668,7 +1625,8 @@ def test_select_top_issue_returns_lowest_step_within_group():
     assert chosen["number"] == 101
 
 
-def test_select_top_issue_ties_break_to_lowest_parent():
+def test_select_top_issue_ties_break_to_lowest_parent(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     # Both groups have one ready sub-issue; lowest parent number wins.
     issues = [
         _sub(200, parent=30),
@@ -1678,7 +1636,8 @@ def test_select_top_issue_ties_break_to_lowest_parent():
     assert parent_issue_number(chosen) == 28
 
 
-def test_select_top_issue_falls_back_to_priority_when_all_standalone():
+def test_select_top_issue_falls_back_to_priority_when_all_standalone(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     issues = [
         _standalone(10, priority="p2"),
         _standalone(11, priority="p0"),
@@ -1688,7 +1647,8 @@ def test_select_top_issue_falls_back_to_priority_when_all_standalone():
     assert chosen["number"] == 11
 
 
-def test_select_top_issue_prefers_parented_over_standalone_same_priority():
+def test_select_top_issue_prefers_parented_over_standalone_same_priority(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     # Standalone and sub-issue share priority; group preference wins.
     issues = [
         _standalone(10, priority="p1"),
@@ -1698,7 +1658,8 @@ def test_select_top_issue_prefers_parented_over_standalone_same_priority():
     assert chosen["number"] == 20
 
 
-def test_select_top_issue_higher_priority_standalone_beats_sub_issue():
+def test_select_top_issue_higher_priority_standalone_beats_sub_issue(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     # p0 standalone must not be blocked by a lower-priority sub-issue group.
     issues = [
         _standalone(10, priority="p0"),
@@ -1708,7 +1669,8 @@ def test_select_top_issue_higher_priority_standalone_beats_sub_issue():
     assert chosen["number"] == 10
 
 
-def test_select_top_issue_higher_priority_sub_issue_beats_standalone():
+def test_select_top_issue_higher_priority_sub_issue_beats_standalone(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     # p0 sub-issue outranks a p1 standalone.
     issues = [
         _standalone(10, priority="p1"),
@@ -1718,7 +1680,8 @@ def test_select_top_issue_higher_priority_sub_issue_beats_standalone():
     assert chosen["number"] == 20
 
 
-def test_select_top_issue_only_sub_issues_returns_largest_group():
+def test_select_top_issue_only_sub_issues_returns_largest_group(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     # No standalone issues: largest group still wins, earliest step within it.
     issues = [
         _sub(101, parent=30, priority="p1"),
@@ -1729,7 +1692,8 @@ def test_select_top_issue_only_sub_issues_returns_largest_group():
     assert chosen["number"] == 102
 
 
-def test_select_top_issue_only_standalone_returns_highest_priority():
+def test_select_top_issue_only_standalone_returns_highest_priority(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     issues = [
         _standalone(10, priority="p2"),
         _standalone(11, priority="p0"),
@@ -1739,9 +1703,44 @@ def test_select_top_issue_only_standalone_returns_highest_priority():
     assert chosen["number"] == 11
 
 
-def test_select_top_issue_single_standalone():
+def test_select_top_issue_single_standalone(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     issues = [_standalone(10)]
     assert select_top_issue(issues)["number"] == 10
+
+
+def test_select_top_issue_filters_unmet_dependencies(monkeypatch):
+    """Issues with unmet dependencies are excluded from selection."""
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: i["number"] != 10)
+    issues = [
+        _standalone(10, priority="p0"),
+        _standalone(11, priority="p1"),
+    ]
+    chosen = select_top_issue(issues)
+    assert chosen["number"] == 11
+
+
+def test_select_top_issue_returns_none_when_all_deps_unmet(monkeypatch):
+    """When every candidate has unmet dependencies, returns None."""
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: False)
+    issues = [_standalone(10), _standalone(11)]
+    assert select_top_issue(issues) is None
+
+
+def test_select_top_issue_filters_deps_before_grouping(monkeypatch):
+    """Dependency filtering happens before sub-issue grouping logic."""
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: i["number"] != 102)
+    # Parent 28 has two sub-issues, but one has unmet deps.
+    # Parent 30 has one sub-issue with deps met.
+    # After filtering: parent 28 has 1, parent 30 has 1 — tie breaks to lowest parent.
+    issues = [
+        _sub(101, parent=30),
+        _sub(102, parent=28),
+        _sub(103, parent=28),
+    ]
+    chosen = select_top_issue(issues)
+    assert parent_issue_number(chosen) == 28
+    assert chosen["number"] == 103
 
 
 # --- get_top_ready_issue tests ---
@@ -1757,6 +1756,7 @@ def test_get_top_ready_issue_returns_none_on_gh_failure(monkeypatch):
 
 
 def test_get_top_ready_issue_groups_sub_issues(monkeypatch):
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
     payload = json.dumps(
         [
             _sub(102, parent=28),
@@ -2058,7 +2058,6 @@ def test_main_require_design_flag_threads_to_implement(monkeypatch, tmp_path):
     issue = {"number": 1, "title": "One", "body": "", "labels": []}
     served = [issue, None]
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: served.pop(0))
-    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
 
     captured = {}
 
@@ -2105,7 +2104,6 @@ def test_main_defaults_require_design_false(monkeypatch, tmp_path):
     issue = {"number": 1, "title": "One", "body": "", "labels": []}
     served = [issue, None]
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: served.pop(0))
-    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
 
     captured = {}
 
