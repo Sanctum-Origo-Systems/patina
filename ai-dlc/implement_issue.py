@@ -179,6 +179,7 @@ def priority_rank(issue: dict) -> int:
 def select_top_issue(issues: list[dict]) -> dict | None:
     """Pick the top issue, keeping sub-issues of one parent together.
 
+    Filters out issues whose dependencies are not met before picking.
     Sub-issues (those with 'Parent issue: #N' in the body) are preferred over
     standalone issues so a decomposed issue is finished before the bot moves
     on. Among parent groups, the group with the most ready sub-issues wins;
@@ -193,9 +194,13 @@ def select_top_issue(issues: list[dict]) -> dict | None:
     if not issues:
         return None
 
+    eligible = [i for i in issues if dependencies_met(i)]
+    if not eligible:
+        return None
+
     groups: dict[int, list[dict]] = {}
     standalone: list[dict] = []
-    for issue in issues:
+    for issue in eligible:
         parent = parent_issue_number(issue)
         if parent is not None:
             groups.setdefault(parent, []).append(issue)
@@ -949,24 +954,6 @@ def main():
             if not issue:
                 print("No more ready issues.")
                 break
-
-            if not dependencies_met(issue):
-                print(f"#{issue['number']}: dependencies not met, skipping.")
-                subprocess.run(
-                    [
-                        "gh",
-                        "issue",
-                        "edit",
-                        str(issue["number"]),
-                        "--repo",
-                        REPO,
-                        "--remove-label",
-                        "ready",
-                        "--add-label",
-                        "blocked",
-                    ],
-                )
-                continue
 
             success = implement_single_issue(issue, require_design=args.require_design)
             if success:
