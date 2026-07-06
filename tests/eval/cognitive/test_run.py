@@ -40,4 +40,5 @@ def test_tool_reliability_missing_path(tmp_path):
     result = collect_tool_reliability(log_path=missing)
 
     assert result.value == 0.0
+    assert result.unavailable is True
     datetime.fromisoformat(result.collected_at)
