@@ -21,6 +21,7 @@ from implement_issue import (
     design_issue,
     design_required,
     detect_issue_type,
+    ensure_clean_main,
     get_issue_by_number,
     has_design_comment,
     has_needs_design_label,
@@ -488,6 +489,104 @@ def test_create_branch_pulls_before_creating(monkeypatch):
     create_branch(issue)
 
     assert order == ["pull", "create"]
+
+
+# --- ensure_clean_main tests ---
+
+
+def test_ensure_clean_main_calls_three_git_commands_in_order(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    ensure_clean_main()
+
+    assert len(calls) == 3
+    assert calls[0] == ["git", "checkout", "--", "."]
+    assert calls[1] == ["git", "checkout", "main"]
+    assert calls[2] == ["git", "pull", "--ff-only", "origin", "main"]
+
+
+def test_ensure_clean_main_passes_repo_dir_as_cwd(monkeypatch):
+    cwds = []
+
+    def fake_run(cmd, **kwargs):
+        cwds.append(kwargs.get("cwd"))
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    ensure_clean_main()
+
+    assert all(cwd == implement_issue.REPO_DIR for cwd in cwds)
+
+
+def test_ensure_clean_main_called_before_create_branch(monkeypatch, tmp_path):
+    log_path = tmp_path / "run_history.jsonl"
+    monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+
+    order = []
+    monkeypatch.setattr(
+        implement_issue, "ensure_clean_main", lambda: order.append("ensure_clean_main")
+    )
+    monkeypatch.setattr(
+        implement_issue,
+        "create_branch",
+        lambda issue: order.append("create_branch") or "ai-dlc/42-x",
+    )
+    monkeypatch.setattr(
+        implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
+    )
+    monkeypatch.setattr(implement_issue, "verify_implementation", lambda branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
+    monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
+    monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    implement_single_issue(
+        {"number": 42, "title": "Test order", "body": "## Type\nfeature", "labels": []}
+    )
+
+    assert "ensure_clean_main" in order
+    assert "create_branch" in order
+    assert order.index("ensure_clean_main") < order.index("create_branch")
+
+
+def test_implement_single_issue_catches_exception_returns_false(monkeypatch):
+    monkeypatch.setattr(implement_issue, "ensure_clean_main", lambda: None)
+    monkeypatch.setattr(implement_issue, "design_gate", lambda i, require_design=False: True)
+
+    def exploding_run(cmd, **kwargs):
+        raise RuntimeError("unexpected failure")
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", exploding_run)
+
+    result = implement_single_issue(
+        {"number": 99, "title": "Exploding issue", "body": "", "labels": []}
+    )
+    assert result is False
+
+
+def test_implement_single_issue_exception_does_not_propagate(monkeypatch):
+    monkeypatch.setattr(implement_issue, "ensure_clean_main", lambda: None)
+    monkeypatch.setattr(implement_issue, "design_gate", lambda i, require_design=False: True)
+    monkeypatch.setattr(
+        implement_issue, "create_branch", lambda issue: (_ for _ in ()).throw(ValueError("boom"))
+    )
+    monkeypatch.setattr(
+        implement_issue.subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    result = implement_single_issue({"number": 77, "title": "Boom", "body": "", "labels": []})
+    assert result is False
 
 
 # --- implement_single_issue tests ---
@@ -1917,6 +2016,7 @@ def test_design_gate_empty_design_skips_comment(monkeypatch):
 def test_implement_single_issue_skips_when_design_gate_blocks(monkeypatch):
     """A blocked design gate returns False without touching the branch/labels."""
     issue = {"number": 44, "title": "T", "body": "b", "labels": []}
+    monkeypatch.setattr(implement_issue, "ensure_clean_main", lambda: None)
     monkeypatch.setattr(implement_issue, "design_gate", lambda i, require_design=False: False)
 
     def boom(issue):
@@ -1931,6 +2031,7 @@ def test_implement_single_issue_passes_require_design_to_gate(monkeypatch, tmp_p
     """The require_design flag reaches the design gate."""
     log_path = tmp_path / "run_history.jsonl"
     monkeypatch.setattr(implement_issue, "LOG_FILE", log_path)
+    monkeypatch.setattr(implement_issue, "ensure_clean_main", lambda: None)
 
     captured = {}
 
