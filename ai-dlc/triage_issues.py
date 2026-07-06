@@ -605,6 +605,18 @@ def triage_issue(issue: dict, auto_fix: bool = True) -> list[ClaudeResult]:
 
 
 def main():
+    import argparse
+
+    from version import get_version
+
+    parser = argparse.ArgumentParser(description="Triage untriaged GitHub issues via Claude")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"patina {get_version()}",
+    )
+    parser.parse_args()
+
     start_time = time.time()
     results: list[ClaudeResult] = []
 

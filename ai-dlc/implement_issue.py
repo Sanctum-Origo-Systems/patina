@@ -885,7 +885,14 @@ def implement_targeted_issue(number: int, require_design: bool = False) -> bool:
 
 
 def main():
+    from version import get_version
+
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"patina {get_version()}",
+    )
     parser.add_argument(
         "--max-issues",
         type=int,
