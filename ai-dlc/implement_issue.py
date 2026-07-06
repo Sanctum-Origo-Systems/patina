@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import subprocess
@@ -178,6 +179,7 @@ def priority_rank(issue: dict) -> int:
 def select_top_issue(issues: list[dict]) -> dict | None:
     """Pick the top issue, keeping sub-issues of one parent together.
 
+    Filters out issues whose dependencies are not met before picking.
     Sub-issues (those with 'Parent issue: #N' in the body) are preferred over
     standalone issues so a decomposed issue is finished before the bot moves
     on. Among parent groups, the group with the most ready sub-issues wins;
@@ -192,9 +194,13 @@ def select_top_issue(issues: list[dict]) -> dict | None:
     if not issues:
         return None
 
+    eligible = [i for i in issues if dependencies_met(i)]
+    if not eligible:
+        return None
+
     groups: dict[int, list[dict]] = {}
     standalone: list[dict] = []
-    for issue in issues:
+    for issue in eligible:
         parent = parent_issue_number(issue)
         if parent is not None:
             groups.setdefault(parent, []).append(issue)
@@ -614,6 +620,13 @@ def review_implementation(issue: dict, branch: str) -> tuple[bool, str]:
     return parse_review_response(result.text)
 
 
+def ensure_clean_main():
+    """Reset to a clean main branch, discarding any leftover state."""
+    subprocess.run(["git", "checkout", "--", "."], cwd=REPO_DIR)
+    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
+    subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=REPO_DIR)
+
+
 def cleanup_branch(branch: str):
     """Delete failed branch locally and remotely."""
     subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
@@ -665,6 +678,48 @@ def create_pr(
         ],
         cwd=REPO_DIR,
     )
+
+
+def unblock_ready_issues():
+    """Re-check blocked issues and restore ready label if deps are met."""
+    result = subprocess.run(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            REPO,
+            "--label",
+            "blocked",
+            "--state",
+            "open",
+            "--json",
+            "number,title,body,labels",
+            "--limit",
+            "50",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return
+    for issue in json.loads(result.stdout):
+        if dependencies_met(issue):
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue["number"]),
+                    "--repo",
+                    REPO,
+                    "--remove-label",
+                    "blocked",
+                    "--add-label",
+                    "ready",
+                ],
+            )
+            print(f"  Unblocked #{issue['number']}: {issue['title']}")
 
 
 def cleanup_merged_labels():
@@ -741,69 +796,23 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
     When a design review is required (via --require-design or the
     'design-required' label) and not yet approved, the design gate posts a
     design proposal and skips implementation, returning False.
+
+    Catches unexpected exceptions so a single issue failure does not crash
+    the batch loop.
     """
-    if not design_gate(issue, require_design):
-        return False
+    try:
+        ensure_clean_main()
 
-    start_time = time.time()
-    claude_results: list[ClaudeResult] = []
-    final_attempt = 0
-    success = False
+        if not design_gate(issue, require_design):
+            return False
 
-    print(f"Implementing #{issue['number']}: {issue['title']}")
+        start_time = time.time()
+        claude_results: list[ClaudeResult] = []
+        final_attempt = 0
+        success = False
 
-    subprocess.run(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(issue["number"]),
-            "--repo",
-            REPO,
-            "--remove-label",
-            "ready",
-            "--add-label",
-            "in-progress",
-        ],
-    )
-    post_in_progress_comment(issue["number"])
+        print(f"Implementing #{issue['number']}: {issue['title']}")
 
-    branch = create_branch(issue)
-    print(f"  Branch: {branch}")
-
-    last_errors = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        print(f"  Attempt {attempt}/{MAX_RETRIES}...")
-        claude_results.append(implement(issue, previous_errors=last_errors))
-        final_attempt = attempt
-
-        valid, errors = verify_implementation(branch)
-        if not valid:
-            print(f"  Verification failed:\n{errors}")
-            last_errors = errors
-            post_attempt_failure(issue["number"], attempt, errors)
-            continue
-
-        print("  Verification passed. Reviewing implementation...")
-        approved, feedback = review_implementation(issue, branch)
-        if not approved:
-            print(f"  Review failed:\n{feedback}")
-            last_errors = feedback
-            post_attempt_failure(issue["number"], attempt, feedback)
-            continue
-
-        success = True
-        print("  Review passed.")
-        break
-
-    elapsed = time.time() - start_time
-    total_cost = sum(r.cost_usd for r in claude_results)
-    total_input = sum(r.input_tokens for r in claude_results)
-    total_output = sum(r.output_tokens for r in claude_results)
-    total_cache_read = sum(r.cache_read_tokens for r in claude_results)
-
-    if not success:
-        print("  All retries exhausted. Labeling needs-human.")
         subprocess.run(
             [
                 "gh",
@@ -813,17 +822,102 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
                 "--repo",
                 REPO,
                 "--remove-label",
-                "in-progress",
-                "--add-label",
                 "ready",
                 "--add-label",
-                "needs-human",
+                "in-progress",
             ],
         )
-        cleanup_branch(branch)
+        post_in_progress_comment(issue["number"])
+
+        branch = create_branch(issue)
+        print(f"  Branch: {branch}")
+
+        last_errors = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            print(f"  Attempt {attempt}/{MAX_RETRIES}...")
+            claude_results.append(implement(issue, previous_errors=last_errors))
+            final_attempt = attempt
+
+            valid, errors = verify_implementation(branch)
+            if not valid:
+                print(f"  Verification failed:\n{errors}")
+                last_errors = errors
+                post_attempt_failure(issue["number"], attempt, errors)
+                continue
+
+            print("  Verification passed. Reviewing implementation...")
+            approved, feedback = review_implementation(issue, branch)
+            if not approved:
+                print(f"  Review failed:\n{feedback}")
+                last_errors = feedback
+                post_attempt_failure(issue["number"], attempt, feedback)
+                continue
+
+            success = True
+            print("  Review passed.")
+            break
+
+        elapsed = time.time() - start_time
+        total_cost = sum(r.cost_usd for r in claude_results)
+        total_input = sum(r.input_tokens for r in claude_results)
+        total_output = sum(r.output_tokens for r in claude_results)
+        total_cache_read = sum(r.cache_read_tokens for r in claude_results)
+
+        if not success:
+            print("  All retries exhausted. Labeling needs-human.")
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue["number"]),
+                    "--repo",
+                    REPO,
+                    "--remove-label",
+                    "in-progress",
+                    "--add-label",
+                    "ready",
+                    "--add-label",
+                    "needs-human",
+                ],
+            )
+            cleanup_branch(branch)
+            log_run(
+                issue["number"],
+                False,
+                final_attempt,
+                elapsed,
+                total_cost,
+                total_input,
+                total_output,
+                total_cache_read,
+            )
+            return False
+
+        subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
+        create_pr(
+            issue,
+            branch,
+            attempts=final_attempt,
+            duration=elapsed,
+            cost_usd=total_cost,
+            input_tokens=total_input,
+            output_tokens=total_output,
+        )
+        label_in_review(issue["number"])
+        print(f"  PR created for #{issue['number']}.")
+
+        subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
+
+        print(f"\n--- AI-DLC Run Stats (#{issue['number']}) ---")
+        print(f"  Duration: {elapsed:.0f}s")
+        print(f"  Claude calls: {len(claude_results)}")
+        print(f"  Input tokens: {total_input:,}")
+        print(f"  Output tokens: {total_output:,}")
+        print(f"  Cost: ${total_cost:.2f}")
         log_run(
             issue["number"],
-            False,
+            True,
             final_attempt,
             elapsed,
             total_cost,
@@ -831,41 +925,11 @@ def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
             total_output,
             total_cache_read,
         )
+
+        return True
+    except Exception:
+        logging.exception("implement_single_issue failed for #%s", issue.get("number"))
         return False
-
-    subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
-    create_pr(
-        issue,
-        branch,
-        attempts=final_attempt,
-        duration=elapsed,
-        cost_usd=total_cost,
-        input_tokens=total_input,
-        output_tokens=total_output,
-    )
-    label_in_review(issue["number"])
-    print(f"  PR created for #{issue['number']}.")
-
-    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
-
-    print(f"\n--- AI-DLC Run Stats (#{issue['number']}) ---")
-    print(f"  Duration: {elapsed:.0f}s")
-    print(f"  Claude calls: {len(claude_results)}")
-    print(f"  Input tokens: {total_input:,}")
-    print(f"  Output tokens: {total_output:,}")
-    print(f"  Cost: ${total_cost:.2f}")
-    log_run(
-        issue["number"],
-        True,
-        final_attempt,
-        elapsed,
-        total_cost,
-        total_input,
-        total_output,
-        total_cache_read,
-    )
-
-    return True
 
 
 def implement_targeted_issue(number: int, require_design: bool = False) -> bool:
@@ -921,6 +985,7 @@ def main():
 
     try:
         cleanup_merged_labels()
+        unblock_ready_issues()
 
         if args.issue is not None:
             implement_targeted_issue(args.issue, require_design=args.require_design)
@@ -932,24 +997,6 @@ def main():
             if not issue:
                 print("No more ready issues.")
                 break
-
-            if not dependencies_met(issue):
-                print(f"#{issue['number']}: dependencies not met, skipping.")
-                subprocess.run(
-                    [
-                        "gh",
-                        "issue",
-                        "edit",
-                        str(issue["number"]),
-                        "--repo",
-                        REPO,
-                        "--remove-label",
-                        "ready",
-                        "--add-label",
-                        "blocked",
-                    ],
-                )
-                continue
 
             success = implement_single_issue(issue, require_design=args.require_design)
             if success:
