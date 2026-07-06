@@ -680,6 +680,48 @@ def create_pr(
     )
 
 
+def unblock_ready_issues():
+    """Re-check blocked issues and restore ready label if deps are met."""
+    result = subprocess.run(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            REPO,
+            "--label",
+            "blocked",
+            "--state",
+            "open",
+            "--json",
+            "number,title,body,labels",
+            "--limit",
+            "50",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return
+    for issue in json.loads(result.stdout):
+        if dependencies_met(issue):
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue["number"]),
+                    "--repo",
+                    REPO,
+                    "--remove-label",
+                    "blocked",
+                    "--add-label",
+                    "ready",
+                ],
+            )
+            print(f"  Unblocked #{issue['number']}: {issue['title']}")
+
+
 def cleanup_merged_labels():
     """Remove in-review label from closed issues whose PR already merged."""
     result = subprocess.run(
@@ -943,6 +985,7 @@ def main():
 
     try:
         cleanup_merged_labels()
+        unblock_ready_issues()
 
         if args.issue is not None:
             implement_targeted_issue(args.issue, require_design=args.require_design)

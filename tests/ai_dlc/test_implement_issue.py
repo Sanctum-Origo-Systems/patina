@@ -38,6 +38,7 @@ from implement_issue import (
     release_lock,
     review_implementation,
     select_top_issue,
+    unblock_ready_issues,
 )
 
 # --- Smoke test: module docstring ---
@@ -776,6 +777,7 @@ def test_main_default_implements_one_issue(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     def fake_implement_single(issue, require_design=False):
         call_count[0] += 1
@@ -803,6 +805,7 @@ def test_main_max_issues_processes_multiple(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     def fake_implement_single(issue, require_design=False):
         call_count[0] += 1
@@ -833,6 +836,7 @@ def test_main_stops_when_no_more_issues(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     def fake_implement_single(issue, require_design=False):
         call_count[0] += 1
@@ -864,6 +868,7 @@ def test_main_breaks_on_failure(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     def fake_implement_single(issue, require_design=False):
         call_count[0] += 1
@@ -895,6 +900,7 @@ def test_main_no_blocked_label_on_unmet_deps(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     import sys
 
@@ -914,6 +920,7 @@ def test_main_no_ready_issues_prints_message(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
     monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
 
     implement_issue.main()
@@ -1372,9 +1379,215 @@ def test_main_runs_cleanup_merged_labels(monkeypatch, tmp_path):
 
     ran = []
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: ran.append(True))
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     implement_issue.main()
     assert ran == [True]
+
+
+# --- unblock_ready_issues tests ---
+
+
+def _blocked(number, title="Blocked", body=""):
+    return {
+        "number": number,
+        "title": title,
+        "body": body,
+        "labels": [{"name": "blocked"}],
+    }
+
+
+def _gh_list_result(issues):
+    payload = json.dumps(issues)
+    return type(
+        "R",
+        (),
+        {"returncode": 0, "stdout": payload, "stderr": ""},
+    )()
+
+
+def test_unblock_ready_issues_unblocks_when_deps_met(monkeypatch):
+    blocked_issues = [_blocked(10, "Blocked issue", "Depends on: #5")]
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return _gh_list_result(blocked_issues)
+        return _ok()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
+
+    unblock_ready_issues()
+
+    edit_calls = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert len(edit_calls) == 1
+    cmd = edit_calls[0]
+    assert cmd[3] == "10"
+    assert "--remove-label" in cmd
+    assert cmd[cmd.index("--remove-label") + 1] == "blocked"
+    assert "--add-label" in cmd
+    assert cmd[cmd.index("--add-label") + 1] == "ready"
+
+
+def test_unblock_ready_issues_skips_when_deps_not_met(monkeypatch):
+    blocked_issues = [_blocked(10, "Still blocked", "Depends on: #5")]
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return _gh_list_result(blocked_issues)
+        return _ok()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: False)
+
+    unblock_ready_issues()
+
+    edit_calls = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert edit_calls == []
+
+
+def test_unblock_ready_issues_handles_mixed_deps(monkeypatch):
+    blocked_issues = [
+        _blocked(10, "Ready to unblock", "Depends on: #5"),
+        _blocked(11, "Still blocked", "Depends on: #6"),
+        _blocked(12, "Also ready", "Depends on: #7"),
+    ]
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return _gh_list_result(blocked_issues)
+        return _ok()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        implement_issue,
+        "dependencies_met",
+        lambda i: i["number"] != 11,
+    )
+
+    unblock_ready_issues()
+
+    edit_calls = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert len(edit_calls) == 2
+    edited_numbers = {c[3] for c in edit_calls}
+    assert edited_numbers == {"10", "12"}
+
+
+def test_unblock_ready_issues_exits_silently_on_gh_failure(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return _fail()
+        return _ok()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    unblock_ready_issues()
+
+    edit_calls = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert edit_calls == []
+
+
+def test_unblock_ready_issues_no_blocked_issues(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return _gh_list_result([])
+        return _ok()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    unblock_ready_issues()
+
+    edit_calls = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert edit_calls == []
+
+
+def test_unblock_ready_issues_queries_blocked_open_issues(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "issue", "list"]:
+            captured["list_cmd"] = cmd
+            return _gh_list_result([])
+        return _ok()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+
+    unblock_ready_issues()
+
+    cmd = captured["list_cmd"]
+    assert "--label" in cmd
+    assert cmd[cmd.index("--label") + 1] == "blocked"
+    assert "--state" in cmd
+    assert cmd[cmd.index("--state") + 1] == "open"
+
+
+def test_unblock_ready_issues_prints_unblocked(monkeypatch, capsys):
+    blocked_issues = [_blocked(10, "Unblock me")]
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["gh", "issue", "list"]:
+            return _gh_list_result(blocked_issues)
+        return _ok()
+
+    monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
+    monkeypatch.setattr(implement_issue, "dependencies_met", lambda i: True)
+
+    unblock_ready_issues()
+
+    out = capsys.readouterr().out
+    assert "Unblocked #10" in out
+    assert "Unblock me" in out
+
+
+def test_main_calls_unblock_ready_issues(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+
+    ran = []
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: ran.append(True))
+
+    implement_issue.main()
+    assert ran == [True]
+
+
+def test_main_calls_unblock_before_implementation_loop(monkeypatch, tmp_path):
+    import sys
+
+    lock_path = tmp_path / ".ai-dlc.lock"
+    monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
+    monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
+    monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+
+    order = []
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: order.append("unblock"))
+
+    def fake_get_top():
+        order.append("get_top")
+        return None
+
+    monkeypatch.setattr(implement_issue, "get_top_ready_issue", fake_get_top)
+
+    implement_issue.main()
+    assert "unblock" in order
+    assert "get_top" in order
+    assert order.index("unblock") < order.index("get_top")
 
 
 # --- get_issue_by_number tests ---
@@ -1478,6 +1691,7 @@ def test_main_issue_flag_targets_specific_issue(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--issue", "28"])
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     # Auto-pick path must not be used when --issue is given.
     def boom():
@@ -1503,6 +1717,7 @@ def test_main_issue_flag_with_max_issues_runs_without_error(monkeypatch, tmp_pat
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--issue", "28", "--max-issues", "1"])
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
     monkeypatch.setattr(implement_issue, "get_top_ready_issue", lambda: None)
 
     targeted = []
@@ -1523,6 +1738,7 @@ def test_main_without_issue_flag_uses_auto_pick(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     auto_pick_called = []
 
@@ -2054,6 +2270,7 @@ def test_main_require_design_flag_threads_to_implement(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--require-design"])
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     issue = {"number": 1, "title": "One", "body": "", "labels": []}
     served = [issue, None]
@@ -2078,6 +2295,7 @@ def test_main_require_design_flag_threads_to_targeted(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(sys, "argv", ["implement_issue.py", "--issue", "28", "--require-design"])
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     captured = {}
 
@@ -2100,6 +2318,7 @@ def test_main_defaults_require_design_false(monkeypatch, tmp_path):
     monkeypatch.setattr(implement_issue, "LOCKFILE", lock_path)
     monkeypatch.setattr(sys, "argv", ["implement_issue.py"])
     monkeypatch.setattr(implement_issue, "cleanup_merged_labels", lambda: None)
+    monkeypatch.setattr(implement_issue, "unblock_ready_issues", lambda: None)
 
     issue = {"number": 1, "title": "One", "body": "", "labels": []}
     served = [issue, None]
