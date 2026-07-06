@@ -1,13 +1,16 @@
-"""Tests for cognitive eval metric collectors."""
+"""Tests for cognitive eval metric collectors and main() integration."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import pytest
+from eval.cognitive import EvalSnapshot
 from eval.cognitive.run import (
     collect_merge_rate,
     collect_time_to_implement,
@@ -273,3 +276,71 @@ class TestCollectTimeToImplement:
 
         result = collect_time_to_implement(db)
         assert result.value == 0.0
+
+
+# --- main() integration tests ---
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+LATEST = PROJECT_ROOT / "eval" / "cognitive" / "latest.json"
+EXPECTED_KEYS = {"merge_rate", "time_to_implement", "tool_reliability"}
+
+
+@pytest.fixture(autouse=False)
+def _cleanup_latest():
+    yield
+    if LATEST.exists():
+        LATEST.unlink()
+    tmp = LATEST.with_name("latest.json.tmp")
+    if tmp.exists():
+        tmp.unlink()
+
+
+def test_main_produces_valid_snapshot_with_all_metrics(_cleanup_latest):
+    from eval.cognitive.run import main
+
+    main()
+
+    assert LATEST.exists()
+    snap = EvalSnapshot.model_validate_json(LATEST.read_text())
+    assert set(snap.metrics.keys()) == EXPECTED_KEYS
+    for mv in snap.metrics.values():
+        assert isinstance(mv.value, float)
+        datetime.fromisoformat(mv.collected_at)
+
+
+def test_script_exits_zero(_cleanup_latest):
+    result = subprocess.run(
+        [sys.executable, "eval/cognitive/run.py"],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert LATEST.exists()
+
+    data = json.loads(LATEST.read_text())
+    assert set(data["metrics"].keys()) == EXPECTED_KEYS
+    for key in EXPECTED_KEYS:
+        assert isinstance(data["metrics"][key]["value"], float)
+
+
+def test_overwrite_produces_equal_or_later_timestamp(_cleanup_latest):
+    from eval.cognitive.run import main
+
+    main()
+    first_ts = json.loads(LATEST.read_text())["metrics"]["tool_reliability"]["collected_at"]
+
+    main()
+    second_ts = json.loads(LATEST.read_text())["metrics"]["tool_reliability"]["collected_at"]
+
+    assert second_ts >= first_ts
+
+
+def test_atomic_write_no_partial_on_disk(_cleanup_latest):
+    from eval.cognitive.run import main
+
+    main()
+
+    tmp = LATEST.with_name("latest.json.tmp")
+    assert not tmp.exists()
+    assert LATEST.exists()

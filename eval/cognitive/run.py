@@ -120,7 +120,9 @@ def main() -> None:
         }
     )
     out = Path(__file__).resolve().parent / "latest.json"
-    out.write_text(snapshot.model_dump_json(indent=2))
+    tmp = out.with_name("latest.json.tmp")
+    tmp.write_text(snapshot.model_dump_json(indent=2))
+    tmp.replace(out)
 
 
 if __name__ == "__main__":
