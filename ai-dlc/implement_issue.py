@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Cron 2: Implement the top ready GitHub issue via Claude."""
+"""Cron 2: Implement the top ready GitHub issue via Claude.
+
+Supports VPS-based builder deployments for remote execution.
+"""
 
 from __future__ import annotations
 
