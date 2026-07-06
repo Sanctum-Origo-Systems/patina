@@ -75,10 +75,15 @@ def _parse_date(line: str) -> date | None:
         return None
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Append an entry to CHANGELOG.md")
     parser.add_argument("--number", type=int, required=True)
     parser.add_argument("--title", required=True)
     parser.add_argument("--cost", type=float, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     append_entry(number=args.number, title=args.title, cost=args.cost)
+    trim_changelog()
+
+
+if __name__ == "__main__":
+    main()
