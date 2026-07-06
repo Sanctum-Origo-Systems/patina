@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from eval.cognitive import EvalSnapshot, MetricValue
+from eval.cognitive.snapshot import EvalSnapshot, MetricValue
 
 _DEFAULT_STORE = Path.home() / ".patina" / "store.db"
 
@@ -111,7 +111,7 @@ def collect_tool_reliability(log_path: Path | str | None = None) -> MetricValue:
     return MetricValue(value=successes / total, collected_at=now)
 
 
-def main() -> None:
+def main(output_path: Path | None = None) -> None:
     snapshot = EvalSnapshot(
         metrics={
             "merge_rate": collect_merge_rate(),
@@ -119,8 +119,8 @@ def main() -> None:
             "tool_reliability": collect_tool_reliability(),
         }
     )
-    out = Path(__file__).resolve().parent / "latest.json"
-    tmp = out.with_name("latest.json.tmp")
+    out = output_path or (Path(__file__).resolve().parent / "latest.json")
+    tmp = out.with_suffix(".tmp")
     tmp.write_text(snapshot.model_dump_json(indent=2))
     tmp.replace(out)
 

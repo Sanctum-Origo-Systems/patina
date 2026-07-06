@@ -33,7 +33,7 @@ def test_tool_reliability_populated_log(tmp_path):
 
     assert result.value == 0.6
     assert isinstance(result.value, float)
-    datetime.fromisoformat(result.collected_at)
+    assert isinstance(result.collected_at, datetime)
 
 
 def test_tool_reliability_empty_log(tmp_path):
@@ -43,7 +43,7 @@ def test_tool_reliability_empty_log(tmp_path):
     result = collect_tool_reliability(log_path=log)
 
     assert result.value == 0.0
-    datetime.fromisoformat(result.collected_at)
+    assert isinstance(result.collected_at, datetime)
 
 
 def test_tool_reliability_missing_path(tmp_path):
@@ -53,7 +53,7 @@ def test_tool_reliability_missing_path(tmp_path):
 
     assert result.value == 0.0
     assert result.unavailable is True
-    datetime.fromisoformat(result.collected_at)
+    assert isinstance(result.collected_at, datetime)
 
 
 # --- merge_rate and time_to_implement tests ---
@@ -100,18 +100,18 @@ class TestCollectMergeRate:
 
         result = collect_merge_rate(db)
         assert result.value == pytest.approx(0.5)
-        datetime.fromisoformat(result.collected_at)
+        assert isinstance(result.collected_at, datetime)
 
     def test_empty_store(self, tmp_path: Path) -> None:
         db = _create_store(tmp_path)
         result = collect_merge_rate(db)
         assert result.value == 0.0
-        datetime.fromisoformat(result.collected_at)
+        assert isinstance(result.collected_at, datetime)
 
     def test_invalid_store_path(self) -> None:
         result = collect_merge_rate(Path("/nonexistent/path/store.db"))
         assert result.value == 0.0
-        datetime.fromisoformat(result.collected_at)
+        assert isinstance(result.collected_at, datetime)
 
     def test_all_merged_no_rework(self, tmp_path: Path) -> None:
         db = _create_store(tmp_path)
@@ -142,7 +142,7 @@ class TestCollectMergeRate:
     def test_collected_at_iso_format(self, tmp_path: Path) -> None:
         db = _create_store(tmp_path)
         result = collect_merge_rate(db)
-        parsed = datetime.fromisoformat(result.collected_at)
+        parsed = result.collected_at
         assert parsed is not None
 
     def test_no_pull_requests_table(self, tmp_path: Path) -> None:
@@ -193,18 +193,18 @@ class TestCollectTimeToImplement:
         result = collect_time_to_implement(db)
         # Hours: 10, 20, 30 → median = 20
         assert result.value == pytest.approx(20.0)
-        datetime.fromisoformat(result.collected_at)
+        assert isinstance(result.collected_at, datetime)
 
     def test_no_timestamp_data(self, tmp_path: Path) -> None:
         db = _create_store(tmp_path)
         result = collect_time_to_implement(db)
         assert result.value == 0.0
-        datetime.fromisoformat(result.collected_at)
+        assert isinstance(result.collected_at, datetime)
 
     def test_invalid_store_path(self) -> None:
         result = collect_time_to_implement(Path("/nonexistent/path/store.db"))
         assert result.value == 0.0
-        datetime.fromisoformat(result.collected_at)
+        assert isinstance(result.collected_at, datetime)
 
     def test_single_pair(self, tmp_path: Path) -> None:
         db = _create_store(tmp_path)
@@ -247,7 +247,7 @@ class TestCollectTimeToImplement:
     def test_collected_at_iso_format(self, tmp_path: Path) -> None:
         db = _create_store(tmp_path)
         result = collect_time_to_implement(db)
-        parsed = datetime.fromisoformat(result.collected_at)
+        parsed = result.collected_at
         assert parsed is not None
 
     def test_prs_without_matching_issues(self, tmp_path: Path) -> None:
@@ -280,67 +280,72 @@ class TestCollectTimeToImplement:
 
 # --- main() integration tests ---
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-LATEST = PROJECT_ROOT / "eval" / "cognitive" / "latest.json"
 EXPECTED_KEYS = {"merge_rate", "time_to_implement", "tool_reliability"}
 
 
-@pytest.fixture(autouse=False)
-def _cleanup_latest():
-    yield
-    if LATEST.exists():
-        LATEST.unlink()
-    tmp = LATEST.with_name("latest.json.tmp")
-    if tmp.exists():
-        tmp.unlink()
-
-
-def test_main_produces_valid_snapshot_with_all_metrics(_cleanup_latest):
+def test_main_produces_valid_snapshot_with_all_metrics(tmp_path):
     from eval.cognitive.run import main
 
-    main()
+    out = tmp_path / "latest.json"
+    main(output_path=out)
 
-    assert LATEST.exists()
-    snap = EvalSnapshot.model_validate_json(LATEST.read_text())
+    assert out.exists()
+    snap = EvalSnapshot.model_validate_json(out.read_text())
     assert set(snap.metrics.keys()) == EXPECTED_KEYS
     for mv in snap.metrics.values():
         assert isinstance(mv.value, float)
-        datetime.fromisoformat(mv.collected_at)
+        assert isinstance(mv.collected_at, datetime)
 
 
-def test_script_exits_zero(_cleanup_latest):
+def test_script_exits_zero(tmp_path):
+    project_root = Path(__file__).resolve().parents[3]
+    out = tmp_path / "latest.json"
     result = subprocess.run(
-        [sys.executable, "eval/cognitive/run.py"],
-        cwd=str(PROJECT_ROOT),
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; from eval.cognitive.run import main; "
+            f"main(output_path=Path(r'{out}'))",
+        ],
+        cwd=str(project_root),
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert LATEST.exists()
+    assert out.exists()
 
-    data = json.loads(LATEST.read_text())
+    data = json.loads(out.read_text())
     assert set(data["metrics"].keys()) == EXPECTED_KEYS
     for key in EXPECTED_KEYS:
         assert isinstance(data["metrics"][key]["value"], float)
 
 
-def test_overwrite_produces_equal_or_later_timestamp(_cleanup_latest):
+def test_overwrite_produces_equal_or_later_timestamp(tmp_path):
     from eval.cognitive.run import main
 
-    main()
-    first_ts = json.loads(LATEST.read_text())["metrics"]["tool_reliability"]["collected_at"]
+    out = tmp_path / "latest.json"
+    main(output_path=out)
+    first_ts = json.loads(out.read_text())["metrics"]["tool_reliability"]["collected_at"]
 
-    main()
-    second_ts = json.loads(LATEST.read_text())["metrics"]["tool_reliability"]["collected_at"]
+    main(output_path=out)
+    second_ts = json.loads(out.read_text())["metrics"]["tool_reliability"]["collected_at"]
 
     assert second_ts >= first_ts
 
 
-def test_atomic_write_no_partial_on_disk(_cleanup_latest):
+def test_atomic_write_preserves_original_on_failure(tmp_path, monkeypatch):
     from eval.cognitive.run import main
 
-    main()
+    out = tmp_path / "latest.json"
+    main(output_path=out)
+    original_content = out.read_text()
 
-    tmp = LATEST.with_name("latest.json.tmp")
-    assert not tmp.exists()
-    assert LATEST.exists()
+    def crash_replace(self, target):
+        raise OSError("simulated crash during rename")
+
+    monkeypatch.setattr(Path, "replace", crash_replace)
+
+    with pytest.raises(OSError, match="simulated crash"):
+        main(output_path=out)
+
+    assert out.read_text() == original_content
