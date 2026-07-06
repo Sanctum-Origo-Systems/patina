@@ -95,3 +95,23 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "chore: update changelog after #${PR_NUMBER}"
           git push
+
+  bump-version:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Bump version from PR title
+        run: python eval/cognitive/bump_version.py "${{ github.event.pull_request.title }}"
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet pyproject.toml || (git add pyproject.toml && git commit -m "chore: bump version [skip ci]" && git push)
