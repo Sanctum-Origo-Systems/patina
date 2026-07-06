@@ -617,7 +617,14 @@ def build_issue(issue_type: str | None = None, suggest: bool = True) -> tuple[st
 
 
 def main():
+    from version import get_version
+
     parser = argparse.ArgumentParser(description="Create or edit a Patina GitHub issue")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"patina {get_version()}",
+    )
     parser.add_argument(
         "--type",
         choices=sorted(VALID_TYPES),
