@@ -12,6 +12,14 @@ from patina.agent.session_cache import SessionCache
 _OPERATIONAL_INSTRUCTIONS = """
 
 ---
+## Session Start
+Before responding to the first user message, execute these orientation steps:
+1. Read `CHANGELOG.md` from the project root for recent improvements (skip if absent)
+2. Read `pyproject.toml` and note the current version
+3. Call `journal_search` with a recent-context query to load relevant session history
+Reference the current version and any pertinent recent journal entries in your opening turn.
+
+---
 ## Operational Instructions
 
 When referencing messages or observations:
