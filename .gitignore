@@ -18,3 +18,4 @@ docs/features/*
 fixtures/**/*.zip
 
 .claude/scheduled_tasks.lock
+ai-dlc/run_history.jsonl
