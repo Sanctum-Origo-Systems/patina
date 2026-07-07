@@ -1,13 +1,3 @@
-from __future__ import annotations
+from eval.cognitive.snapshot import REQUIRED_METRICS, EvalSnapshot, MetricValue
 
-from pydantic import BaseModel
-
-
-class MetricValue(BaseModel):
-    value: float
-    collected_at: str
-    unavailable: bool = False
-
-
-class EvalSnapshot(BaseModel):
-    metrics: dict[str, MetricValue]
+__all__ = ["EvalSnapshot", "MetricValue", "REQUIRED_METRICS"]
