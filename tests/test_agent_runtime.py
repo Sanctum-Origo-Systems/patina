@@ -244,6 +244,39 @@ class TestJournalDirectives:
         assert "journal_search" in prompt
 
 
+class TestSessionStartDirectives:
+    def test_session_start_section_present(self):
+        assert "## Session Start" in _OPERATIONAL_INSTRUCTIONS
+
+    def test_changelog_directive(self):
+        assert "CHANGELOG.md" in _OPERATIONAL_INSTRUCTIONS
+
+    def test_pyproject_version_directive(self):
+        assert "pyproject.toml" in _OPERATIONAL_INSTRUCTIONS
+
+    def test_journal_search_directive(self):
+        assert "journal_search" in _OPERATIONAL_INSTRUCTIONS
+
+    def test_session_start_in_system_prompt(self, tmp_path):
+        config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+        (tmp_path / "SOUL.md").write_text("Be helpful.")
+        runtime = AgentRuntime(config)
+        prompt = runtime._build_options(None)["system_prompt"]
+        assert "## Session Start" in prompt
+        assert "CHANGELOG.md" in prompt
+        assert "pyproject.toml" in prompt
+        assert "journal_search" in prompt
+
+    def test_session_start_before_operational_instructions(self, tmp_path):
+        config = AgentConfig(soul_path=tmp_path / "SOUL.md")
+        (tmp_path / "SOUL.md").write_text("")
+        runtime = AgentRuntime(config)
+        prompt = runtime._build_options(None)["system_prompt"]
+        start_idx = prompt.index("## Session Start")
+        ops_idx = prompt.index("## Operational Instructions")
+        assert start_idx < ops_idx
+
+
 class TestBuildToolGuide:
     def test_returns_non_empty(self):
         guide = _build_tool_guide()
