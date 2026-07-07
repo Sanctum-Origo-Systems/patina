@@ -30,6 +30,7 @@ from implement_issue import (
     implement_targeted_issue,
     log_run,
     parent_issue_number,
+    parse_and_strip_metric_targets,
     parse_dependency_numbers,
     parse_review_response,
     post_design,
@@ -82,6 +83,61 @@ def test_parse_deps_none():
 def test_parse_deps_case_insensitive():
     assert parse_dependency_numbers("depends on: #10") == ["10"]
     assert parse_dependency_numbers("DEPENDS ON: #20") == ["20"]
+
+
+# --- Pure function tests: parse_and_strip_metric_targets ---
+
+
+def test_parse_metric_targets_no_targets():
+    body = "## Summary\nAdd a feature\n\n## Acceptance Criteria\n- works"
+    cleaned, targets = parse_and_strip_metric_targets(body)
+    assert cleaned == body
+    assert targets == []
+
+
+def test_parse_metric_targets_single_target():
+    body = "## Summary\nDo something\n**Metric Target:** latency < 100ms\n## End"
+    cleaned, targets = parse_and_strip_metric_targets(body)
+    assert "Metric Target" not in cleaned
+    assert "## Summary" in cleaned
+    assert "## End" in cleaned
+    assert targets == ["**Metric Target:** latency < 100ms"]
+
+
+def test_parse_metric_targets_multiple_targets():
+    body = (
+        "## Summary\nFix bug\n"
+        "**Metric Target:** p99 < 200ms\n"
+        "Some text\n"
+        "**Metric Target:** error_rate < 0.1%\n"
+        "## End"
+    )
+    cleaned, targets = parse_and_strip_metric_targets(body)
+    assert "Metric Target" not in cleaned
+    assert "Some text" in cleaned
+    assert len(targets) == 2
+    assert targets[0] == "**Metric Target:** p99 < 200ms"
+    assert targets[1] == "**Metric Target:** error_rate < 0.1%"
+
+
+def test_parse_metric_targets_empty_body():
+    cleaned, targets = parse_and_strip_metric_targets("")
+    assert cleaned == ""
+    assert targets == []
+
+
+def test_parse_metric_targets_preserves_surrounding_content():
+    body = "before\n**Metric Target:** x\nafter\n"
+    cleaned, targets = parse_and_strip_metric_targets(body)
+    assert cleaned == "before\nafter\n"
+    assert targets == ["**Metric Target:** x"]
+
+
+def test_parse_metric_targets_indented_line():
+    body = "text\n  **Metric Target:** indented\nmore text"
+    cleaned, targets = parse_and_strip_metric_targets(body)
+    assert "Metric Target" not in cleaned
+    assert targets == ["  **Metric Target:** indented"]
 
 
 # --- Pure function tests: build_branch_name ---

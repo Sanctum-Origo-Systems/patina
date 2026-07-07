@@ -42,6 +42,22 @@ def build_branch_name(issue: dict) -> str:
     return f"ai-dlc/{issue['number']}-{slug}"
 
 
+def parse_and_strip_metric_targets(body: str) -> tuple[str, list[str]]:
+    """Strip **Metric Target:** lines from an issue body.
+
+    Returns (cleaned_body, metric_targets) where metric_targets is a list of
+    the full matched lines and cleaned_body has those lines removed.
+    """
+    targets = []
+    cleaned_lines = []
+    for line in body.splitlines(keepends=True):
+        if re.match(r"\s*\*\*Metric Target:\*\*", line):
+            targets.append(line.rstrip("\n").rstrip("\r"))
+        else:
+            cleaned_lines.append(line)
+    return "".join(cleaned_lines), targets
+
+
 def detect_issue_type(body: str) -> str:
     """Determine conventional commit type from issue body."""
     body_lower = (body or "").lower()
@@ -325,6 +341,15 @@ def build_implementation_prompt(issue: dict) -> str:
                 )
             ):
                 full_context += f"\n\n{body}"
+
+    full_context, metric_targets = parse_and_strip_metric_targets(full_context)
+    if metric_targets:
+        logging.info(
+            "Stripped %d metric target(s) from issue #%s: %s",
+            len(metric_targets),
+            issue["number"],
+            metric_targets,
+        )
 
     return (
         f"## Task\n\n"
