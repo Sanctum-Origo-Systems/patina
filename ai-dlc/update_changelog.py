@@ -4,6 +4,7 @@
 Run daily via cron or manually:
     uv run python ai-dlc/update_changelog.py
 """
+
 from __future__ import annotations
 
 import json
@@ -24,11 +25,20 @@ def fetch_merged_prs(since_days: int = 7) -> list[dict]:
     since = (datetime.now(UTC) - timedelta(days=since_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     result = subprocess.run(
         [
-            "gh", "pr", "list", "--repo", REPO, "--state", "merged",
-            "--json", "number,title,body,mergedAt",
-            "--limit", "50",
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            REPO,
+            "--state",
+            "merged",
+            "--json",
+            "number,title,body,mergedAt",
+            "--limit",
+            "50",
         ],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         return []
