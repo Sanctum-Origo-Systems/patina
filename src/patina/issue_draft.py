@@ -4,10 +4,11 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import patina.store as store_module
+_DEFAULT_HOME = Path.home() / ".patina"
 
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-_SLACK_HANDLE_RE = re.compile(r"(?<!\w)@[A-Za-z][\w.-]*")
+_SLACK_HANDLE_RE = re.compile(r"(?<!\w)@[A-Za-z][\w-]*\.[A-Za-z][\w.-]*")
+_SLACK_URL_RE = re.compile(r"https?://[A-Za-z0-9.-]*\.slack\.com/\S*")
 
 
 def slugify(text: str) -> str:
@@ -21,6 +22,7 @@ def slugify(text: str) -> str:
 def strip_sensitive(text: str, names: list[str] | None = None) -> str:
     result = _EMAIL_RE.sub("[REDACTED]", text)
     result = _SLACK_HANDLE_RE.sub("[REDACTED]", result)
+    result = _SLACK_URL_RE.sub("[REDACTED]", result)
     if names:
         for name in names:
             name = name.strip()
@@ -60,110 +62,24 @@ def format_draft(
     )
 
 
-_SKILL_CONTENT = """\
-# file-issue
+_PACKAGE_DIR = Path(__file__).resolve().parent
 
-File a GitHub issue from conversation context with human review before submission.
 
-## When to use
-
-When the user wants to capture a bug, feature request, or improvement noticed
-during a conversation and file it as a GitHub issue without leaving the session
-or manually re-typing context.
-
-## Instructions
-
-### Step 1: Extract context from the conversation
-
-Identify the following from the current conversation:
-
-- **Title**: A concise issue title (under 70 characters)
-- **Problem**: What went wrong or what is missing
-- **Type**: One of bug, feat, refactor, docs, test
-- **Files to Modify**: Which source files are affected (use file paths, not line numbers)
-- **Expected Behavior**: What should happen instead
-- **Acceptance Criteria**: Testable conditions that define done
-
-If any of these are unclear from the conversation, ask the user to clarify
-before proceeding.
-
-### Step 2: Strip sensitive data
-
-Before saving the draft, remove all sensitive information using the
-patina.issue_draft module. Run via uv run python:
-
-    from patina.issue_draft import strip_sensitive
-    sanitized = strip_sensitive(text, names=["CustomerName", "CompanyName"])
-
-Also manually review the draft and remove:
-- Real customer or company names (replace with [REDACTED])
-- Internal Slack channel names or URLs
-- Any credentials, tokens, or API keys
-- Real person names that are not project contributors
-
-### Step 3: Save the draft
-
-Save the sanitized draft to ~/.patina/proposed/ using the module.
-Run via uv run python:
-
-    from patina.issue_draft import format_draft, strip_sensitive, save_draft
-
-    content = format_draft(
-        title="TITLE",
-        problem="PROBLEM",
-        issue_type="TYPE",
-        files=["file1.py", "file2.py"],
-        expected_behavior="EXPECTED",
-        acceptance_criteria=["criterion 1", "criterion 2"],
-    )
-    sanitized = strip_sensitive(content, names=["Name1", "Name2"])
-    path = save_draft("TITLE", sanitized)
-
-### Step 4: Display the draft for review
-
-Read the saved draft file and display it to the user. Ask whether they want to:
-1. Submit - create the GitHub issue now
-2. Edit - make changes before submitting
-3. Decline - keep the draft in ~/.patina/proposed/ for later
-
-### Step 5a: On approval - submit the issue
-
-Create the issue:
-
-    gh issue create --title "TITLE" --body-file DRAFT_PATH
-
-Then post the implementation detail comment:
-
-    gh issue comment ISSUE_NUMBER --body "**Implementation Detail:**
-    **Problem:** PROBLEM_SUMMARY
-    **Files:** FILE_LIST
-    **Change:** CHANGE_DESCRIPTION"
-
-Display the created issue URL to the user.
-
-### Step 5b: On decline - keep draft
-
-Confirm that the draft remains at its saved path in ~/.patina/proposed/
-for later editing. Do not create any issue.
-
-### Step 5c: On edit - modify and re-display
-
-Apply the user requested changes to the draft file, re-display the
-updated version, and return to Step 4.
-"""
+def _skill_source_path() -> Path:
+    return _PACKAGE_DIR.parent.parent / ".claude" / "skills" / "file-issue.md"
 
 
 def install_skill(project_root: Path | None = None) -> Path:
     root = project_root or Path.cwd()
     skill_dir = root / ".claude" / "skills"
     skill_dir.mkdir(parents=True, exist_ok=True)
-    path = skill_dir / "file-issue.md"
-    path.write_text(_SKILL_CONTENT)
-    return path
+    dest = skill_dir / "file-issue.md"
+    dest.write_text(_skill_source_path().read_text())
+    return dest
 
 
 def _proposed_dir() -> Path:
-    return store_module.DEFAULT_HOME / "proposed"
+    return _DEFAULT_HOME / "proposed"
 
 
 def save_draft(

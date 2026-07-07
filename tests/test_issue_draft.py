@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from patina.issue_draft import (
-    _SKILL_CONTENT,
     format_draft,
     install_skill,
     save_draft,
@@ -43,10 +42,37 @@ def test_strip_sensitive_removes_multiple_emails():
 
 
 def test_strip_sensitive_removes_slack_handles():
-    text = "Ask @john.doe or @alice-smith in Slack"
+    text = "Ask @john.doe or @alice.smith in Slack"
     result = strip_sensitive(text)
     assert "@john.doe" not in result
-    assert "@alice-smith" not in result
+    assert "@alice.smith" not in result
+
+
+def test_strip_sensitive_removes_slack_channel_urls():
+    text = "See https://acme.slack.com/archives/C0123ABC for details"
+    result = strip_sensitive(text)
+    assert "slack.com" not in result
+    assert "[REDACTED]" in result
+
+
+def test_strip_sensitive_removes_slack_workspace_urls():
+    text = "Check https://myteam.slack.com/messages/general for context"
+    result = strip_sensitive(text)
+    assert "slack.com" not in result
+
+
+def test_strip_sensitive_preserves_python_decorators():
+    text = "The @staticmethod and @property decorators are used here"
+    result = strip_sensitive(text)
+    assert "@staticmethod" in result
+    assert "@property" in result
+
+
+def test_strip_sensitive_preserves_github_mentions():
+    text = "CC @username and @some-user for review"
+    result = strip_sensitive(text)
+    assert "@username" in result
+    assert "@some-user" in result
 
 
 def test_strip_sensitive_removes_custom_names():
@@ -136,9 +162,9 @@ def test_save_draft_creates_directory(tmp_path):
 
 
 def test_save_draft_uses_default_dir(tmp_path, monkeypatch):
-    import patina.store as store_module
+    import patina.issue_draft as issue_draft_module
 
-    monkeypatch.setattr(store_module, "DEFAULT_HOME", tmp_path)
+    monkeypatch.setattr(issue_draft_module, "_DEFAULT_HOME", tmp_path)
     path = save_draft("Title", "body")
     assert path.parent == tmp_path / "proposed"
     assert path.exists()
@@ -159,25 +185,28 @@ def test_install_skill_creates_file(tmp_path):
 
 def test_install_skill_overwrites_existing(tmp_path):
     path = install_skill(project_root=tmp_path)
+    expected = path.read_text()
     path.write_text("old content")
     path2 = install_skill(project_root=tmp_path)
-    assert path2.read_text() == _SKILL_CONTENT
+    assert path2.read_text() == expected
 
 
-def test_skill_content_has_required_steps():
-    assert "Step 1" in _SKILL_CONTENT
-    assert "Step 2" in _SKILL_CONTENT
-    assert "Step 3" in _SKILL_CONTENT
-    assert "Step 4" in _SKILL_CONTENT
-    assert "Step 5a" in _SKILL_CONTENT
-    assert "Step 5b" in _SKILL_CONTENT
-    assert "Step 5c" in _SKILL_CONTENT
+def test_skill_content_has_required_steps(tmp_path):
+    path = install_skill(project_root=tmp_path)
+    content = path.read_text()
+    assert "Step 1" in content
+    assert "Step 2" in content
+    assert "Step 3" in content
+    assert "Step 4" in content
+    assert "Step 5a" in content
+    assert "Step 5b" in content
+    assert "Step 5c" in content
 
 
 def test_end_to_end_draft_with_stripping(tmp_path):
     content = format_draft(
         title="Fix auth flow",
-        problem="User alice@example.com reported crash when @admin clicks save",
+        problem="User alice@example.com reported crash when @admin.bot clicks save",
         issue_type="bug",
         files=["src/auth.py"],
         expected_behavior="Save should work without crashing",
@@ -188,6 +217,6 @@ def test_end_to_end_draft_with_stripping(tmp_path):
 
     saved = path.read_text()
     assert "alice@example.com" not in saved
-    assert "@admin" not in saved
+    assert "@admin.bot" not in saved
     assert "## Summary" in saved
     assert "Save should work without crashing" in saved
