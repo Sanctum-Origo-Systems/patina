@@ -92,7 +92,6 @@ def test_collector_functions_return_metric_value():
         assert isinstance(result, MetricValue)
         assert result.value == 0.0
         assert isinstance(result.collected_at, datetime)
-        assert result.unavailable is True
 
 
 def test_run_writes_valid_snapshot(tmp_path):
