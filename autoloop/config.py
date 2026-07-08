@@ -21,11 +21,13 @@ class AutoLoopConfig:
     test_timeout: int = 120
     pr_reviewer: str = "andywidjaja"
     max_retries: int = 3
+    max_story_points: int = 2
     tree_truncation: int = 3000
     diff_truncation: int = 8000
     error_truncation: int = 2000
     spec_truncation: int = 4000
     verify_command: str = "uv run pytest"
+    lint_command: str = "uv run ruff check && uv run ruff format --check"
     triage_labels: list[str] = field(
         default_factory=lambda: [
             "ready",
@@ -46,6 +48,7 @@ _ENV_MAP: dict[str, tuple[str, type]] = {
     "PATINA_AIDLC_TEST_TIMEOUT": ("test_timeout", int),
     "PATINA_AIDLC_REVIEWER": ("pr_reviewer", str),
     "PATINA_AIDLC_MAX_RETRIES": ("max_retries", int),
+    "PATINA_AIDLC_MAX_STORY_POINTS": ("max_story_points", int),
     "PATINA_AIDLC_REPO": ("repo", str),
 }
 
@@ -69,6 +72,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "impl_model",
         "pr_reviewer",
         "verify_command",
+        "lint_command",
     ):
         if key in data:
             setattr(config, key, data[key])
@@ -78,6 +82,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "triage_timeout",
         "test_timeout",
         "max_retries",
+        "max_story_points",
         "tree_truncation",
         "diff_truncation",
         "error_truncation",

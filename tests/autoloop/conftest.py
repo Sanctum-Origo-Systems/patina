@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "autoloop"))
 
 
 @pytest.fixture()
@@ -26,6 +23,8 @@ def autoloop_toml(tmp_path: Path) -> Path:
         "error_truncation = 1500\n"
         "spec_truncation = 3000\n"
         'verify_command = "echo ok"\n'
+        'lint_command = "echo lint"\n'
+        "max_story_points = 3\n"
         'triage_labels = ["ready", "blocked"]\n'
     )
     return toml_path

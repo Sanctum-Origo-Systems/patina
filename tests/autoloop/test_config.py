@@ -34,6 +34,8 @@ def test_load_from_toml(autoloop_toml, monkeypatch):
     assert config.error_truncation == 1500
     assert config.spec_truncation == 3000
     assert config.verify_command == "echo ok"
+    assert config.lint_command == "echo lint"
+    assert config.max_story_points == 3
     assert config.triage_labels == ["ready", "blocked"]
 
 
@@ -55,6 +57,8 @@ def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     assert config.impl_model == "claude-opus-4-6[1m]"
     assert config.impl_timeout == 900
     assert config.verify_command == "uv run pytest"
+    assert config.lint_command == "uv run ruff check && uv run ruff format --check"
+    assert config.max_story_points == 2
     assert len(config.triage_labels) == 6
 
 
@@ -86,6 +90,7 @@ def test_env_var_overrides_all_mapped_fields(autoloop_toml, monkeypatch):
     monkeypatch.setenv("PATINA_AIDLC_TEST_TIMEOUT", "15")
     monkeypatch.setenv("PATINA_AIDLC_REVIEWER", "env-reviewer")
     monkeypatch.setenv("PATINA_AIDLC_MAX_RETRIES", "7")
+    monkeypatch.setenv("PATINA_AIDLC_MAX_STORY_POINTS", "5")
     monkeypatch.setenv("PATINA_AIDLC_REPO", "env-org/env-repo")
 
     config = load_config(autoloop_toml)
@@ -97,6 +102,7 @@ def test_env_var_overrides_all_mapped_fields(autoloop_toml, monkeypatch):
     assert config.test_timeout == 15
     assert config.pr_reviewer == "env-reviewer"
     assert config.max_retries == 7
+    assert config.max_story_points == 5
     assert config.repo == "env-org/env-repo"
 
 
