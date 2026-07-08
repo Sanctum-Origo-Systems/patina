@@ -1,4 +1,4 @@
-name: AI-DLC Label Cleanup
+name: Autoloop Label Cleanup
 on:
   pull_request:
     types: [closed]
@@ -51,7 +51,7 @@ jobs:
       - name: Auto-close parent issue when last sub-issue completes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python ai-dlc/auto_close_parent.py "${{ github.event.pull_request.number }}"
+        run: python autoloop/auto_close_parent.py "${{ github.event.pull_request.number }}"
 
   update-changelog:
     if: github.event.pull_request.merged == true

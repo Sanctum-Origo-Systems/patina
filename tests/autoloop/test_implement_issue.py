@@ -89,7 +89,7 @@ def test_parse_deps_none():
 
 def test_build_branch_name_basic():
     issue = {"number": 42, "title": "Add verbose flag"}
-    assert build_branch_name(issue) == "ai-dlc/42-add-verbose-flag"
+    assert build_branch_name(issue) == "autoloop/42-add-verbose-flag"
 
 
 def test_build_branch_name_truncates_long_title():

@@ -15,7 +15,8 @@ docs/*
 !docs/features/
 docs/features/*
 !docs/features/ai-dlc-v2.md
+.mcp.json
 fixtures/**/*.zip
 
 .claude/scheduled_tasks.lock
-ai-dlc/run_history.jsonl
+autoloop/run_history.jsonl
