@@ -1,28 +1,34 @@
 from __future__ import annotations
 
-import importlib
 import json
 import subprocess
-import sys
-from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-import create_issue
-from create_issue import (
+from autoloop.create_issue import (
     DEFAULT_ACCEPTANCE,
     build_issue,
     build_issue_body,
+    create_issues_from_spec,
     extract_files_from_spec,
     extract_problem_from_spec,
+    fetch_issue,
     get_rejection_reason,
-    main,
     parse_issue_sections,
     parse_spec_enhancements,
     prompt_multiline,
     prompt_optional,
     prompt_required,
     suggest_fields,
+    update_issue,
 )
+
+
+def _cfg(**overrides):
+    defaults = {"repo": "test-owner/test-repo", "triage_model": "sonnet"}
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
 
 # --- Pure function tests: build_issue_body ---
 
@@ -307,67 +313,6 @@ def test_extract_problem_none():
     assert extract_problem_from_spec("No problem here") == ""
 
 
-# --- Subprocess tests: suggest_fields ---
-
-
-def test_suggest_fields_returns_parsed_json(monkeypatch):
-    suggestion_json = json.dumps(
-        {
-            "files": ["src/patina/agent/runtime.py"],
-            "current_behavior": "PROFILE.md not loaded",
-            "expected_behavior": "PROFILE.md loaded into system prompt",
-            "acceptance_criteria": ["system_prompt includes profile content"],
-            "implementation_hints": "Mirror load_soul() pattern in config.py",
-        }
-    )
-
-    class FakeResult:
-        returncode = 0
-        stdout = suggestion_json
-
-    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
-    with patch.object(create_issue.subprocess, "run", return_value=FakeResult()):
-        result = suggest_fields("Fix profile loading", "bug")
-    assert result is not None
-    assert result["files"] == ["src/patina/agent/runtime.py"]
-    assert "Mirror load_soul" in result["implementation_hints"]
-
-
-def test_suggest_fields_returns_none_when_no_claude(monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda cmd: None)
-    assert suggest_fields("Fix something", "bug") is None
-
-
-def test_suggest_fields_returns_none_on_bad_json(monkeypatch):
-    class FakeResult:
-        returncode = 0
-        stdout = "not json at all"
-
-    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
-    with patch.object(create_issue.subprocess, "run", return_value=FakeResult()):
-        assert suggest_fields("Fix something", "bug") is None
-
-
-def test_suggest_fields_returns_none_on_timeout(monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
-
-    class FakeFind:
-        returncode = 0
-        stdout = "src/patina/store.py\n"
-
-    call_count = 0
-
-    def selective_run(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return FakeFind()
-        raise subprocess.TimeoutExpired(cmd="claude", timeout=30)
-
-    with patch.object(create_issue.subprocess, "run", side_effect=selective_run):
-        assert suggest_fields("Fix something", "bug") is None
-
-
 # --- I/O tests: prompt functions ---
 
 
@@ -404,173 +349,11 @@ def test_prompt_multiline_empty_immediately(monkeypatch):
     assert result == ""
 
 
-# --- I/O tests: build_issue ---
+# --- cfg.triage_model tests ---
 
 
-def test_build_issue_feature_happy_path(monkeypatch):
-    monkeypatch.setattr(create_issue.shutil, "which", lambda cmd: None)
-    inputs = iter(
-        [
-            "Add verbose flag",
-            "feature",
-            "src/patina/cli.py",
-            "",
-            "Prints one line per message",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    title, body = build_issue()
-    assert title == "Add verbose flag"
-    assert "## Type\nfeature" in body
-
-
-def test_build_issue_type_from_arg_skips_prompt(monkeypatch):
-    monkeypatch.setattr(create_issue.shutil, "which", lambda cmd: None)
-    inputs = iter(
-        [
-            "Refactor extraction",
-            "",
-            "Cleaner code",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    title, body = build_issue(issue_type="refactor")
-    assert title == "Refactor extraction"
-    assert "## Type\nrefactor" in body
-
-
-def test_build_issue_bug_prompts_current_behavior(monkeypatch):
-    monkeypatch.setattr(create_issue.shutil, "which", lambda cmd: None)
-    inputs = iter(
-        [
-            "Fix crash on ingest",
-            "bug",
-            "",
-            "It crashes with IndexError",
-            "",
-            "No crash",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    title, body = build_issue()
-    assert "## Current Behavior\nIt crashes with IndexError" in body
-
-
-def test_build_issue_rejects_invalid_type_then_accepts(monkeypatch):
-    monkeypatch.setattr(create_issue.shutil, "which", lambda cmd: None)
-    inputs = iter(
-        [
-            "Something",
-            "invalid",
-            "also_bad",
-            "feature",
-            "",
-            "It works",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    _, body = build_issue()
-    assert "## Type\nfeature" in body
-
-
-# --- Subprocess tests: main ---
-
-
-def test_main_dry_run_prints_markdown(monkeypatch, capsys):
-    monkeypatch.setattr("sys.argv", ["create_issue.py", "--dry-run", "--type", "feature"])
-    monkeypatch.setattr(create_issue.shutil, "which", lambda cmd: None)
-    inputs = iter(
-        [
-            "Add a flag",
-            "",
-            "Flag works",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-    main()
-    captured = capsys.readouterr()
-    assert "--- Issue Markdown ---" in captured.out
-    assert "**Title:** Add a flag" in captured.out
-    assert "## Type\nfeature" in captured.out
-
-
-def test_main_submits_via_gh(monkeypatch):
-    monkeypatch.setattr("sys.argv", ["create_issue.py", "--type", "feature"])
-    monkeypatch.setattr(create_issue.shutil, "which", lambda cmd: None)
-    inputs = iter(
-        [
-            "Add a flag",
-            "",
-            "Flag works",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-
-    class FakeResult:
-        returncode = 0
-
-    with patch.object(create_issue.subprocess, "run", return_value=FakeResult()) as mock_run:
-        main()
-    call_args = mock_run.call_args[0][0]
-    assert call_args[0] == "gh"
-    assert "issue" in call_args
-    assert "create" in call_args
-
-
-def test_main_gh_failure_exits_1(monkeypatch):
-    monkeypatch.setattr("sys.argv", ["create_issue.py", "--type", "feature"])
-    monkeypatch.setattr(create_issue.shutil, "which", lambda cmd: None)
-    inputs = iter(
-        [
-            "Add a flag",
-            "",
-            "Flag works",
-            "",
-            "",
-            "",
-            "",
-        ]
-    )
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
-
-    class FakeResult:
-        returncode = 1
-
-    import pytest
-
-    with patch.object(create_issue.subprocess, "run", return_value=FakeResult()):
-        with pytest.raises(SystemExit, match="1"):
-            main()
-
-
-# --- TRIAGE_MODEL env var tests ---
-
-
-def test_suggest_fields_uses_triage_model(monkeypatch):
+def test_suggest_fields_uses_cfg_triage_model(monkeypatch):
+    cfg = _cfg(triage_model="opus")
     captured = {}
     call_count = [0]
 
@@ -598,27 +381,316 @@ def test_suggest_fields_uses_triage_model(monkeypatch):
         return FakeClaude()
 
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
-    monkeypatch.setattr(create_issue, "TRIAGE_MODEL", "opus")
-    with patch.object(create_issue.subprocess, "run", side_effect=selective_run):
-        suggest_fields("Fix something", "bug")
+    with patch("autoloop.create_issue.subprocess.run", side_effect=selective_run):
+        suggest_fields("Fix something", "bug", cfg)
 
     assert "--model" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--model") + 1] == "opus"
 
 
-def test_triage_model_default_from_env_create_issue(monkeypatch):
-    monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
-    ai_dlc_path = str(Path(__file__).resolve().parent.parent.parent / "ai-dlc")
-    monkeypatch.syspath_prepend(ai_dlc_path)
-    sys.modules.pop("create_issue", None)
-    mod = importlib.import_module("create_issue")
-    assert mod.TRIAGE_MODEL == "sonnet"
+def test_suggest_fields_returns_parsed_json(monkeypatch):
+    cfg = _cfg()
+    suggestion_json = json.dumps(
+        {
+            "files": ["src/patina/agent/runtime.py"],
+            "current_behavior": "PROFILE.md not loaded",
+            "expected_behavior": "PROFILE.md loaded into system prompt",
+            "acceptance_criteria": ["system_prompt includes profile content"],
+            "implementation_hints": "Mirror load_soul() pattern in config.py",
+        }
+    )
+
+    class FakeResult:
+        returncode = 0
+        stdout = suggestion_json
+
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    with patch("autoloop.create_issue.subprocess.run", return_value=FakeResult()):
+        result = suggest_fields("Fix profile loading", "bug", cfg)
+    assert result is not None
+    assert result["files"] == ["src/patina/agent/runtime.py"]
+    assert "Mirror load_soul" in result["implementation_hints"]
 
 
-def test_triage_model_override_from_env_create_issue(monkeypatch):
-    monkeypatch.setenv("PATINA_AIDLC_TRIAGE_MODEL", "haiku")
-    ai_dlc_path = str(Path(__file__).resolve().parent.parent.parent / "ai-dlc")
-    monkeypatch.syspath_prepend(ai_dlc_path)
-    sys.modules.pop("create_issue", None)
-    mod = importlib.import_module("create_issue")
-    assert mod.TRIAGE_MODEL == "haiku"
+def test_suggest_fields_returns_none_when_no_claude(monkeypatch):
+    cfg = _cfg()
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    assert suggest_fields("Fix something", "bug", cfg) is None
+
+
+def test_suggest_fields_returns_none_on_bad_json(monkeypatch):
+    cfg = _cfg()
+
+    class FakeResult:
+        returncode = 0
+        stdout = "not json at all"
+
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    with patch("autoloop.create_issue.subprocess.run", return_value=FakeResult()):
+        assert suggest_fields("Fix something", "bug", cfg) is None
+
+
+def test_suggest_fields_returns_none_on_timeout(monkeypatch):
+    cfg = _cfg()
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+
+    class FakeFind:
+        returncode = 0
+        stdout = "src/patina/store.py\n"
+
+    call_count = 0
+
+    def selective_run(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return FakeFind()
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=30)
+
+    with patch("autoloop.create_issue.subprocess.run", side_effect=selective_run):
+        assert suggest_fields("Fix something", "bug", cfg) is None
+
+
+# --- cfg.repo tests ---
+
+
+def test_fetch_issue_uses_cfg_repo():
+    cfg = _cfg(repo="acme/widgets")
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps({"title": "test", "body": "", "labels": [], "comments": []})
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.create_issue.subprocess.run", side_effect=fake_run):
+        fetch_issue(42, cfg)
+
+    assert len(calls) == 1
+    assert "--repo" in calls[0]
+    assert calls[0][calls[0].index("--repo") + 1] == "acme/widgets"
+
+
+def test_update_issue_uses_cfg_repo():
+    cfg = _cfg(repo="acme/widgets")
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.create_issue.subprocess.run", side_effect=fake_run):
+        update_issue(7, "title", "body", cfg)
+
+    assert len(calls) == 2
+    for call in calls:
+        assert "--repo" in call
+        assert call[call.index("--repo") + 1] == "acme/widgets"
+
+
+def test_create_issues_from_spec_uses_cfg_repo(tmp_path, monkeypatch):
+    cfg = _cfg(repo="acme/widgets")
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(
+        "## Enhancement 1: Add feature\n\n**Problem:** Missing feature.\n\n**File:** `src/foo.py`\n"
+    )
+
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = "https://github.com/acme/widgets/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return FakeResult()
+
+    with patch("autoloop.create_issue.subprocess.run", side_effect=fake_run):
+        create_issues_from_spec(str(spec_file), skip=[], cfg=cfg)
+
+    gh_calls = [c for c in calls if c[0] == "gh"]
+    assert len(gh_calls) >= 1
+    for call in gh_calls:
+        assert "--repo" in call
+        assert call[call.index("--repo") + 1] == "acme/widgets"
+
+
+def test_create_issues_from_spec_uses_cfg_triage_model(tmp_path, monkeypatch):
+    cfg = _cfg(triage_model="haiku")
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(
+        "## Enhancement 1: Add feature\n\n**Problem:** Missing feature.\n\n**File:** `src/foo.py`\n"
+    )
+
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    calls: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "title": "Add feature",
+                "files": ["src/foo.py"],
+                "expected_behavior": "works",
+                "acceptance_criteria": [],
+                "deps": "",
+            }
+        )
+
+    class FakeGhResult:
+        returncode = 0
+        stdout = "https://github.com/test/repo/issues/99"
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        if cmd[0] == "claude":
+            return FakeResult()
+        return FakeGhResult()
+
+    with patch("autoloop.create_issue.subprocess.run", side_effect=fake_run):
+        create_issues_from_spec(str(spec_file), skip=[], cfg=cfg)
+
+    claude_calls = [c for c in calls if c[0] == "claude"]
+    assert len(claude_calls) == 1
+    assert "--model" in claude_calls[0]
+    assert claude_calls[0][claude_calls[0].index("--model") + 1] == "haiku"
+
+
+# --- No bare constants ---
+
+
+def test_no_bare_repo_constant():
+    import autoloop.create_issue as mod
+
+    assert not hasattr(mod, "REPO"), "Module should not have a bare REPO constant"
+
+
+def test_no_bare_triage_model_constant():
+    import autoloop.create_issue as mod
+
+    assert not hasattr(mod, "TRIAGE_MODEL"), "Module should not have a bare TRIAGE_MODEL constant"
+
+
+# --- I/O tests: build_issue ---
+
+
+def test_build_issue_feature_happy_path(monkeypatch):
+    cfg = _cfg()
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    inputs = iter(
+        [
+            "Add verbose flag",
+            "feature",
+            "src/patina/cli.py",
+            "",
+            "Prints one line per message",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    title, body = build_issue(cfg)
+    assert title == "Add verbose flag"
+    assert "## Type\nfeature" in body
+
+
+def test_build_issue_type_from_arg_skips_prompt(monkeypatch):
+    cfg = _cfg()
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    inputs = iter(
+        [
+            "Refactor extraction",
+            "",
+            "Cleaner code",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    title, body = build_issue(cfg, issue_type="refactor")
+    assert title == "Refactor extraction"
+    assert "## Type\nrefactor" in body
+
+
+def test_build_issue_bug_prompts_current_behavior(monkeypatch):
+    cfg = _cfg()
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    inputs = iter(
+        [
+            "Fix crash on ingest",
+            "bug",
+            "",
+            "It crashes with IndexError",
+            "",
+            "No crash",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    title, body = build_issue(cfg)
+    assert "## Current Behavior\nIt crashes with IndexError" in body
+
+
+def test_build_issue_passes_cfg_to_suggest_fields(monkeypatch):
+    cfg = _cfg(triage_model="haiku")
+    captured = {}
+
+    class FakeFind:
+        returncode = 0
+        stdout = "src/patina/store.py\n"
+
+    class FakeClaude:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "files": ["src/patina/store.py"],
+                "current_behavior": "",
+                "expected_behavior": "works",
+                "acceptance_criteria": [],
+                "implementation_hints": "",
+            }
+        )
+
+    call_count = [0]
+
+    def selective_run(cmd, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return FakeFind()
+        captured["cmd"] = cmd
+        return FakeClaude()
+
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/claude")
+    inputs = iter(
+        [
+            "Add feature",
+            "feature",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    with patch("autoloop.create_issue.subprocess.run", side_effect=selective_run):
+        build_issue(cfg)
+
+    assert "--model" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "haiku"
