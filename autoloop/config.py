@@ -8,7 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "autoloop.toml"
+REPO_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_PATH = REPO_DIR / "autoloop.toml"
 
 
 @dataclass
@@ -26,7 +27,7 @@ class AutoLoopConfig:
     diff_truncation: int = 8000
     error_truncation: int = 2000
     spec_truncation: int = 4000
-    verify_command: str = "uv run pytest"
+    test_cmd: str = "uv run pytest"
     lint_command: str = "uv run ruff check && uv run ruff format --check"
     triage_labels: list[str] = field(
         default_factory=lambda: [
@@ -41,15 +42,15 @@ class AutoLoopConfig:
 
 
 _ENV_MAP: dict[str, tuple[str, type]] = {
-    "PATINA_AIDLC_TRIAGE_MODEL": ("triage_model", str),
-    "PATINA_AIDLC_IMPL_MODEL": ("impl_model", str),
-    "PATINA_AIDLC_TIMEOUT": ("impl_timeout", int),
-    "PATINA_AIDLC_TRIAGE_TIMEOUT": ("triage_timeout", int),
-    "PATINA_AIDLC_TEST_TIMEOUT": ("test_timeout", int),
-    "PATINA_AIDLC_REVIEWER": ("pr_reviewer", str),
-    "PATINA_AIDLC_MAX_RETRIES": ("max_retries", int),
-    "PATINA_AIDLC_MAX_STORY_POINTS": ("max_story_points", int),
-    "PATINA_AIDLC_REPO": ("repo", str),
+    "AUTOLOOP_TRIAGE_MODEL": ("triage_model", str),
+    "AUTOLOOP_IMPL_MODEL": ("impl_model", str),
+    "AUTOLOOP_TIMEOUT": ("impl_timeout", int),
+    "AUTOLOOP_TRIAGE_TIMEOUT": ("triage_timeout", int),
+    "AUTOLOOP_TEST_TIMEOUT": ("test_timeout", int),
+    "AUTOLOOP_REVIEWER": ("pr_reviewer", str),
+    "AUTOLOOP_MAX_RETRIES": ("max_retries", int),
+    "AUTOLOOP_MAX_STORY_POINTS": ("max_story_points", int),
+    "AUTOLOOP_REPO": ("repo", str),
 }
 
 
@@ -71,7 +72,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "triage_model",
         "impl_model",
         "pr_reviewer",
-        "verify_command",
+        "test_cmd",
         "lint_command",
     ):
         if key in data:
@@ -102,13 +103,13 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
 
 def verify_implementation(config: AutoLoopConfig) -> int:
-    """Run the shell command in *config.verify_command* and return its exit code.
+    """Run the shell command in *config.test_cmd* and return its exit code.
 
     Uses ``subprocess.run`` with ``shell=True``, waits for the command to
     complete, and returns the integer exit code without raising on non-zero.
     """
     result = subprocess.run(
-        config.verify_command,
+        config.test_cmd,
         shell=True,
         capture_output=True,
     )
