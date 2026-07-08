@@ -13,7 +13,7 @@ src/patina/          # core package (cli, store, ingest, extraction, graph, mcp/
 tests/               # mirrors src/ structure (adapters/, mcp/, style/, autonomy/, beliefs/)
 eval/deterministic/  # deterministic eval tests (run in CI)
 scripts/             # app utilities (demo data, belief extraction, decision seeding)
-ai-dlc/              # automated issue triage + implementation pipeline (see docs/features/ai-dlc-v2.md)
+autoloop/            # automated issue triage + implementation pipeline (config-driven)
 docs/                # app.md (full spec), phases/, features/, roadmap/
 
 ## Before committing

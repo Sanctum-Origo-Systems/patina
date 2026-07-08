@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Implement the top ready GitHub issue via Claude.
 
-Config-driven generalization of ai-dlc/implement_issue.py — all repo-specific
+Config-driven generalization of autoloop/implement_issue.py — all repo-specific
 constants are read from autoloop.toml via load_config().
 """
 
@@ -36,7 +36,7 @@ def parse_dependency_numbers(body: str) -> list[str]:
 def build_branch_name(issue: dict) -> str:
     """Slugify issue into a branch name."""
     slug = re.sub(r"[^a-z0-9]+", "-", issue["title"].lower()).strip("-")[:50]
-    return f"ai-dlc/{issue['number']}-{slug}"
+    return f"autoloop/{issue['number']}-{slug}"
 
 
 def parse_and_strip_metric_targets(body: str) -> tuple[str, list[str]]:

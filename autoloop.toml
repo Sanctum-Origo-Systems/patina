@@ -1,4 +1,4 @@
-# AutoLoop configuration for Patina's AI-DLC pipeline.
+# AutoLoop configuration for Patina's AutoLoop pipeline.
 # Values here override dataclass defaults; env vars override these.
 
 repo = "Sanctum-Origo-Systems/patina"

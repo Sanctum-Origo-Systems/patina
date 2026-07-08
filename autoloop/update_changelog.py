@@ -48,7 +48,7 @@ def fetch_merged_prs(cfg: AutoLoopConfig, since_days: int = 7) -> list[dict]:
 
 
 def extract_cost(body: str) -> float:
-    """Extract cost from PR body's AI-DLC Run Stats section."""
+    """Extract cost from PR body's AutoLoop Run Stats section."""
     match = re.search(r"- Cost: \$(\d+\.?\d*)", body or "")
     return float(match.group(1)) if match else 0.0
 
