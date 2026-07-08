@@ -15,6 +15,9 @@ test_timeout = 120
 # GitHub
 pr_reviewer = "andywidjaja"
 
+# Verification
+verify_command = "uv run pytest"
+
 # Retry / truncation limits
 max_retries = 3
 tree_truncation = 3000
