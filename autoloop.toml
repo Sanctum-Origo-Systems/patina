@@ -25,7 +25,21 @@ diff_truncation = 8000
 error_truncation = 2000
 spec_truncation = 4000
 
-# Labels that indicate an issue has already been triaged
+# Labels that indicate an issue has already been triaged.
+# Before first run, create all required labels in the repo:
+#
+#   gh label create ready --repo $REPO --color 0E8A16 --description "Triaged and ready for implementation"
+#   gh label create rejected --repo $REPO --color D93F0B --description "Triaged and rejected"
+#   gh label create needs-decomposition --repo $REPO --color FBCA04 --description "Too large, needs sub-issues"
+#   gh label create in-progress --repo $REPO --color 1D76DB --description "Implementation in progress"
+#   gh label create in-review --repo $REPO --color BFD4F2 --description "PR open, awaiting review"
+#   gh label create needs-human --repo $REPO --color D4C5F9 --description "Blocked, requires human input"
+#   gh label create needs-design --repo $REPO --color C2E0C6 --description "Requires design review before implementation"
+#   gh label create design-required --repo $REPO --color C2E0C6 --description "Issue requires a design doc"
+#   gh label create p0 --repo $REPO --color B60205 --description "Critical priority"
+#   gh label create p1 --repo $REPO --color D93F0B --description "High priority"
+#   gh label create p2 --repo $REPO --color FBCA04 --description "Normal priority"
+#
 triage_labels = [
     "ready",
     "rejected",
