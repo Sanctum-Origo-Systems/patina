@@ -10,18 +10,24 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-REPO = "Sanctum-Origo-Systems/patina"
-REPO_DIR = Path(__file__).resolve().parent.parent
-CHANGELOG = REPO_DIR / "eval" / "cognitive" / "CHANGELOG.md"
-ARCHIVE = REPO_DIR / "eval" / "cognitive" / "changelog-archive.md"
 ROLLING_DAYS = 14
+
+_MODULE_DIR = Path(__file__).resolve().parent
+
+
+@dataclass
+class ChangelogCfg:
+    repo: str = "Sanctum-Origo-Systems/patina"
+    repo_dir: Path = field(default_factory=lambda: _MODULE_DIR.parent)
 
 
 def fetch_merged_prs(since_days: int = 7) -> list[dict]:
     """Fetch PRs merged in the last N days."""
+    cfg = ChangelogCfg()
     since = (datetime.now(UTC) - timedelta(days=since_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     result = subprocess.run(
         [
@@ -29,7 +35,7 @@ def fetch_merged_prs(since_days: int = 7) -> list[dict]:
             "pr",
             "list",
             "--repo",
-            REPO,
+            cfg.repo,
             "--state",
             "merged",
             "--json",
@@ -58,24 +64,26 @@ def extract_issue_number(body: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def existing_entries() -> set[int]:
+def existing_entries(cfg: ChangelogCfg) -> set[int]:
     """Return PR numbers already in the changelog."""
-    if not CHANGELOG.exists():
+    changelog = cfg.repo_dir / "eval" / "cognitive" / "CHANGELOG.md"
+    if not changelog.exists():
         return set()
     numbers = set()
-    for match in re.finditer(r"PR #(\d+)", CHANGELOG.read_text()):
+    for match in re.finditer(r"PR #(\d+)", changelog.read_text()):
         numbers.add(int(match.group(1)))
     return numbers
 
 
-def append_entries(prs: list[dict]) -> int:
+def append_entries(prs: list[dict], cfg: ChangelogCfg) -> int:
     """Append new PR entries to CHANGELOG.md. Returns count added."""
-    known = existing_entries()
+    changelog = cfg.repo_dir / "eval" / "cognitive" / "CHANGELOG.md"
+    known = existing_entries(cfg)
     new_prs = [p for p in prs if p["number"] not in known]
     if not new_prs:
         return 0
 
-    CHANGELOG.parent.mkdir(parents=True, exist_ok=True)
+    changelog.parent.mkdir(parents=True, exist_ok=True)
 
     by_date: dict[str, list[str]] = {}
     for pr in sorted(new_prs, key=lambda p: p["mergedAt"]):
@@ -92,28 +100,30 @@ def append_entries(prs: list[dict]) -> int:
         new_lines.append(f"\n## {date}")
         new_lines.extend(by_date[date])
 
-    if CHANGELOG.exists():
-        existing = CHANGELOG.read_text()
+    if changelog.exists():
+        existing = changelog.read_text()
     else:
         existing = "# Cognitive Changelog\n"
 
     header = "# Cognitive Changelog\n"
     rest = existing.replace(header, "", 1)
-    CHANGELOG.write_text(header + "\n".join(new_lines) + "\n" + rest)
+    changelog.write_text(header + "\n".join(new_lines) + "\n" + rest)
 
     return len(new_prs)
 
 
-def trim_changelog() -> None:
+def trim_changelog(cfg: ChangelogCfg) -> None:
     """Move entries older than ROLLING_DAYS to the archive."""
-    if not CHANGELOG.exists():
+    changelog = cfg.repo_dir / "eval" / "cognitive" / "CHANGELOG.md"
+    archive = cfg.repo_dir / "eval" / "cognitive" / "changelog-archive.md"
+    if not changelog.exists():
         return
 
     cutoff = (datetime.now(UTC) - timedelta(days=ROLLING_DAYS)).strftime("%Y-%m-%d")
-    lines = CHANGELOG.read_text().split("\n")
+    lines = changelog.read_text().split("\n")
 
     keep = []
-    archive = []
+    archive_lines = []
     current_date = None
 
     for line in lines:
@@ -122,27 +132,31 @@ def trim_changelog() -> None:
             current_date = date_match.group(1)
 
         if current_date and current_date < cutoff:
-            archive.append(line)
+            archive_lines.append(line)
         else:
             keep.append(line)
 
-    if archive:
-        CHANGELOG.write_text("\n".join(keep))
-        archive_text = "\n".join(archive) + "\n"
-        if ARCHIVE.exists():
-            archive_text = archive_text + ARCHIVE.read_text()
-        ARCHIVE.write_text(archive_text)
+    if archive_lines:
+        changelog.write_text("\n".join(keep))
+        archive_text = "\n".join(archive_lines) + "\n"
+        if archive.exists():
+            archive_text = archive_text + archive.read_text()
+        archive.write_text(archive_text)
 
 
 def commit_and_create_pr() -> None:
     """Commit changelog changes to a branch and create a PR."""
-    subprocess.run(["git", "add", str(CHANGELOG)], cwd=REPO_DIR)
-    if ARCHIVE.exists():
-        subprocess.run(["git", "add", str(ARCHIVE)], cwd=REPO_DIR)
+    cfg = ChangelogCfg()
+    changelog = cfg.repo_dir / "eval" / "cognitive" / "CHANGELOG.md"
+    archive = cfg.repo_dir / "eval" / "cognitive" / "changelog-archive.md"
+
+    subprocess.run(["git", "add", str(changelog)], cwd=cfg.repo_dir)
+    if archive.exists():
+        subprocess.run(["git", "add", str(archive)], cwd=cfg.repo_dir)
 
     result = subprocess.run(
         ["git", "diff", "--cached", "--quiet"],
-        cwd=REPO_DIR,
+        cwd=cfg.repo_dir,
     )
     if result.returncode == 0:
         return
@@ -150,24 +164,23 @@ def commit_and_create_pr() -> None:
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     branch = f"chore/changelog-{today}"
 
-    # Check if branch already exists (from a previous run today)
     existing = subprocess.run(
         ["git", "branch", "--list", branch],
         capture_output=True,
         text=True,
-        cwd=REPO_DIR,
+        cwd=cfg.repo_dir,
     )
     if existing.stdout.strip():
         print(f"Branch {branch} already exists, skipping.")
-        subprocess.run(["git", "checkout", "--", "."], cwd=REPO_DIR)
+        subprocess.run(["git", "checkout", "--", "."], cwd=cfg.repo_dir)
         return
 
-    subprocess.run(["git", "checkout", "-b", branch], cwd=REPO_DIR)
+    subprocess.run(["git", "checkout", "-b", branch], cwd=cfg.repo_dir)
     subprocess.run(
         ["git", "commit", "-m", "chore: update cognitive changelog"],
-        cwd=REPO_DIR,
+        cwd=cfg.repo_dir,
     )
-    subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
+    subprocess.run(["git", "push", "-u", "origin", branch], cwd=cfg.repo_dir)
 
     subprocess.run(
         [
@@ -175,7 +188,7 @@ def commit_and_create_pr() -> None:
             "pr",
             "create",
             "--repo",
-            REPO,
+            cfg.repo,
             "--title",
             f"chore: update cognitive changelog ({today})",
             "--body",
@@ -186,19 +199,20 @@ def commit_and_create_pr() -> None:
             "--base",
             "main",
         ],
-        cwd=REPO_DIR,
+        cwd=cfg.repo_dir,
     )
 
-    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
+    subprocess.run(["git", "checkout", "main"], cwd=cfg.repo_dir)
 
 
 def main():
-    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
-    subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=REPO_DIR)
+    cfg = ChangelogCfg()
+    subprocess.run(["git", "checkout", "main"], cwd=cfg.repo_dir)
+    subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=cfg.repo_dir)
 
     prs = fetch_merged_prs(since_days=ROLLING_DAYS)
-    added = append_entries(prs)
-    trim_changelog()
+    added = append_entries(prs, cfg)
+    trim_changelog(cfg)
 
     if added:
         print(f"Added {added} new entries to CHANGELOG.md")
