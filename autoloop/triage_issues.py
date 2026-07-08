@@ -105,7 +105,7 @@ SIZE ESTIMATION:
 - 3+ points: 4+ files, schema changes, new module, >150 lines
 
 PROJECT COMMANDS:
-- Test: {cfg.verify_command}
+- Test: {cfg.verify_cmd}
 - Lint: {cfg.lint_command}
 
 VERDICT:

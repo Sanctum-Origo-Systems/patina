@@ -22,7 +22,7 @@ def _cfg(**overrides):
         "triage_model": "sonnet",
         "triage_timeout": 90,
         "max_story_points": 2,
-        "verify_command": "uv run pytest",
+        "verify_cmd": "uv run pytest",
         "lint_command": "uv run ruff check && uv run ruff format --check",
         "tree_truncation": 3000,
         "triage_labels": [
@@ -252,8 +252,8 @@ def test_build_triage_prompt_default_threshold():
     assert ">2 points" in prompt
 
 
-def test_build_triage_prompt_uses_verify_command():
-    cfg = _cfg(verify_command="make test")
+def test_build_triage_prompt_uses_verify_cmd():
+    cfg = _cfg(verify_cmd="make test")
     prompt = build_triage_prompt(cfg)
     assert "make test" in prompt
     assert "uv run pytest" not in prompt
