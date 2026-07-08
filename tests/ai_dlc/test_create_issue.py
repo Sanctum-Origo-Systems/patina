@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import create_issue
@@ -606,11 +608,17 @@ def test_suggest_fields_uses_triage_model(monkeypatch):
 
 def test_triage_model_default_from_env_create_issue(monkeypatch):
     monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
-    importlib.reload(create_issue)
-    assert create_issue.TRIAGE_MODEL == "sonnet"
+    ai_dlc_path = str(Path(__file__).resolve().parent.parent.parent / "ai-dlc")
+    monkeypatch.syspath_prepend(ai_dlc_path)
+    sys.modules.pop("create_issue", None)
+    mod = importlib.import_module("create_issue")
+    assert mod.TRIAGE_MODEL == "sonnet"
 
 
 def test_triage_model_override_from_env_create_issue(monkeypatch):
     monkeypatch.setenv("PATINA_AIDLC_TRIAGE_MODEL", "haiku")
-    importlib.reload(create_issue)
-    assert create_issue.TRIAGE_MODEL == "haiku"
+    ai_dlc_path = str(Path(__file__).resolve().parent.parent.parent / "ai-dlc")
+    monkeypatch.syspath_prepend(ai_dlc_path)
+    sys.modules.pop("create_issue", None)
+    mod = importlib.import_module("create_issue")
+    assert mod.TRIAGE_MODEL == "haiku"
