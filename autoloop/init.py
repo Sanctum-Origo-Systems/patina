@@ -198,9 +198,7 @@ def write_toml(target: Path, repo: str, reviewer: str, verify_cmd: str) -> None:
     if path.exists():
         print("  autoloop.toml already exists, skipping (delete to regenerate)")
         return
-    path.write_text(
-        TOML_TEMPLATE.format(repo=repo, reviewer=reviewer, verify_cmd=verify_cmd)
-    )
+    path.write_text(TOML_TEMPLATE.format(repo=repo, reviewer=reviewer, verify_cmd=verify_cmd))
     print("  created autoloop.toml")
 
 
