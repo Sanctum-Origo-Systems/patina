@@ -1,6 +1,11 @@
 # Cognitive Changelog
 
 ## 2026-07-07
+- chore: update cognitive changelog (2026-07-07) (PR #112)
+- feat: feat: parse Metric Target comments from issues and strip the (#82) #82 ($0.92) (PR #109)
+- chore: bump version to 0.7.0 (PR #113)
+
+## 2026-07-07
 - feat: Implement collect_tool_reliability() in eval/cognitive/run.p (#88) #88 ($0.93) (PR #99)
 - feat: Add post-merge step to ai-dlc-cleanup.yml that invokes updat (#84) #84 ($1.22) (PR #100)
 - feat: Implement collect_merge_rate() and collect_time_to_implement (#86) #86 ($1.11) (PR #101)
