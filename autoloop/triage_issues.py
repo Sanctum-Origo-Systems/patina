@@ -739,7 +739,7 @@ def main():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"patina {version}",
+        version=f"autoloop {version}",
     )
     parser.parse_args()
 
