@@ -33,7 +33,7 @@ def test_load_from_toml(autoloop_toml, monkeypatch):
     assert config.diff_truncation == 6000
     assert config.error_truncation == 1500
     assert config.spec_truncation == 3000
-    assert config.test_cmd == "echo ok"
+    assert config.verify_cmd == "echo ok"
     assert config.lint_command == "echo lint"
     assert config.max_story_points == 3
     assert config.triage_labels == ["ready", "blocked"]
@@ -56,7 +56,7 @@ def test_partial_toml_keeps_defaults(tmp_path, monkeypatch):
     assert config.triage_model == "haiku"
     assert config.impl_model == "claude-opus-4-6[1m]"
     assert config.impl_timeout == 900
-    assert config.test_cmd == "uv run pytest"
+    assert config.verify_cmd == "uv run pytest"
     assert config.lint_command == "uv run ruff check && uv run ruff format --check"
     assert config.max_story_points == 2
     assert len(config.triage_labels) == 6
@@ -124,21 +124,21 @@ def test_missing_toml_error_includes_path(tmp_path):
 
 
 def test_verify_implementation_passing_command():
-    config = AutoLoopConfig(test_cmd="true")
+    config = AutoLoopConfig(verify_cmd="true")
     assert verify_implementation(config) == 0
 
 
 def test_verify_implementation_failing_command():
-    config = AutoLoopConfig(test_cmd="false")
+    config = AutoLoopConfig(verify_cmd="false")
     result = verify_implementation(config)
     assert result != 0
 
 
 def test_verify_implementation_specific_exit_code():
-    config = AutoLoopConfig(test_cmd="exit 42")
+    config = AutoLoopConfig(verify_cmd="exit 42")
     assert verify_implementation(config) == 42
 
 
-def test_verify_implementation_uses_config_test_cmd():
-    config = AutoLoopConfig(test_cmd="echo hello")
+def test_verify_implementation_uses_config_verify_cmd():
+    config = AutoLoopConfig(verify_cmd="echo hello")
     assert verify_implementation(config) == 0

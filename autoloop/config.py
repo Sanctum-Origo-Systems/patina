@@ -27,7 +27,7 @@ class AutoLoopConfig:
     diff_truncation: int = 8000
     error_truncation: int = 2000
     spec_truncation: int = 4000
-    test_cmd: str = "uv run pytest"
+    verify_cmd: str = "uv run pytest"
     lint_command: str = "uv run ruff check && uv run ruff format --check"
     triage_labels: list[str] = field(
         default_factory=lambda: [
@@ -72,7 +72,7 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         "triage_model",
         "impl_model",
         "pr_reviewer",
-        "test_cmd",
+        "verify_cmd",
         "lint_command",
     ):
         if key in data:
@@ -103,13 +103,13 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
 
 
 def verify_implementation(config: AutoLoopConfig) -> int:
-    """Run the shell command in *config.test_cmd* and return its exit code.
+    """Run the shell command in *config.verify_cmd* and return its exit code.
 
     Uses ``subprocess.run`` with ``shell=True``, waits for the command to
     complete, and returns the integer exit code without raising on non-zero.
     """
     result = subprocess.run(
-        config.test_cmd,
+        config.verify_cmd,
         shell=True,
         capture_output=True,
     )

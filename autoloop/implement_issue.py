@@ -79,7 +79,7 @@ def build_pr_body(
         f"## Summary\n"
         f"{issue['title']}\n\n"
         f"## Test Plan\n"
-        f"- `{cfg.test_cmd}` — all tests pass\n"
+        f"- `{cfg.verify_cmd}` — all tests pass\n"
         f"- `uv run ruff check && uv run ruff format --check` — clean\n\n"
     )
     if attempts > 0:
@@ -357,7 +357,7 @@ def build_implementation_prompt(issue: dict) -> str:
         f"1. Read the files listed in 'Files to Modify'\n"
         f"2. Implement the changes described in the issue\n"
         f"3. Write comprehensive unit tests for every new/changed function\n"
-        f"4. Run `{cfg.test_cmd}` — all tests must pass\n"
+        f"4. Run `{cfg.verify_cmd}` — all tests must pass\n"
         f"5. Run `uv run ruff check && uv run ruff format` — must be clean\n"
         f"6. If README.md needs updating (new tools, commands), update it\n"
         f"7. Stage and commit:\n"
@@ -499,7 +499,7 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         cwd=REPO_DIR,
     )
     tests = subprocess.run(
-        cfg.test_cmd,
+        cfg.verify_cmd,
         shell=True,
         capture_output=True,
         text=True,

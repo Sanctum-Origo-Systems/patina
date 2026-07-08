@@ -49,7 +49,7 @@ def _test_cfg(**overrides):
         "test_timeout": 60,
         "pr_reviewer": "review-bot",
         "max_retries": 3,
-        "test_cmd": "echo ok",
+        "verify_cmd": "echo ok",
     }
     defaults.update(overrides)
     return AutoLoopConfig(**defaults)
@@ -209,8 +209,8 @@ def test_verification_multiple_errors():
 # --- Config-driven tests: build_pr_body uses cfg ---
 
 
-def test_build_pr_body_uses_cfg_test_cmd(monkeypatch):
-    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(test_cmd="make test"))
+def test_build_pr_body_uses_cfg_verify_cmd(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(verify_cmd="make test"))
 
     issue = {"number": 42, "title": "Add flag"}
     body = build_pr_body(issue)
@@ -461,11 +461,11 @@ def test_design_issue_uses_cfg_model(monkeypatch):
     assert captured["cmd"][captured["cmd"].index("--model") + 1] == "sonnet"
 
 
-# --- Config-driven tests: verify_implementation uses cfg.test_cmd with shell=True ---
+# --- Config-driven tests: verify_implementation uses cfg.verify_cmd with shell=True ---
 
 
-def test_verify_implementation_uses_cfg_test_cmd_with_shell(monkeypatch):
-    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(test_cmd="make test", test_timeout=30))
+def test_verify_implementation_uses_cfg_verify_cmd_with_shell(monkeypatch):
+    monkeypatch.setattr(implement_issue, "cfg", _test_cfg(verify_cmd="make test", test_timeout=30))
     captured_calls = []
 
     def fake_run(cmd_or_str, **kwargs):
@@ -491,12 +491,12 @@ def test_verify_implementation_uses_cfg_test_cmd_with_shell(monkeypatch):
     assert valid is True
 
 
-# --- Config-driven tests: build_implementation_prompt uses cfg.test_cmd ---
+# --- Config-driven tests: build_implementation_prompt uses cfg.verify_cmd ---
 
 
-def test_build_implementation_prompt_references_cfg_test_cmd(monkeypatch, tmp_path):
+def test_build_implementation_prompt_references_cfg_verify_cmd(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        implement_issue, "cfg", _test_cfg(test_cmd="npm test", repo="my-org/my-repo")
+        implement_issue, "cfg", _test_cfg(verify_cmd="npm test", repo="my-org/my-repo")
     )
     claude_md = tmp_path / "CLAUDE.md"
     claude_md.write_text("# Project\nTest project")
