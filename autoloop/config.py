@@ -29,6 +29,7 @@ class AutoLoopConfig:
     spec_truncation: int = 4000
     verify_cmd: str = "uv run pytest"
     lint_command: str = "uv run ruff check && uv run ruff format --check"
+    protected_paths: list[str] = field(default_factory=lambda: ["autoloop/"])
     triage_labels: list[str] = field(
         default_factory=lambda: [
             "ready",
@@ -92,6 +93,9 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
         if key in data:
             setattr(config, key, int(data[key]))
 
+    if "protected_paths" in data:
+        config.protected_paths = list(data["protected_paths"])
+
     if "triage_labels" in data:
         config.triage_labels = list(data["triage_labels"])
 
@@ -100,6 +104,11 @@ def load_config(path: Path | None = None) -> AutoLoopConfig:
             setattr(config, attr, coerce(value))
 
     return config
+
+
+def touches_protected_path(files: list[str], protected: list[str]) -> bool:
+    """Return True if any file path starts with a protected prefix."""
+    return any(f.startswith(p) for f in files for p in protected)
 
 
 def verify_implementation(config: AutoLoopConfig) -> int:

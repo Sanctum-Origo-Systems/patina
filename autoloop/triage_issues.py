@@ -719,6 +719,39 @@ def triage_issue(issue: dict, cfg: AutoLoopConfig, auto_fix: bool = True) -> lis
             enrich_issue_with_files(issue["number"], files, cfg)
 
     if verdict["verdict"] == "ready":
+        from autoloop.config import touches_protected_path
+        from autoloop.create_issue import extract_files_from_spec
+
+        body = issue.get("body") or ""
+        mentioned_files = extract_files_from_spec(body)
+        if touches_protected_path(mentioned_files, cfg.protected_paths):
+            print(f"  #{issue['number']}: touches protected path, routing to needs-human")
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue["number"]),
+                    "--repo",
+                    cfg.repo,
+                    "--add-label",
+                    "needs-human",
+                ],
+            )
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "comment",
+                    str(issue["number"]),
+                    "--repo",
+                    cfg.repo,
+                    "--body",
+                    "**Auto-triage — needs-human:** issue targets protected paths"
+                    f" ({', '.join(mentioned_files)}). Requires manual implementation.",
+                ],
+            )
+            return results
         approve_issue(issue["number"], verdict["priority"], verdict["reason"], cfg)
     elif verdict["verdict"] == "needs-decomposition":
         decompose_issue(issue["number"], verdict, cfg, issue.get("body") or "")

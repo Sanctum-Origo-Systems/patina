@@ -777,6 +777,27 @@ def label_in_review(number: int):
 def implement_single_issue(issue: dict, require_design: bool = False) -> bool:
     """Implement one issue end-to-end. Returns True if PR created successfully."""
     try:
+        from autoloop.config import touches_protected_path
+        from autoloop.create_issue import extract_files_from_spec
+
+        body = issue.get("body") or ""
+        mentioned_files = extract_files_from_spec(body)
+        if touches_protected_path(mentioned_files, cfg.protected_paths):
+            print(f"  #{issue['number']}: touches protected path, skipping.")
+            subprocess.run(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue["number"]),
+                    "--repo",
+                    cfg.repo,
+                    "--add-label",
+                    "needs-human",
+                ],
+            )
+            return False
+
         ensure_clean_main()
 
         if not design_gate(issue, require_design):

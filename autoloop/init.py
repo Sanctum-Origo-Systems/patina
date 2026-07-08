@@ -108,6 +108,9 @@ diff_truncation = 8000
 error_truncation = 2000
 spec_truncation = 4000
 
+# Paths the builder must never modify — issues targeting these get needs-human
+protected_paths = ["autoloop/", "autoloop.toml"]
+
 # Labels that indicate an issue has already been triaged.
 # To recreate labels manually:
 #   gh label create <name> --repo {repo} --color <color> --description "..."
