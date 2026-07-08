@@ -196,22 +196,22 @@ def copy_scripts(target: Path) -> None:
 def write_toml(target: Path, repo: str, reviewer: str, verify_command: str) -> None:
     path = target / "autoloop.toml"
     if path.exists():
-        print(f"  autoloop.toml already exists, skipping (delete to regenerate)")
+        print("  autoloop.toml already exists, skipping (delete to regenerate)")
         return
     path.write_text(
         TOML_TEMPLATE.format(repo=repo, reviewer=reviewer, verify_command=verify_command)
     )
-    print(f"  created autoloop.toml")
+    print("  created autoloop.toml")
 
 
 def write_workflow(target: Path) -> None:
     path = target / ".github" / "workflows" / "autoloop-cleanup.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
-        print(f"  workflow already exists, skipping (delete to regenerate)")
+        print("  workflow already exists, skipping (delete to regenerate)")
         return
     path.write_text(WORKFLOW_TEMPLATE)
-    print(f"  created .github/workflows/autoloop-cleanup.yml")
+    print("  created .github/workflows/autoloop-cleanup.yml")
 
 
 def update_gitignore(target: Path) -> None:
@@ -233,10 +233,16 @@ def update_gitignore(target: Path) -> None:
 def create_labels(repo: str, dry_run: bool = False) -> None:
     for name, color, description in LABELS:
         cmd = [
-            "gh", "label", "create", name,
-            "--repo", repo,
-            "--color", color,
-            "--description", description,
+            "gh",
+            "label",
+            "create",
+            name,
+            "--repo",
+            repo,
+            "--color",
+            color,
+            "--description",
+            description,
             "--force",
         ]
         if dry_run:
@@ -261,7 +267,9 @@ def main() -> None:
     parser.add_argument(
         "--verify-command", default="uv run pytest", help="Test command (default: uv run pytest)"
     )
-    parser.add_argument("--dry-run", action="store_true", help="Print label commands without running")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print label commands without running"
+    )
     parser.add_argument("--skip-labels", action="store_true", help="Skip GitHub label creation")
     parser.add_argument("--skip-copy", action="store_true", help="Skip copying autoloop/ scripts")
     args = parser.parse_args()
@@ -292,9 +300,9 @@ def main() -> None:
 
     print("\nDone! Next steps:")
     print(f"  1. Review autoloop.toml in {target}")
-    print(f"  2. Commit the autoloop/ directory and workflow")
-    print(f"  3. Run: python autoloop/triage_issues.py  (to triage open issues)")
-    print(f"  4. Run: python autoloop/implement_issue.py (to implement top ready issue)")
+    print("  2. Commit the autoloop/ directory and workflow")
+    print("  3. Run: python autoloop/triage_issues.py  (to triage open issues)")
+    print("  4. Run: python autoloop/implement_issue.py (to implement top ready issue)")
 
 
 if __name__ == "__main__":
