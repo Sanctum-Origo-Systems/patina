@@ -8,7 +8,6 @@ Run daily via cron or manually:
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -22,12 +21,13 @@ _MODULE_DIR = Path(__file__).resolve().parent
 
 @dataclass
 class ChangelogCfg:
-    repo: str
+    repo: str = "Sanctum-Origo-Systems/patina"
     repo_dir: Path = field(default_factory=lambda: _MODULE_DIR.parent)
 
 
-def fetch_merged_prs(cfg: ChangelogCfg, since_days: int = 7) -> list[dict]:
+def fetch_merged_prs(since_days: int = 7) -> list[dict]:
     """Fetch PRs merged in the last N days."""
+    cfg = ChangelogCfg()
     since = (datetime.now(UTC) - timedelta(days=since_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     result = subprocess.run(
         [
@@ -144,8 +144,9 @@ def trim_changelog(cfg: ChangelogCfg) -> None:
         archive.write_text(archive_text)
 
 
-def commit_and_create_pr(cfg: ChangelogCfg) -> None:
+def commit_and_create_pr() -> None:
     """Commit changelog changes to a branch and create a PR."""
+    cfg = ChangelogCfg()
     changelog = cfg.repo_dir / "eval" / "cognitive" / "CHANGELOG.md"
     archive = cfg.repo_dir / "eval" / "cognitive" / "changelog-archive.md"
 
@@ -205,17 +206,17 @@ def commit_and_create_pr(cfg: ChangelogCfg) -> None:
 
 
 def main():
-    cfg = ChangelogCfg(repo=os.environ["PATINA_AIDLC_REPO"])
+    cfg = ChangelogCfg()
     subprocess.run(["git", "checkout", "main"], cwd=cfg.repo_dir)
     subprocess.run(["git", "pull", "--ff-only", "origin", "main"], cwd=cfg.repo_dir)
 
-    prs = fetch_merged_prs(cfg, since_days=ROLLING_DAYS)
+    prs = fetch_merged_prs(since_days=ROLLING_DAYS)
     added = append_entries(prs, cfg)
     trim_changelog(cfg)
 
     if added:
         print(f"Added {added} new entries to CHANGELOG.md")
-        commit_and_create_pr(cfg)
+        commit_and_create_pr()
     else:
         print("No new entries to add.")
 
