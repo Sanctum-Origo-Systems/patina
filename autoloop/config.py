@@ -8,7 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "autoloop.toml"
+REPO_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_PATH = REPO_DIR / "autoloop.toml"
 
 
 @dataclass
