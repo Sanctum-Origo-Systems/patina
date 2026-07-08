@@ -392,7 +392,7 @@ def test_create_pr_uses_cfg_reviewer(monkeypatch):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    create_pr({"number": 42, "title": "Add feature", "body": "## Type\nfeature"}, "ai-dlc/42-x")
+    create_pr({"number": 42, "title": "Add feature", "body": "## Type\nfeature"}, "autoloop/42-x")
 
     pr_calls = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
     assert len(pr_calls) == 1
@@ -409,7 +409,7 @@ def test_create_pr_uses_cfg_repo(monkeypatch):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
-    create_pr({"number": 42, "title": "Add feature", "body": "## Type\nfeature"}, "ai-dlc/42-x")
+    create_pr({"number": 42, "title": "Add feature", "body": "## Type\nfeature"}, "autoloop/42-x")
 
     pr_calls = [c for c in calls if c[:3] == ["gh", "pr", "create"]]
     cmd = pr_calls[0]
@@ -656,7 +656,7 @@ def test_implement_single_issue_returns_true_on_success(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-add-feature")
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-add-feature")
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
     monkeypatch.setattr(implement_issue, "label_in_review", lambda n: None)
     monkeypatch.setattr(implement_issue, "review_implementation", lambda issue, branch: (True, ""))
@@ -686,7 +686,7 @@ def test_implement_single_issue_uses_cfg_max_retries(monkeypatch, tmp_path):
 
     monkeypatch.setattr(implement_issue.subprocess, "run", fake_run)
     monkeypatch.setattr(implement_issue, "implement", fake_implement)
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-x")
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
 
     implement_single_issue(_FAKE_ISSUE)
@@ -707,7 +707,7 @@ def test_implement_single_issue_returns_false_after_all_retries(monkeypatch, tmp
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: _claude_result()
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-x")
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-x")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
 
     result = implement_single_issue(_FAKE_ISSUE)
@@ -744,7 +744,7 @@ def test_implement_single_issue_logs_summed_token_totals(monkeypatch, tmp_path):
     monkeypatch.setattr(
         implement_issue, "implement", lambda issue, previous_errors=None: next(results)
     )
-    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "ai-dlc/42-test")
+    monkeypatch.setattr(implement_issue, "create_branch", lambda issue: "autoloop/42-test")
     monkeypatch.setattr(implement_issue, "cleanup_branch", lambda branch: None)
     monkeypatch.setattr(implement_issue, "post_attempt_failure", lambda n, a, e: None)
     monkeypatch.setattr(implement_issue, "create_pr", lambda *a, **kw: None)
