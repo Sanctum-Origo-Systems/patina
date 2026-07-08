@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
-from update_changelog import ChangelogCfg, append_entries, existing_entries, trim_changelog
+from update_changelog import (
+    ChangelogCfg,
+    append_entries,
+    commit_and_create_pr,
+    existing_entries,
+    fetch_merged_prs,
+    trim_changelog,
+)
 
 
 def _make_cfg(tmp_path):
@@ -160,3 +168,117 @@ def test_trim_changelog_appends_to_existing_archive(tmp_path):
     ar_text = (d / "changelog-archive.md").read_text()
     assert "PR #3" in ar_text
     assert "PR #1" in ar_text
+
+
+# --- fetch_merged_prs ---
+
+
+class _FakeResult:
+    def __init__(self, returncode=0, stdout="[]"):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def test_fetch_merged_prs_passes_cfg_repo_to_subprocess(tmp_path):
+    cfg = ChangelogCfg(repo="owner/other", repo_dir=tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _FakeResult(stdout="[]")
+
+    with patch("update_changelog.subprocess.run", side_effect=fake_run):
+        fetch_merged_prs(cfg)
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    repo_idx = cmd.index("--repo")
+    assert cmd[repo_idx + 1] == "owner/other"
+
+
+def test_fetch_merged_prs_returns_recent_prs(tmp_path):
+    cfg = ChangelogCfg(repo="acme/widgets", repo_dir=tmp_path)
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prs_json = f'[{{"number":1,"title":"t","body":"","mergedAt":"{now}"}}]'
+
+    with patch(
+        "update_changelog.subprocess.run",
+        return_value=_FakeResult(stdout=prs_json),
+    ):
+        result = fetch_merged_prs(cfg, since_days=7)
+
+    assert len(result) == 1
+    assert result[0]["number"] == 1
+
+
+def test_fetch_merged_prs_returns_empty_on_failure(tmp_path):
+    cfg = ChangelogCfg(repo="acme/widgets", repo_dir=tmp_path)
+
+    with patch(
+        "update_changelog.subprocess.run",
+        return_value=_FakeResult(returncode=1),
+    ):
+        assert fetch_merged_prs(cfg) == []
+
+
+# --- commit_and_create_pr ---
+
+
+def test_commit_and_create_pr_uses_cfg_repo_dir_as_cwd(tmp_path):
+    d = _changelog_dir(tmp_path)
+    (d / "CHANGELOG.md").write_text("# Cognitive Changelog\n\n## 2026-07-01\n- Item (PR #1)\n")
+    cfg = ChangelogCfg(repo="acme/gadgets", repo_dir=tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[:3] == ["git", "diff", "--cached"]:
+            return _FakeResult(returncode=1)
+        if cmd[:3] == ["git", "branch", "--list"]:
+            return _FakeResult(stdout="")
+        return _FakeResult()
+
+    with patch("update_changelog.subprocess.run", side_effect=fake_run):
+        commit_and_create_pr(cfg)
+
+    for cmd, kwargs in calls:
+        assert kwargs.get("cwd") == tmp_path, f"cwd missing or wrong for {cmd}"
+
+
+def test_commit_and_create_pr_passes_cfg_repo_to_gh_pr_create(tmp_path):
+    d = _changelog_dir(tmp_path)
+    (d / "CHANGELOG.md").write_text("# Cognitive Changelog\n\n## 2026-07-01\n- Item (PR #1)\n")
+    cfg = ChangelogCfg(repo="acme/gadgets", repo_dir=tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["git", "diff", "--cached"]:
+            return _FakeResult(returncode=1)
+        if cmd[:3] == ["git", "branch", "--list"]:
+            return _FakeResult(stdout="")
+        return _FakeResult()
+
+    with patch("update_changelog.subprocess.run", side_effect=fake_run):
+        commit_and_create_pr(cfg)
+
+    pr_create_cmds = [c for c in calls if "pr" in c and "create" in c]
+    assert len(pr_create_cmds) == 1
+    cmd = pr_create_cmds[0]
+    repo_idx = cmd.index("--repo")
+    assert cmd[repo_idx + 1] == "acme/gadgets"
+
+
+def test_commit_and_create_pr_skips_when_no_staged_changes(tmp_path):
+    cfg = ChangelogCfg(repo="acme/gadgets", repo_dir=tmp_path)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _FakeResult(returncode=0)
+
+    with patch("update_changelog.subprocess.run", side_effect=fake_run):
+        commit_and_create_pr(cfg)
+
+    cmd_strs = [" ".join(c) for c in calls]
+    assert not any("pr create" in s for s in cmd_strs)
