@@ -35,5 +35,5 @@ def test_implement_issue_version_flag(capsys):
         except SystemExit as e:
             assert e.code == 0
     captured = capsys.readouterr()
-    assert captured.out.startswith("autoloop ")
+    assert captured.out.startswith("patina ")
     assert _read_version() in captured.out

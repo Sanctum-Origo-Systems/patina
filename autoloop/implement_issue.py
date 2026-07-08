@@ -934,7 +934,7 @@ def main():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"autoloop {version}",
+        version=f"patina {version}",
     )
     parser.add_argument(
         "--max-issues",
