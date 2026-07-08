@@ -3,13 +3,15 @@ from __future__ import annotations
 from autoloop.config import AutoLoopConfig, load_config
 
 
-def test_defaults_when_no_toml_no_env(tmp_path, monkeypatch):
+def test_defaults_when_empty_toml_no_env(tmp_path, monkeypatch):
     monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
     monkeypatch.delenv("PATINA_AIDLC_IMPL_MODEL", raising=False)
     monkeypatch.delenv("PATINA_AIDLC_TIMEOUT", raising=False)
     monkeypatch.delenv("PATINA_AIDLC_REVIEWER", raising=False)
 
-    config = load_config(tmp_path / "nonexistent.toml")
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("")
+    config = load_config(toml_path)
 
     assert config.repo == "Sanctum-Origo-Systems/patina"
     assert config.triage_model == "sonnet"
@@ -81,12 +83,13 @@ def test_env_overrides_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("PATINA_AIDLC_TIMEOUT", "1800")
     monkeypatch.setenv("PATINA_AIDLC_REVIEWER", "ci-bot")
 
-    config = load_config(tmp_path / "nonexistent.toml")
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("")
+    config = load_config(toml_path)
 
     assert config.triage_model == "opus"
     assert config.impl_timeout == 1800
     assert config.pr_reviewer == "ci-bot"
-    # Defaults still hold for non-overridden fields
     assert config.impl_model == "claude-opus-4-6[1m]"
     assert config.triage_timeout == 90
 
@@ -124,7 +127,9 @@ def test_additional_env_overrides(tmp_path, monkeypatch):
     monkeypatch.setenv("PATINA_AIDLC_MAX_RETRIES", "10")
     monkeypatch.setenv("PATINA_AIDLC_REPO", "other-org/other-repo")
 
-    config = load_config(tmp_path / "nonexistent.toml")
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text("")
+    config = load_config(toml_path)
 
     assert config.triage_timeout == 45
     assert config.test_timeout == 60
