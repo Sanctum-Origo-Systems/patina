@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import pytest
-from autoloop.config import AutoLoopConfig, load_config, verify_implementation
+from autoloop.config import (
+    AutoLoopConfig,
+    load_config,
+    touches_protected_path,
+    verify_implementation,
+)
 
 # --- Config loads correctly from a tmp_path autoloop.toml ---
 
@@ -142,3 +147,49 @@ def test_verify_implementation_specific_exit_code():
 def test_verify_implementation_uses_config_verify_cmd():
     config = AutoLoopConfig(verify_cmd="echo hello")
     assert verify_implementation(config) == 0
+
+
+# --- touches_protected_path ---
+
+
+def test_touches_protected_path_match():
+    assert touches_protected_path(["autoloop/config.py"], ["autoloop/"]) is True
+
+
+def test_touches_protected_path_no_match():
+    assert touches_protected_path(["src/patina/cli.py"], ["autoloop/"]) is False
+
+
+def test_touches_protected_path_exact_file():
+    assert touches_protected_path(["autoloop.toml"], ["autoloop.toml"]) is True
+
+
+def test_touches_protected_path_empty_files():
+    assert touches_protected_path([], ["autoloop/"]) is False
+
+
+def test_touches_protected_path_multiple_protected():
+    assert touches_protected_path(["scripts/demo.py"], ["autoloop/", "autoloop.toml"]) is False
+    assert (
+        touches_protected_path(["autoloop.toml", "src/main.py"], ["autoloop/", "autoloop.toml"])
+        is True
+    )
+
+
+def test_protected_paths_default():
+    config = AutoLoopConfig()
+    assert config.protected_paths == ["autoloop/"]
+
+
+def test_protected_paths_loaded_from_toml(tmp_path, monkeypatch):
+    for var in (
+        "AUTOLOOP_TRIAGE_MODEL",
+        "AUTOLOOP_IMPL_MODEL",
+        "AUTOLOOP_TIMEOUT",
+        "AUTOLOOP_REVIEWER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    toml_path = tmp_path / "autoloop.toml"
+    toml_path.write_text('protected_paths = ["autoloop/", "autoloop.toml", ".github/"]\n')
+    config = load_config(toml_path)
+    assert config.protected_paths == ["autoloop/", "autoloop.toml", ".github/"]
