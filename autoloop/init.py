@@ -18,10 +18,10 @@ Quick start — apply autoloop to your repo:
            --repo owner/repo \\
            --target ~/projects/repo \\
            --reviewer your-github-username \\
-           --verify-command "pytest"
+           --verify-cmd "pytest"
 
     4. Review and adjust autoloop.toml in your repo
-       (models, timeouts, test command, etc.)
+       (models, timeouts, verify command, etc.)
 
     5. Commit the generated files:
        cd ~/projects/repo
@@ -99,7 +99,7 @@ test_timeout = 120
 pr_reviewer = "{reviewer}"
 
 # Verification
-verify_command = "{verify_command}"
+verify_cmd = "{verify_cmd}"
 
 # Retry / truncation limits
 max_retries = 3
@@ -193,14 +193,12 @@ def copy_scripts(target: Path) -> None:
         print(f"  copied {name}")
 
 
-def write_toml(target: Path, repo: str, reviewer: str, verify_command: str) -> None:
+def write_toml(target: Path, repo: str, reviewer: str, verify_cmd: str) -> None:
     path = target / "autoloop.toml"
     if path.exists():
         print("  autoloop.toml already exists, skipping (delete to regenerate)")
         return
-    path.write_text(
-        TOML_TEMPLATE.format(repo=repo, reviewer=reviewer, verify_command=verify_command)
-    )
+    path.write_text(TOML_TEMPLATE.format(repo=repo, reviewer=reviewer, verify_cmd=verify_cmd))
     print("  created autoloop.toml")
 
 
@@ -265,7 +263,7 @@ def main() -> None:
     parser.add_argument("--target", required=True, help="Local path to the target repo")
     parser.add_argument("--reviewer", default="", help="GitHub username for PR reviews")
     parser.add_argument(
-        "--verify-command", default="uv run pytest", help="Test command (default: uv run pytest)"
+        "--verify-cmd", default="uv run pytest", help="Verify command (default: uv run pytest)"
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print label commands without running"
@@ -282,7 +280,7 @@ def main() -> None:
     print(f"Initializing autoloop for {args.repo} in {target}\n")
 
     print("Config:")
-    write_toml(target, args.repo, args.reviewer, args.verify_command)
+    write_toml(target, args.repo, args.reviewer, args.verify_cmd)
 
     if not args.skip_copy:
         print("\nScripts:")
