@@ -79,7 +79,7 @@ def build_pr_body(
         f"## Summary\n"
         f"{issue['title']}\n\n"
         f"## Test Plan\n"
-        f"- `{cfg.verify_command}` — all tests pass\n"
+        f"- `{cfg.test_cmd}` — all tests pass\n"
         f"- `uv run ruff check && uv run ruff format --check` — clean\n\n"
     )
     if attempts > 0:
@@ -332,7 +332,7 @@ def build_implementation_prompt(issue: dict) -> str:
                 tag in body
                 for tag in (
                     "Auto-triage",
-                    "AI-DLC Attempt",
+                    "AutoLoop Attempt",
                     "Implementation Detail",
                     DESIGN_COMMENT_MARKER,
                 )
@@ -357,7 +357,7 @@ def build_implementation_prompt(issue: dict) -> str:
         f"1. Read the files listed in 'Files to Modify'\n"
         f"2. Implement the changes described in the issue\n"
         f"3. Write comprehensive unit tests for every new/changed function\n"
-        f"4. Run `{cfg.verify_command}` — all tests must pass\n"
+        f"4. Run `{cfg.test_cmd}` — all tests must pass\n"
         f"5. Run `uv run ruff check && uv run ruff format` — must be clean\n"
         f"6. If README.md needs updating (new tools, commands), update it\n"
         f"7. Stage and commit:\n"
@@ -470,7 +470,7 @@ def design_gate(issue: dict, require_design: bool = False) -> bool:
 
 def post_attempt_failure(number: int, attempt: int, errors: str):
     """Post verification failure as a comment on the issue."""
-    comment = f"**AI-DLC Attempt {attempt} failed:**\n\n```\n{errors[-2000:]}\n```"
+    comment = f"**AutoLoop Attempt {attempt} failed:**\n\n```\n{errors[-2000:]}\n```"
     subprocess.run(
         ["gh", "issue", "comment", str(number), "--repo", cfg.repo, "--body", comment],
     )
@@ -499,7 +499,7 @@ def verify_implementation(branch: str) -> tuple[bool, str]:
         cwd=REPO_DIR,
     )
     tests = subprocess.run(
-        cfg.verify_command,
+        cfg.test_cmd,
         shell=True,
         capture_output=True,
         text=True,
@@ -934,7 +934,7 @@ def main():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"patina {version}",
+        version=f"autoloop {version}",
     )
     parser.add_argument(
         "--max-issues",

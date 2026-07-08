@@ -4,10 +4,10 @@ from autoloop.config import AutoLoopConfig, load_config
 
 
 def test_defaults_when_empty_toml_no_env(tmp_path, monkeypatch):
-    monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_IMPL_MODEL", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_TIMEOUT", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_REVIEWER", raising=False)
+    monkeypatch.delenv("AUTOLOOP_TRIAGE_MODEL", raising=False)
+    monkeypatch.delenv("AUTOLOOP_IMPL_MODEL", raising=False)
+    monkeypatch.delenv("AUTOLOOP_TIMEOUT", raising=False)
+    monkeypatch.delenv("AUTOLOOP_REVIEWER", raising=False)
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text("")
@@ -31,10 +31,10 @@ def test_defaults_when_empty_toml_no_env(tmp_path, monkeypatch):
 
 
 def test_load_from_toml(tmp_path, monkeypatch):
-    monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_IMPL_MODEL", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_TIMEOUT", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_REVIEWER", raising=False)
+    monkeypatch.delenv("AUTOLOOP_TRIAGE_MODEL", raising=False)
+    monkeypatch.delenv("AUTOLOOP_IMPL_MODEL", raising=False)
+    monkeypatch.delenv("AUTOLOOP_TIMEOUT", raising=False)
+    monkeypatch.delenv("AUTOLOOP_REVIEWER", raising=False)
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text(
@@ -65,10 +65,10 @@ def test_env_overrides_toml(tmp_path, monkeypatch):
         'pr_reviewer = "reviewer-bot"\n'
     )
 
-    monkeypatch.setenv("PATINA_AIDLC_TRIAGE_MODEL", "sonnet")
-    monkeypatch.setenv("PATINA_AIDLC_IMPL_MODEL", "claude-sonnet-4-6")
-    monkeypatch.setenv("PATINA_AIDLC_TIMEOUT", "1200")
-    monkeypatch.setenv("PATINA_AIDLC_REVIEWER", "env-reviewer")
+    monkeypatch.setenv("AUTOLOOP_TRIAGE_MODEL", "sonnet")
+    monkeypatch.setenv("AUTOLOOP_IMPL_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("AUTOLOOP_TIMEOUT", "1200")
+    monkeypatch.setenv("AUTOLOOP_REVIEWER", "env-reviewer")
 
     config = load_config(toml_path)
 
@@ -79,9 +79,9 @@ def test_env_overrides_toml(tmp_path, monkeypatch):
 
 
 def test_env_overrides_defaults(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATINA_AIDLC_TRIAGE_MODEL", "opus")
-    monkeypatch.setenv("PATINA_AIDLC_TIMEOUT", "1800")
-    monkeypatch.setenv("PATINA_AIDLC_REVIEWER", "ci-bot")
+    monkeypatch.setenv("AUTOLOOP_TRIAGE_MODEL", "opus")
+    monkeypatch.setenv("AUTOLOOP_TIMEOUT", "1800")
+    monkeypatch.setenv("AUTOLOOP_REVIEWER", "ci-bot")
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text("")
@@ -95,7 +95,7 @@ def test_env_overrides_defaults(tmp_path, monkeypatch):
 
 
 def test_triage_labels_from_toml(tmp_path, monkeypatch):
-    monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
+    monkeypatch.delenv("AUTOLOOP_TRIAGE_MODEL", raising=False)
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text('triage_labels = ["ready", "blocked"]\n')
@@ -106,10 +106,10 @@ def test_triage_labels_from_toml(tmp_path, monkeypatch):
 
 
 def test_partial_toml_keeps_other_defaults(tmp_path, monkeypatch):
-    monkeypatch.delenv("PATINA_AIDLC_TRIAGE_MODEL", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_IMPL_MODEL", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_TIMEOUT", raising=False)
-    monkeypatch.delenv("PATINA_AIDLC_REVIEWER", raising=False)
+    monkeypatch.delenv("AUTOLOOP_TRIAGE_MODEL", raising=False)
+    monkeypatch.delenv("AUTOLOOP_IMPL_MODEL", raising=False)
+    monkeypatch.delenv("AUTOLOOP_TIMEOUT", raising=False)
+    monkeypatch.delenv("AUTOLOOP_REVIEWER", raising=False)
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text("tree_truncation = 5000\n")
@@ -122,10 +122,10 @@ def test_partial_toml_keeps_other_defaults(tmp_path, monkeypatch):
 
 
 def test_additional_env_overrides(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATINA_AIDLC_TRIAGE_TIMEOUT", "45")
-    monkeypatch.setenv("PATINA_AIDLC_TEST_TIMEOUT", "60")
-    monkeypatch.setenv("PATINA_AIDLC_MAX_RETRIES", "10")
-    monkeypatch.setenv("PATINA_AIDLC_REPO", "other-org/other-repo")
+    monkeypatch.setenv("AUTOLOOP_TRIAGE_TIMEOUT", "45")
+    monkeypatch.setenv("AUTOLOOP_TEST_TIMEOUT", "60")
+    monkeypatch.setenv("AUTOLOOP_MAX_RETRIES", "10")
+    monkeypatch.setenv("AUTOLOOP_REPO", "other-org/other-repo")
 
     toml_path = tmp_path / "autoloop.toml"
     toml_path.write_text("")
