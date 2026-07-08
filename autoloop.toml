@@ -16,7 +16,7 @@ test_timeout = 120
 pr_reviewer = "andywidjaja"
 
 # Verification
-verify_command = "uv run pytest"
+verify_cmd = "uv run pytest"
 
 # Retry / truncation limits
 max_retries = 3
