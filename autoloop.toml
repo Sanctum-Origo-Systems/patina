@@ -1,0 +1,33 @@
+# AutoLoop configuration for Patina's AI-DLC pipeline.
+# Values here override dataclass defaults; env vars override these.
+
+repo = "Sanctum-Origo-Systems/patina"
+
+# Models
+triage_model = "sonnet"
+impl_model = "claude-opus-4-6[1m]"
+
+# Timeouts (seconds)
+impl_timeout = 900
+triage_timeout = 90
+test_timeout = 120
+
+# GitHub
+pr_reviewer = "andywidjaja"
+
+# Retry / truncation limits
+max_retries = 3
+tree_truncation = 3000
+diff_truncation = 8000
+error_truncation = 2000
+spec_truncation = 4000
+
+# Labels that indicate an issue has already been triaged
+triage_labels = [
+    "ready",
+    "rejected",
+    "needs-decomposition",
+    "in-progress",
+    "in-review",
+    "needs-human",
+]
