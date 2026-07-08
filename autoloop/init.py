@@ -4,33 +4,37 @@ Prerequisites:
     - Python 3.13+
     - GitHub CLI (`gh`) installed and authenticated
     - Claude Code CLI (`claude`) installed
-    - A cloned copy of this repo (patina) to run init from
 
-Quick start — apply autoloop to another repo:
+Quick start — apply autoloop to your repo:
 
-    1. Clone the target repo locally:
-       git clone git@github.com:owner/repo.git /path/to/repo
+    1. Clone the autoloop source (temporary, can delete after):
+       git clone https://github.com/Sanctum-Origo-Systems/patina.git /tmp/patina
 
-    2. Run init from the patina checkout:
-       cd /path/to/patina
-       python autoloop/init.py \\
+    2. Clone your repo (if not already cloned):
+       git clone git@github.com:owner/repo.git ~/projects/repo
+
+    3. Run init from the patina checkout:
+       python /tmp/patina/autoloop/init.py \\
            --repo owner/repo \\
-           --target /path/to/repo \\
-           --reviewer github-username \\
+           --target ~/projects/repo \\
+           --reviewer your-github-username \\
            --verify-command "pytest"
 
-    3. Review and adjust autoloop.toml in the target repo
+    4. Review and adjust autoloop.toml in your repo
        (models, timeouts, test command, etc.)
 
-    4. Commit the generated files:
-       cd /path/to/repo
+    5. Commit the generated files:
+       cd ~/projects/repo
        git add autoloop/ autoloop.toml .github/workflows/autoloop-cleanup.yml .gitignore
        git commit -m "feat: add autoloop pipeline"
        git push
 
-    5. Create issues in the target repo, then run:
+    6. Create issues in your repo, then run from the repo root:
        python autoloop/triage_issues.py     # AI-triage open issues
        python autoloop/implement_issue.py   # implement top ready issue
+
+    7. Clean up the temporary clone:
+       rm -rf /tmp/patina
 
 Options:
     --dry-run       Preview label commands without creating them
