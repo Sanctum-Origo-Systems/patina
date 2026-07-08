@@ -226,7 +226,7 @@ Some context here.
 
 **Problem:** Errors are lost on retry.
 
-**File:** `ai-dlc/implement_issue.py`
+**File:** `autoloop/implement_issue.py`
 
 **Change:** Pass errors forward.
 
@@ -236,7 +236,7 @@ Some context here.
 
 **Problem:** Timeout too short.
 
-**File:** `ai-dlc/implement_issue.py` and `ai-dlc/triage_issues.py`
+**File:** `autoloop/implement_issue.py` and `autoloop/triage_issues.py`
 
 **Change:** Make timeout configurable.
 
@@ -278,15 +278,15 @@ def test_parse_spec_enhancements_empty_file(tmp_path):
 
 
 def test_extract_files_single():
-    body = "**File:** `ai-dlc/implement_issue.py`"
-    assert extract_files_from_spec(body) == ["ai-dlc/implement_issue.py"]
+    body = "**File:** `autoloop/implement_issue.py`"
+    assert extract_files_from_spec(body) == ["autoloop/implement_issue.py"]
 
 
 def test_extract_files_multiple_with_and():
-    body = "**File:** `ai-dlc/implement_issue.py` and `ai-dlc/triage_issues.py`"
+    body = "**File:** `autoloop/implement_issue.py` and `autoloop/triage_issues.py`"
     assert extract_files_from_spec(body) == [
-        "ai-dlc/implement_issue.py",
-        "ai-dlc/triage_issues.py",
+        "autoloop/implement_issue.py",
+        "autoloop/triage_issues.py",
     ]
 
 
