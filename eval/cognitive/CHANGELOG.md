@@ -1,5 +1,27 @@
 # Cognitive Changelog
 
+## 2026-07-08
+- refactor: rename ai-dlc to autoloop across config, docs, and CI (PR #145)
+- Removed ai-dlc (PR #146)
+- docs: add required label setup instructions to autoloop.toml (PR #147)
+- feat: add autoloop/init.py to scaffold autoloop onto new repos (PR #148)
+- feat: add autoloop/init.py to scaffold autoloop onto new repos (PR #149)
+- fix: align verify_cmd naming in triage_issues and autoloop.toml (PR #150)
+- feat: add protected_paths guard to prevent builder self-modification (PR #151)
+
+## 2026-07-08
+- chore: update cognitive changelog (2026-07-08) (PR #114)
+- feat: feat: add AutoLoopConfig dataclass and autoloop.toml config  (#121) #121 ($1.01) (PR #131)
+- feat: Create autoloop/auto_close_parent.py with cfg.repo parameter (#127) #127 ($0.91) (PR #132)
+- feat: Define cfg shape and parameterize path-only functions in ai- (#129) #129 ($1.13) (PR #133)
+- feat: Add tests/autoloop/ test suite mirroring tests/ai_dlc/ (#126) #126 ($1.69) (PR #134)
+- feat: feat: add autoloop/create_issue.py with config-driven repo a (#124) #124 ($1.45) (PR #135)
+- feat: feat: create autoloop/triage_issues.py with config-driven pa (#123) #123 ($3.41) (PR #136)
+- feat: Copy and generalize implement_issue and claude_runner into a (#122) #122 ($6.63) (PR #137)
+- feat: feat: add --assignee to changelog PR creation in update_chan (#139) #139 ($0.54) (PR #140)
+- feat: Add close_completed_parents() to auto-close finished parent  (#138) #138 ($1.39) (PR #141)
+- feat: feat: add --version flag to autoloop scripts (#143) #143 ($1.42) (PR #144)
+
 ## 2026-07-07
 - chore: update cognitive changelog (2026-07-07) (PR #112)
 - feat: feat: parse Metric Target comments from issues and strip the (#82) #82 ($0.92) (PR #109)
