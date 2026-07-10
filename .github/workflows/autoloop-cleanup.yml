@@ -13,7 +13,7 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Remove AI-DLC labels from linked issues
+      - name: Remove autoloop labels from linked issues
         uses: actions/github-script@v7
         with:
           script: |
@@ -54,7 +54,9 @@ jobs:
         run: python autoloop/auto_close_parent.py "${{ github.event.pull_request.number }}"
 
   update-changelog:
-    if: github.event.pull_request.merged == true
+    if: >-
+      github.event.pull_request.merged == true &&
+      !startsWith(github.event.pull_request.title, 'chore:')
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -97,7 +99,9 @@ jobs:
           git push
 
   bump-version:
-    if: github.event.pull_request.merged == true
+    if: >-
+      github.event.pull_request.merged == true &&
+      !startsWith(github.event.pull_request.title, 'chore:')
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
