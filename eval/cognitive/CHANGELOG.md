@@ -1,5 +1,8 @@
 # Cognitive Changelog
 
+## 2026-07-09
+- chore: update cognitive changelog (2026-07-09) (PR #152)
+
 ## 2026-07-08
 - refactor: rename ai-dlc to autoloop across config, docs, and CI (PR #145)
 - Removed ai-dlc (PR #146)
