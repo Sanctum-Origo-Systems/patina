@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from patina.adapters.slack_mcp import SlackMcpAdapter
+from patina.adapters.slack_mcp import SlackMcpAdapter, _extract_display_name
 from patina.ports.chat import ChatPort
 
 
@@ -320,3 +320,242 @@ class TestMessageParsing:
         msgs = adapter.get_thread("C001", "1781600000.000000")
         assert msgs[0].thread_id is None
         assert msgs[1].thread_id == "1781600000.000000"
+
+    def test_user_name_extracted_from_dict_user(self):
+        raw = json.dumps(
+            [
+                {
+                    "user": {"id": "U00000CAROL", "real_name": "Carol Reeves"},
+                    "text": "hello",
+                    "ts": "1781570237.143369",
+                    "channel": "C002",
+                }
+            ]
+        )
+        bridge = _make_bridge({"get_messages": raw})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C002", since=0.0)
+        assert msgs[0].user_name == "Carol Reeves"
+
+    def test_user_name_from_username_field(self):
+        raw = json.dumps(
+            [
+                {
+                    "user": "U00000BOB01",
+                    "username": "Roberta Marsh",
+                    "text": "test",
+                    "ts": "1781900000.111111",
+                    "channel_id": "C001",
+                }
+            ]
+        )
+        bridge = _make_bridge({"get_messages": raw})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C001", since=0.0)
+        assert msgs[0].user_name == "Roberta Marsh"
+
+
+class TestUserIdResolution:
+    def test_w_prefix_id_resolved_via_profile(self):
+        profile_response = json.dumps({"real_name": "Jianwei Nakamura"})
+        messages = json.dumps(
+            [
+                {
+                    "user": "W017PHFLRFE",
+                    "text": "Design review is ready",
+                    "ts": "1781900000.111111",
+                    "channel": {"id": "D00000DM003", "name": "dm-jianwei", "is_im": True},
+                }
+            ]
+        )
+        bridge = _make_bridge({"get_unreads": messages, "get_user_profile": profile_response})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_dm_messages(since=0.0)
+        assert len(msgs) == 1
+        assert msgs[0].user_id == "W017PHFLRFE"
+        assert msgs[0].user_name == "Jianwei Nakamura"
+
+    def test_u_prefix_id_resolved_via_profile(self):
+        profile_response = json.dumps({"real_name": "Amara Okonkwo"})
+        messages = json.dumps(
+            [
+                {
+                    "user": "U00000ALICE",
+                    "text": "Sync later?",
+                    "ts": "1781900000.111111",
+                    "channel": {"id": "D00000DM001", "name": "dm-amara", "is_im": True},
+                }
+            ]
+        )
+        bridge = _make_bridge({"get_unreads": messages, "get_user_profile": profile_response})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_dm_messages(since=0.0)
+        assert msgs[0].user_name == "Amara Okonkwo"
+
+    def test_resolution_cached_across_messages(self):
+        profile_response = json.dumps({"real_name": "Kenji Soderberg"})
+        messages = json.dumps(
+            [
+                {
+                    "user": "W017H76HY5R",
+                    "text": "First message",
+                    "ts": "1781900000.111111",
+                    "channel_id": "C001",
+                },
+                {
+                    "user": "W017H76HY5R",
+                    "text": "Second message",
+                    "ts": "1781900001.222222",
+                    "channel_id": "C001",
+                },
+            ]
+        )
+        bridge = _make_bridge({"get_messages": messages, "get_user_profile": profile_response})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C001", since=0.0)
+        assert msgs[0].user_name == "Kenji Soderberg"
+        assert msgs[1].user_name == "Kenji Soderberg"
+        profile_calls = [
+            c for c in bridge.call_tool.call_args_list if c[0][0] == "get_user_profile"
+        ]
+        assert len(profile_calls) == 1
+
+    def test_resolution_failure_falls_back_gracefully(self):
+        messages = json.dumps(
+            [
+                {
+                    "user": "W0171T4JRQF",
+                    "text": "Bot message",
+                    "ts": "1781900000.111111",
+                    "channel_id": "C001",
+                }
+            ]
+        )
+        bridge = MagicMock()
+        call_count = {"n": 0}
+
+        def call_tool(name, arguments=None, **kwargs):
+            call_count["n"] += 1
+            if name == "get_user_profile":
+                raise Exception("API error")
+            if name == "get_messages":
+                return SimpleNamespace(isError=False, content=[SimpleNamespace(text=messages)])
+            return SimpleNamespace(isError=False, content=[SimpleNamespace(text="[]")])
+
+        bridge.call_tool = MagicMock(side_effect=call_tool)
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C001", since=0.0)
+        assert len(msgs) == 1
+        assert msgs[0].user_id == "W0171T4JRQF"
+        assert msgs[0].user_name is None
+
+    def test_resolution_skips_non_user_ids(self):
+        messages = json.dumps(
+            [
+                {
+                    "user": "BBOT00001",
+                    "text": "Automated alert",
+                    "ts": "1781900000.111111",
+                    "channel_id": "C001",
+                }
+            ]
+        )
+        bridge = _make_bridge({"get_messages": messages})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C001", since=0.0)
+        assert msgs[0].user_name is None
+        profile_calls = [
+            c for c in bridge.call_tool.call_args_list if c[0][0] == "get_user_profile"
+        ]
+        assert len(profile_calls) == 0
+
+    def test_resolution_skips_when_name_already_set(self):
+        messages = json.dumps(
+            [
+                {
+                    "user": {"id": "W017PHFLRFE", "real_name": "Priya Lindqvist"},
+                    "text": "Already named",
+                    "ts": "1781900000.111111",
+                    "channel_id": "C001",
+                }
+            ]
+        )
+        bridge = _make_bridge({"get_messages": messages})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C001", since=0.0)
+        assert msgs[0].user_name == "Priya Lindqvist"
+        profile_calls = [
+            c for c in bridge.call_tool.call_args_list if c[0][0] == "get_user_profile"
+        ]
+        assert len(profile_calls) == 0
+
+    def test_w_prefix_in_mentions(self):
+        profile_response = json.dumps({"display_name": "Tomoko Alvarez"})
+        search_results = json.dumps(
+            [
+                {
+                    "user": "W017PHFLRFE",
+                    "text": "Please review the deployment plan",
+                    "ts": "1781900000.111111",
+                    "channel": {"id": "C001", "name": "ops"},
+                }
+            ]
+        )
+        bridge = _make_bridge({"search": search_results, "get_user_profile": profile_response})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_mentions(since=0.0)
+        assert msgs[0].user_name == "Tomoko Alvarez"
+
+    def test_w_prefix_in_thread(self):
+        profile_response = json.dumps({"name": "Dmitri Okafor"})
+        thread_messages = json.dumps(
+            [
+                {
+                    "user": "W0171T4JRQF",
+                    "text": "Thread reply",
+                    "ts": "1781900000.111111",
+                    "thread_ts": "1781800000.000000",
+                    "channel_id": "C001",
+                }
+            ]
+        )
+        bridge = _make_bridge({"get_thread": thread_messages, "get_user_profile": profile_response})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.get_thread("C001", "1781800000.000000")
+        assert msgs[0].user_name == "Dmitri Okafor"
+
+
+class TestExtractDisplayName:
+    def test_real_name_at_top_level(self):
+        assert _extract_display_name({"real_name": "Anya Petrova"}) == "Anya Petrova"
+
+    def test_display_name_at_top_level(self):
+        assert _extract_display_name({"display_name": "Anya"}) == "Anya"
+
+    def test_name_at_top_level(self):
+        assert _extract_display_name({"name": "anya.petrova"}) == "anya.petrova"
+
+    def test_nested_under_user(self):
+        assert _extract_display_name({"user": {"real_name": "Anya Petrova"}}) == "Anya Petrova"
+
+    def test_nested_under_user_profile(self):
+        raw = {"user": {"profile": {"display_name": "Anya"}}}
+        assert _extract_display_name(raw) == "Anya"
+
+    def test_nested_under_profile(self):
+        assert _extract_display_name({"profile": {"real_name": "Anya Petrova"}}) == "Anya Petrova"
+
+    def test_returns_none_for_non_dict(self):
+        assert _extract_display_name([]) is None
+        assert _extract_display_name("string") is None
+        assert _extract_display_name(None) is None
+
+    def test_returns_none_for_empty_dict(self):
+        assert _extract_display_name({}) is None
+
+    def test_ignores_empty_string_values(self):
+        assert _extract_display_name({"real_name": "", "name": "fallback"}) == "fallback"
+
+    def test_prefers_real_name_over_display_name(self):
+        raw = {"real_name": "Anya Petrova", "display_name": "Anya"}
+        assert _extract_display_name(raw) == "Anya Petrova"
