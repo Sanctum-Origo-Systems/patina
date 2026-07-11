@@ -559,3 +559,68 @@ class TestExtractDisplayName:
     def test_prefers_real_name_over_display_name(self):
         raw = {"real_name": "Anya Petrova", "display_name": "Anya"}
         assert _extract_display_name(raw) == "Anya Petrova"
+
+
+FIXTURES_MPIM_CHANNELS = json.dumps(
+    {
+        "channels": [
+            {
+                "id": "G00000MPIM1",
+                "name": "mpdm-alice--bob--owner",
+                "members": ["U00000ALICE", "U00000BOB01", "U00000OWNER"],
+            },
+            {
+                "id": "G00000MPIM2",
+                "name": "mpdm-carol--dave",
+                "members": ["U00000CAROL", "U00000DAVE1"],
+            },
+        ],
+    }
+)
+
+
+class TestListMpimChannels:
+    def test_filters_to_owner_membership(self):
+        bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_mpim_channels("U00000OWNER")
+        assert len(result) == 1
+        assert result[0]["id"] == "G00000MPIM1"
+        assert result[0]["name"] == "mpdm-alice--bob--owner"
+
+    def test_calls_with_types_mpim(self):
+        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
+        adapter = SlackMcpAdapter(bridge)
+        adapter.list_mpim_channels("U00000OWNER")
+        call_args = bridge.call_tool.call_args
+        assert call_args[0][0] == "conversations_list"
+        assert call_args[0][1]["types"] == "mpim"
+
+    def test_empty_channels_list(self):
+        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_mpim_channels("U00000OWNER") == []
+
+    def test_missing_channels_key(self):
+        bridge = _make_bridge({"conversations_list": json.dumps({"ok": True})})
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_mpim_channels("U00000OWNER") == []
+
+    def test_returns_empty_on_bridge_exception(self):
+        bridge = MagicMock()
+        bridge.call_tool = MagicMock(side_effect=Exception("connection failed"))
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_mpim_channels("U00000OWNER") == []
+
+    def test_returns_empty_on_non_json_payload(self):
+        bridge = _make_bridge({"conversations_list": "not valid json {"})
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_mpim_channels("U00000OWNER") == []
+
+    def test_result_dicts_contain_id_and_name(self):
+        bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_mpim_channels("U00000OWNER")
+        for ch in result:
+            assert "id" in ch
+            assert "name" in ch
