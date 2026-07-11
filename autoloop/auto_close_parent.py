@@ -196,7 +196,10 @@ def check_and_close_parent(
 
 if __name__ == "__main__":
     import sys
+    from pathlib import Path
 
-    from autoloop.config import cfg
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-    check_and_close_parent(int(sys.argv[1]), cfg=cfg)
+    from autoloop.config import load_config
+
+    check_and_close_parent(int(sys.argv[1]), cfg=load_config())
