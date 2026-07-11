@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from patina.adapters._mcp_client import (
@@ -83,6 +84,20 @@ def _unwrap_email_list(raw) -> list:
     return []
 
 
+_CAUTION_BANNER_RE = re.compile(
+    r"CAUTION:.*?(?:confirm the sender and know the content is safe\.?\s*|"
+    r"organization\.? *Do not click links or open attachments "
+    r"unless you (?:recognize|can confirm) the sender"
+    r" and know the content is safe\.?\s*|"
+    r"organization\.?\s*)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_caution_banner(text: str) -> str:
+    return _CAUTION_BANNER_RE.sub("", text).strip()
+
+
 def _email_from_raw(raw: dict) -> EmailMessage:
     senders = raw.get("senders", [])
     sender = senders[0] if senders else ""
@@ -106,6 +121,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
 
     subject = raw.get("topic", raw.get("subject", ""))
     preview = raw.get("preview", raw.get("bodyPreview", raw.get("body", "")))
+    preview = _strip_caution_banner(preview)
     participants_text = ", ".join(senders) if senders else sender
     text = f"[Subject: {subject}] [Participants: {participants_text}]\n{preview}"
 
