@@ -15,6 +15,7 @@ from patina.models import ChatMessage
 class SlackMcpAdapter:
     def __init__(self, bridge: McpSyncBridge) -> None:
         self._bridge = bridge
+        self._user_cache: dict[str, str | None] = {}
 
     @property
     def platform(self) -> str:
@@ -22,6 +23,27 @@ class SlackMcpAdapter:
 
     def close(self) -> None:
         self._bridge.close()
+
+    def _resolve_user_name(self, user_id: str) -> str | None:
+        if not user_id or not re.match(r"^[UW][A-Z0-9]+$", user_id):
+            return None
+        if user_id in self._user_cache:
+            return self._user_cache[user_id]
+        try:
+            result = self._bridge.call_tool("get_user_profile", {"user_id": user_id})
+            raw = parse_json_content(result)
+            name = _extract_display_name(raw)
+            self._user_cache[user_id] = name
+            return name
+        except Exception:
+            self._user_cache[user_id] = None
+            return None
+
+    def _resolve_message_names(self, msgs: list[ChatMessage]) -> list[ChatMessage]:
+        for msg in msgs:
+            if not msg.user_name and msg.user_id:
+                msg.user_name = self._resolve_user_name(msg.user_id)
+        return msgs
 
     def list_dm_messages(self, since: float) -> list[ChatMessage]:
         try:
@@ -41,7 +63,7 @@ class SlackMcpAdapter:
                 if isinstance(val, list):
                     messages_raw.extend(val)
         msgs = [_msg_from_raw(m) for m in messages_raw if isinstance(m, dict)]
-        return [m for m in msgs if m.timestamp >= since and _is_dm(m)]
+        return self._resolve_message_names([m for m in msgs if m.timestamp >= since and _is_dm(m)])
 
     def list_mentions(self, since: float) -> list[ChatMessage]:
         since_dt = datetime.fromtimestamp(since, tz=UTC)
@@ -61,7 +83,7 @@ class SlackMcpAdapter:
             raw = parse_json_content(result)
         except McpClientError:
             return []
-        return _extract_search_messages(raw)
+        return self._resolve_message_names(_extract_search_messages(raw))
 
     def list_channel_messages(self, channel_id: str, since: float) -> list[ChatMessage]:
         since_iso = datetime.fromtimestamp(since, tz=UTC).isoformat()
@@ -76,11 +98,15 @@ class SlackMcpAdapter:
         except McpClientError:
             return []
         if isinstance(raw, list):
-            return [_msg_from_raw(m) for m in raw if isinstance(m, dict)]
+            return self._resolve_message_names(
+                [_msg_from_raw(m) for m in raw if isinstance(m, dict)]
+            )
         if isinstance(raw, dict):
             items = raw.get("messages", [])
             if isinstance(items, list):
-                return [_msg_from_raw(m) for m in items if isinstance(m, dict)]
+                return self._resolve_message_names(
+                    [_msg_from_raw(m) for m in items if isinstance(m, dict)]
+                )
         return []
 
     def get_thread(self, channel_id: str, thread_id: str) -> list[ChatMessage]:
@@ -95,11 +121,15 @@ class SlackMcpAdapter:
         except McpClientError:
             return []
         if isinstance(raw, list):
-            return [_msg_from_raw(m) for m in raw if isinstance(m, dict)]
+            return self._resolve_message_names(
+                [_msg_from_raw(m) for m in raw if isinstance(m, dict)]
+            )
         if isinstance(raw, dict):
             items = raw.get("replies", [])
             if isinstance(items, list):
-                return [_msg_from_raw(m) for m in items if isinstance(m, dict)]
+                return self._resolve_message_names(
+                    [_msg_from_raw(m) for m in items if isinstance(m, dict)]
+                )
         return []
 
 
@@ -121,8 +151,12 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
     user_raw = raw.get("user", raw.get("userId", ""))
     if isinstance(user_raw, dict):
         user_id = user_raw.get("id", user_raw.get("userId", ""))
+        user_name = (
+            user_raw.get("real_name") or user_raw.get("display_name") or user_raw.get("name")
+        )
     else:
         user_id = str(user_raw) if user_raw else ""
+        user_name = raw.get("username") or raw.get("user_name")
 
     ts = str(raw.get("ts", ""))
     text = raw.get("text", "")
@@ -146,10 +180,39 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
         channel_id=channel_id,
         thread_id=thread_id,
         channel_name=channel_name,
+        user_name=user_name,
         reactions=reactions,
     )
     msg._is_dm = is_dm  # type: ignore[attr-defined]
     return msg
+
+
+def _extract_display_name(raw) -> str | None:
+    if not isinstance(raw, dict):
+        return None
+    for key in ("real_name", "display_name", "name"):
+        val = raw.get(key)
+        if val and isinstance(val, str):
+            return val
+    user = raw.get("user")
+    if isinstance(user, dict):
+        for key in ("real_name", "display_name", "name"):
+            val = user.get(key)
+            if val and isinstance(val, str):
+                return val
+        profile = user.get("profile")
+        if isinstance(profile, dict):
+            for key in ("display_name", "real_name"):
+                val = profile.get(key)
+                if val and isinstance(val, str):
+                    return val
+    profile = raw.get("profile")
+    if isinstance(profile, dict):
+        for key in ("display_name", "real_name"):
+            val = profile.get(key)
+            if val and isinstance(val, str):
+                return val
+    return None
 
 
 def _extract_search_messages(raw) -> list[ChatMessage]:
