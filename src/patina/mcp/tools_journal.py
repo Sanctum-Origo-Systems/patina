@@ -29,8 +29,14 @@ def journal_write(date: str, body: str) -> str:
         conn.close()
 
 
-def journal_search(query: str, limit: int = 10) -> str:
-    """Search past journal entries by keyword."""
+def journal_search(query: str, limit: int = 10, snippet_chars: int = 2000) -> str:
+    """Search past journal entries by keyword.
+
+    Args:
+        query: Search term to match against entry bodies.
+        limit: Maximum number of entries to return.
+        snippet_chars: Maximum characters per entry body. 0 for unlimited.
+    """
     conn = _get_conn()
     try:
         rows = conn.execute(
@@ -45,8 +51,10 @@ def journal_search(query: str, limit: int = 10) -> str:
             return f"No journal entries matching '{query}'."
         lines = []
         for r in rows:
-            preview = r["body"]
-            lines.append(f"- [{r['date']}] {preview}")
+            body = r["body"]
+            if snippet_chars and len(body) > snippet_chars:
+                body = body[:snippet_chars] + "…"
+            lines.append(f"- [{r['date']}] {body}")
         return "\n".join(lines)
     finally:
         conn.close()
