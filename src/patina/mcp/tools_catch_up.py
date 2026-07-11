@@ -127,6 +127,11 @@ def done(item_id: str) -> str:
         conn.close()
 
 
+def _sanitize_fts_query(query: str) -> str:
+    """Wrap query in double quotes to disable FTS5 special syntax."""
+    return '"' + query.replace('"', '""') + '"'
+
+
 def store_search(query: str, limit: int = 20) -> str:
     """Full-text search across all ingested messages (Slack, email, calendar)."""
     import json
@@ -140,6 +145,7 @@ def store_search(query: str, limit: int = 20) -> str:
         seen_ids: set[str] = set()
         all_rows: list = []
 
+        safe_query = _sanitize_fts_query(query)
         fts_rows = conn.execute(
             """SELECT o.id, o.source, o.timestamp, o.text,
                       e.name AS sender_name,
@@ -150,7 +156,7 @@ def store_search(query: str, limit: int = 20) -> str:
                WHERE observations_fts MATCH ?
                ORDER BY rank
                LIMIT ?""",
-            (query, limit),
+            (safe_query, limit),
         ).fetchall()
 
         for row in fts_rows:
