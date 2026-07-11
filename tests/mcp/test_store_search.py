@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from patina.graph import insert_observation, upsert_entity
-from patina.mcp.tools_catch_up import store_search
+from patina.mcp.tools_catch_up import _sanitize_fts_query, store_search
 from patina.models import Entity, Observation
 from patina.store import init_db
 
@@ -249,6 +249,90 @@ class TestStoreSearchSenderMatch:
         db_conn.close()
         result = store_search("NonexistentPerson")
         assert "No messages found" in result
+
+
+class TestSanitizeFtsQuery:
+    def test_wraps_plain_query(self):
+        assert _sanitize_fts_query("hello") == '"hello"'
+
+    def test_escapes_colon(self):
+        assert _sanitize_fts_query("re:Invent") == '"re:Invent"'
+
+    def test_escapes_embedded_quotes(self):
+        assert _sanitize_fts_query('say "hi"') == '"say ""hi"""'
+
+    def test_empty_string(self):
+        assert _sanitize_fts_query("") == '""'
+
+
+class TestStoreSearchSpecialChars:
+    """Queries with FTS5 special characters must not crash."""
+
+    def _seed_special(self, db_conn, db_path):
+        init_db(db_path)
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        now = time.time()
+        msgs = [
+            ("s1", "e1", "Join us at re:Invent for the SDLC talk", now - 3600),
+            ("s2", "e1", "Subject: (urgent) deploy by EOD", now - 1800),
+            ("s3", "e1", 'She said "hello world" to the team', now - 900),
+            ("s4", "e1", "non-blocking review needed ASAP", now - 600),
+            ("s5", "e1", "Use the wildcard* search feature", now - 300),
+        ]
+        for oid, sender, text, ts in msgs:
+            obs = Observation(
+                id=oid,
+                source="email",
+                channel_id="inbox",
+                thread_id=None,
+                timestamp=ts,
+                sender_entity_id=sender,
+                text=text,
+                metadata={},
+            )
+            insert_observation(db_conn, obs)
+        db_conn.close()
+
+    def test_colon_in_query(self, db_conn, db_path, tmp_path):
+        self._seed_special(db_conn, db_path)
+        result = store_search("re:Invent")
+        assert "re:Invent" in result
+        assert "results for" in result
+
+    def test_parentheses_in_query(self, db_conn, db_path, tmp_path):
+        self._seed_special(db_conn, db_path)
+        result = store_search("(urgent)")
+        assert "urgent" in result
+
+    def test_quotes_in_query(self, db_conn, db_path, tmp_path):
+        self._seed_special(db_conn, db_path)
+        result = store_search('"hello world"')
+        assert "hello world" in result
+
+    def test_hyphen_in_query(self, db_conn, db_path, tmp_path):
+        self._seed_special(db_conn, db_path)
+        result = store_search("non-blocking")
+        assert "non-blocking" in result
+
+    def test_asterisk_in_query(self, db_conn, db_path, tmp_path):
+        self._seed_special(db_conn, db_path)
+        result = store_search("wildcard*")
+        assert "wildcard" in result
+
+    def test_fts_keyword_and(self, db_conn, db_path, tmp_path):
+        self._seed_special(db_conn, db_path)
+        result = store_search("AND")
+        assert "No messages found" in result or "results for" in result
+
+    def test_fts_keyword_or(self, db_conn, db_path, tmp_path):
+        self._seed_special(db_conn, db_path)
+        result = store_search("OR")
+        assert "No messages found" in result or "results for" in result
+
+    def test_fts_keyword_not(self, db_conn, db_path, tmp_path):
+        self._seed_special(db_conn, db_path)
+        result = store_search("NOT")
+        assert "No messages found" in result or "results for" in result
 
 
 class TestStoreSearchRegistered:
