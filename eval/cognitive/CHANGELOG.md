@@ -1,5 +1,15 @@
 # Cognitive Changelog
 
+## 2026-07-11
+- fix: fix: strip CAUTION email banner from ingested external email (#154) #154 ($0.50) (PR #166)
+- fix: fix: journal_search returns truncated snippets instead of fu (#156) #156 ($0.28) (PR #165)
+
+## 2026-07-10
+- fix: prevent changelog workflow from recording its own PRs (PR #155)
+
+## 2026-07-09
+- chore: update cognitive changelog (2026-07-09) (PR #152)
+
 ## 2026-07-08
 - refactor: rename ai-dlc to autoloop across config, docs, and CI (PR #145)
 - Removed ai-dlc (PR #146)
