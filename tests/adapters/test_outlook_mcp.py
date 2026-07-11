@@ -9,6 +9,7 @@ from patina.adapters.outlook_mcp import (
     OutlookMcpAdapter,
     _email_from_raw,
     _parse_outlook_datetime,
+    _strip_caution_banner,
     _unwrap_email_list,
 )
 from patina.ports.calendar import CalendarPort
@@ -500,3 +501,103 @@ class TestParticipantIndexing:
         assert email.sender == "Rivera, Lucia"
         assert "Nguyen, Marcus" in email.text
         assert "Chen, Wei" in email.text
+
+
+class TestStripCautionBanner:
+    def test_strips_multiline_banner(self):
+        body = (
+            "CAUTION: This email originated from outside of the organization. "
+            "Do not click links or open attachments unless you recognize the sender "
+            "and know the content is safe.\n\n"
+            "++ Akshatha"
+        )
+        assert _strip_caution_banner(body) == "++ Akshatha"
+
+    def test_strips_banner_with_confirm_variant(self):
+        body = (
+            "CAUTION: This email originated from outside of the organization. "
+            "Do not click links or open attachments unless you can confirm the sender "
+            "and know the content is safe.\n"
+            "Looks good, thanks"
+        )
+        assert _strip_caution_banner(body) == "Looks good, thanks"
+
+    def test_strips_short_banner(self):
+        body = (
+            "CAUTION: This email originated from outside of the organization.\n\n"
+            "Please review the attached."
+        )
+        assert _strip_caution_banner(body) == "Please review the attached."
+
+    def test_no_banner_unchanged(self):
+        body = "Just a normal email body with no banner."
+        assert _strip_caution_banner(body) == body
+
+    def test_empty_string(self):
+        assert _strip_caution_banner("") == ""
+
+    def test_banner_only_returns_empty(self):
+        body = (
+            "CAUTION: This email originated from outside of the organization. "
+            "Do not click links or open attachments unless you recognize the sender "
+            "and know the content is safe."
+        )
+        assert _strip_caution_banner(body) == ""
+
+    def test_case_insensitive(self):
+        body = (
+            "caution: this email originated from outside of the organization. "
+            "do not click links or open attachments unless you can confirm the sender "
+            "and know the content is safe.\n"
+            "Approved."
+        )
+        assert _strip_caution_banner(body) == "Approved."
+
+
+class TestEmailFromRawCautionBanner:
+    def test_banner_stripped_from_preview(self):
+        raw = {
+            "conversationId": "CONV_EXT001",
+            "topic": "Re: Invoice Approval",
+            "senders": ["Patel, Ravi"],
+            "recipients": ["Taylor, Morgan"],
+            "lastDeliveryTime": "2026-07-01T09:00:00Z",
+            "preview": (
+                "CAUTION: This email originated from outside of the organization. "
+                "Do not click links or open attachments unless you recognize the sender "
+                "and know the content is safe.\n\n"
+                "++ Akshatha"
+            ),
+        }
+        email = _email_from_raw(raw)
+        assert "CAUTION" not in email.text
+        assert "++ Akshatha" in email.text
+
+    def test_banner_stripped_from_body_preview(self):
+        raw = {
+            "id": "AAMkEXT002",
+            "from": {"name": "Chen, Li", "email": "lchen@example.com"},
+            "subject": "Re: Contract Draft",
+            "receivedDateTime": "2026-07-01T10:00:00Z",
+            "bodyPreview": (
+                "CAUTION: This email originated from outside of the organization. "
+                "Do not click links or open attachments unless you can confirm the sender "
+                "and know the content is safe.\n"
+                "Looks good, thanks"
+            ),
+        }
+        email = _email_from_raw(raw)
+        assert "CAUTION" not in email.text
+        assert "Looks good, thanks" in email.text
+
+    def test_no_banner_unaffected(self):
+        raw = {
+            "conversationId": "CONV_INT001",
+            "topic": "Team Lunch",
+            "senders": ["Kim, Sonia"],
+            "recipients": ["Taylor, Morgan"],
+            "lastDeliveryTime": "2026-07-01T11:00:00Z",
+            "preview": "How about noon at the cafe?",
+        }
+        email = _email_from_raw(raw)
+        assert "How about noon at the cafe?" in email.text
