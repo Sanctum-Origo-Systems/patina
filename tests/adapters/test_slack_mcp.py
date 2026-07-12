@@ -624,3 +624,24 @@ class TestListMpimChannels:
         for ch in result:
             assert "id" in ch
             assert "name" in ch
+
+
+class TestListParticipantChannels:
+    def test_returns_tuples(self):
+        bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_participant_channels("U00000OWNER")
+        assert result == [("G00000MPIM1", "mpdm-alice--bob--owner")]
+
+    def test_calls_conversations_list_with_types_mpim(self):
+        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
+        adapter = SlackMcpAdapter(bridge)
+        adapter.list_participant_channels("U00000OWNER")
+        call_args = bridge.call_tool.call_args
+        assert call_args[0][0] == "conversations_list"
+        assert call_args[0][1]["types"] == "mpim"
+
+    def test_empty_returns_empty_list(self):
+        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_participant_channels("U00000OWNER") == []
