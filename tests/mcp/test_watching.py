@@ -286,8 +286,8 @@ class TestAutoWatch:
             def get_thread(self, channel_id, thread_id):
                 return []
 
-            def list_group_dms(self, owner_user_id):
-                return [{"id": "G_MPIM1", "name": "group-dm-1"}]
+            def list_participant_channels(self, owner_user_id):
+                return [("G_MPIM1", "group-dm-1")]
 
         return MockChatPort()
 

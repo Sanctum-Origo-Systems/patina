@@ -202,24 +202,23 @@ def ingest_live(
             messages.extend(port.list_dm_messages(since))
             messages.extend(port.list_mentions(since))
 
-            if hasattr(port, "list_group_dms"):
+            if hasattr(port, "list_participant_channels"):
                 owner_ids = get_owner_user_ids(home)
-                for owner_id in owner_ids:
-                    for ch in port.list_group_dms(owner_id):
-                        ch_id = ch.get("id", "")
-                        if ch_id:
-                            conn.execute(
-                                "INSERT OR IGNORE INTO watched_channels"
-                                " (channel_id, channel_name, reason, added_at)"
-                                " VALUES (?, ?, ?, ?)",
-                                (
-                                    ch_id,
-                                    ch.get("name", ""),
-                                    "auto-detected: user is participant",
-                                    datetime.now(UTC).isoformat(),
-                                ),
-                            )
-                conn.commit()
+                if owner_ids:
+                    discovered = port.list_participant_channels(owner_ids[0])
+                    for channel_id, channel_name in discovered:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO watched_channels"
+                            " (channel_id, channel_name, reason, added_at)"
+                            " VALUES (?, ?, ?, ?)",
+                            (
+                                channel_id,
+                                channel_name,
+                                "auto-detected: user is participant",
+                                datetime.now(UTC).isoformat(),
+                            ),
+                        )
+                    conn.commit()
 
             watched = conn.execute("SELECT channel_id FROM watched_channels").fetchall()
             for ch in watched:

@@ -109,6 +109,10 @@ class SlackMcpAdapter:
                 )
         return []
 
+    def list_participant_channels(self, owner_user_id: str) -> list[tuple[str, str]]:
+        channels = self.list_mpim_channels(owner_user_id)
+        return [(ch["id"], ch["name"]) for ch in channels]
+
     def list_mpim_channels(self, owner_user_id: str) -> list[dict]:
         try:
             result = self._bridge.call_tool("conversations_list", {"types": "mpim"})
