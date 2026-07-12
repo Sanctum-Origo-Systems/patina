@@ -138,6 +138,8 @@ class SlackMcpAdapter:
                 out.append({"id": ch.get("id", ""), "name": ch.get("name", "")})
         return out
 
+    list_group_dms = list_mpim_channels
+
     def get_thread(self, channel_id: str, thread_id: str) -> list[ChatMessage]:
         try:
             result = self._bridge.call_tool(

@@ -257,6 +257,108 @@ class TestWatchedChannelIngestion:
         assert result["messages_inserted"] == 0
 
 
+class TestAutoWatch:
+    def _make_home(self, tmp_path):
+        home = tmp_path / "patina_home"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("owner:\n  user_ids:\n    - U_OWNER\n")
+        db_path = get_db_path(home)
+        init_db(db_path)
+        return home, db_path
+
+    def _make_port(self, channel_messages=None):
+        chan_msgs = channel_messages or {}
+
+        class MockChatPort:
+            @property
+            def platform(self) -> str:
+                return "mock"
+
+            def list_dm_messages(self, since):
+                return []
+
+            def list_mentions(self, since):
+                return []
+
+            def list_channel_messages(self, channel_id, since):
+                return chan_msgs.get(channel_id, [])
+
+            def get_thread(self, channel_id, thread_id):
+                return []
+
+            def list_participant_channels(self, owner_user_id):
+                return [("G_MPIM1", "group-dm-1")]
+
+        return MockChatPort()
+
+    def test_auto_watch_adds_new_channel(self, tmp_path):
+        home, db_path = self._make_home(tmp_path)
+        port = self._make_port()
+
+        ingest_live(port=port, source="mock", home=home)
+
+        conn = connect(db_path)
+        row = conn.execute("SELECT * FROM watched_channels WHERE channel_id = 'G_MPIM1'").fetchone()
+        conn.close()
+        assert row is not None
+        assert row["reason"] == "auto-detected: user is participant"
+
+    def test_auto_watch_dedup(self, tmp_path):
+        home, db_path = self._make_home(tmp_path)
+        port = self._make_port()
+
+        ingest_live(port=port, source="mock", home=home)
+        ingest_live(port=port, source="mock", home=home)
+
+        conn = connect(db_path)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM watched_channels WHERE channel_id = 'G_MPIM1'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 1
+
+    def test_auto_watch_preserves_existing_reason(self, tmp_path):
+        home, db_path = self._make_home(tmp_path)
+
+        conn = connect(db_path)
+        conn.execute(
+            "INSERT INTO watched_channels"
+            " (channel_id, channel_name, reason, added_at)"
+            " VALUES ('G_MPIM1', 'group-dm-1', 'manually added', '2026-01-01')"
+        )
+        conn.commit()
+        conn.close()
+
+        port = self._make_port()
+        ingest_live(port=port, source="mock", home=home)
+
+        conn = connect(db_path)
+        row = conn.execute(
+            "SELECT reason FROM watched_channels WHERE channel_id = 'G_MPIM1'"
+        ).fetchone()
+        conn.close()
+        assert row["reason"] == "manually added"
+
+    def test_auto_watch_messages_ingested(self, tmp_path):
+        home, db_path = self._make_home(tmp_path)
+        port = self._make_port(
+            channel_messages={
+                "G_MPIM1": [
+                    ChatMessage(
+                        user_id="U001",
+                        text="Hello from group DM",
+                        timestamp=time.time(),
+                        channel_id="G_MPIM1",
+                        user_name="Tester",
+                    ),
+                ]
+            }
+        )
+
+        result = ingest_live(port=port, source="mock", home=home)
+        assert result["messages_inserted"] == 1
+
+
 class TestWatchingToolsRegistered:
     def test_tools_appear_in_guide(self):
         from patina.agent.runtime import _build_tool_guide
