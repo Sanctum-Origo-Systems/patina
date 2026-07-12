@@ -14,9 +14,10 @@ docs/*
 !docs/phases/
 !docs/features/
 docs/features/*
-!docs/features/ai-dlc-v2.md
+!docs/features/autoloop-extraction.md
+!docs/features/autoloop-extraction-runbook.md
 .mcp.json
 fixtures/**/*.zip
 
 .claude/scheduled_tasks.lock
-autoloop/run_history.jsonl
+run_history.jsonl

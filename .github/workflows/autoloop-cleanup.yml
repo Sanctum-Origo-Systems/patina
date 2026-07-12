@@ -48,10 +48,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Install autoloop
+        run: pip install git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.0
       - name: Auto-close parent issue when last sub-issue completes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python autoloop/auto_close_parent.py "${{ github.event.pull_request.number }}"
+        run: autoloop auto-close-parent "${{ github.event.pull_request.number }}"
 
   update-changelog:
     if: >-

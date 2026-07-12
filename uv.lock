@@ -46,6 +46,11 @@ wheels = [
 ]
 
 [[package]]
+name = "autoloop"
+version = "0.1.0"
+source = { git = "https://github.com/Sanctum-Origo-Systems/autoloop?rev=v0.1.0#79a426650a476b35d12e48c8653020a82a32c48e" }
+
+[[package]]
 name = "black"
 version = "26.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -405,6 +410,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "autoloop" },
     { name = "black" },
     { name = "pytest" },
     { name = "ruff" },
@@ -424,6 +430,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "autoloop", git = "https://github.com/Sanctum-Origo-Systems/autoloop?rev=v0.1.0" },
     { name = "black", specifier = ">=26.5.1" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.11" },
