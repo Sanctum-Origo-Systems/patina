@@ -1,6 +1,13 @@
 # Cognitive Changelog
 
 ## 2026-07-11
+- fix: auto_close_parent.py ModuleNotFoundError in CI (PR #168)
+- fix: fix: store_search fails on queries containing colons (#157) #157 ($0.67) (PR #163)
+- fix: fix: resolve W-prefix Slack user IDs to display names (#158) #158 ($1.44) (PR #164)
+- chore: update cognitive changelog (2026-07-11) (PR #167)
+- feat: Add mpim channel discovery helper to slack_mcp.py (#160) #160 ($0.47) (PR #169)
+
+## 2026-07-11
 - fix: fix: strip CAUTION email banner from ingested external email (#154) #154 ($0.50) (PR #166)
 - fix: fix: journal_search returns truncated snippets instead of fu (#156) #156 ($0.28) (PR #165)
 
