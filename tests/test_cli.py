@@ -62,6 +62,49 @@ def test_ingest_with_valid_zip(tmp_path):
     assert "Done" in result.output
 
 
+def test_ingest_lookback_days_default(tmp_path, monkeypatch):
+    called_with = {}
+
+    def fake_ingest_all(*, home=None, lookback_days=3):
+        called_with["lookback_days"] = lookback_days
+        return {
+            "messages_inserted": 0,
+            "messages_skipped": 0,
+            "entities_created": 0,
+            "total_observations": 0,
+            "total_entities": 0,
+            "adapters_run": 1,
+        }
+
+    monkeypatch.setattr("patina.ingest.ingest_all", fake_ingest_all)
+
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert called_with["lookback_days"] == 3
+
+
+def test_ingest_lookback_days_custom(tmp_path, monkeypatch):
+    called_with = {}
+
+    def fake_ingest_all(*, home=None, lookback_days=3):
+        called_with["lookback_days"] = lookback_days
+        return {
+            "messages_inserted": 5,
+            "messages_skipped": 2,
+            "entities_created": 3,
+            "total_observations": 10,
+            "total_entities": 5,
+            "adapters_run": 1,
+        }
+
+    monkeypatch.setattr("patina.ingest.ingest_all", fake_ingest_all)
+
+    result = runner.invoke(app, ["ingest", "--lookback-days", "30", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert called_with["lookback_days"] == 30
+    assert "Done" in result.output
+
+
 def test_status_uninitialized(tmp_path):
     home = tmp_path / "empty_home"
     home.mkdir()

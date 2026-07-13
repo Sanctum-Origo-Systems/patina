@@ -203,6 +203,7 @@ def extract_cmd(
 @app.command()
 def ingest(
     from_export: Path | None = typer.Option(None, "--from-export", help="Path to Slack export zip"),
+    lookback_days: int = typer.Option(3, "--lookback-days", help="Days to look back for messages"),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Ingest messages from export file or configured live adapters."""
@@ -214,7 +215,7 @@ def ingest(
     else:
         from patina.ingest import ingest_all
 
-        result = ingest_all(home=home)
+        result = ingest_all(home=home, lookback_days=lookback_days)
         adapters_run = result.get("adapters_run", 0)
         if adapters_run == 0:
             typer.echo(
