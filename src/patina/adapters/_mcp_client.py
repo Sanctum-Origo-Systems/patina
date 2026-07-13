@@ -147,4 +147,5 @@ def parse_outlook_content(result: Any) -> Any:
 def strip_slack_content_tags(text: str) -> str:
     text = re.sub(r"<slack-user-content[^>]*>\n?", "", text)
     text = re.sub(r"\n?</slack-user-content>", "", text)
+    text = text.replace("", " ")
     return text.strip()
