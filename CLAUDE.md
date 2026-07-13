@@ -26,6 +26,7 @@ uv run ruff check && uv run ruff format
 
 - Commit messages: `<type>: <description> (#<issue>)` — types: fix, feat, refactor, docs, test
 - No real person or company names in test data — use fictitious names only
+- No real message content or user data in GitHub issues — use anonymized examples (e.g. "The quick brown fox" not actual ingested messages)
 - Follow existing patterns in the repo — read before writing
 - Reference files and function names in issues, not line numbers — lines shift as PRs land
 
