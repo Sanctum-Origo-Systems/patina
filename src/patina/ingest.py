@@ -228,13 +228,6 @@ def ingest_live(
                         )
                     conn.commit()
 
-            if hasattr(port, "list_dms"):
-                dm_cutoff = time.time() - (180 * 86400)
-                dm_channels = port.list_dms()
-                for dm_ch in dm_channels:
-                    if dm_ch.get("last_activity_ts", 0) >= dm_cutoff:
-                        messages.extend(port.list_channel_messages(dm_ch["channel_id"], since))
-
             watched = conn.execute("SELECT channel_id FROM watched_channels").fetchall()
             for ch in watched:
                 messages.extend(port.list_channel_messages(ch["channel_id"], since))

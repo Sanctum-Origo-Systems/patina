@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from patina.ingest import _obs_id, ingest_live
-from patina.models import ChatMessage
+from patina.models import ChatMessage, DmChannel
 from patina.store import connect, get_db_path
 
 DM_TS_RECENT = time.time() - (30 * 86400)
@@ -35,7 +35,7 @@ class MockPortWithListDms:
     def get_thread(self, channel_id: str, thread_id: str) -> list[ChatMessage]:
         return []
 
-    def list_dms(self) -> list[dict]:
+    def list_dms(self) -> list[DmChannel]:
         self.list_dms_calls += 1
         return self._dm_channels
 
@@ -61,7 +61,7 @@ class MockPortWithoutListDms:
 def test_list_dms_called_once(tmp_path):
     home = tmp_path / "patina_home"
     port = MockPortWithListDms(
-        dm_channels=[{"channel_id": "D001", "last_activity_ts": DM_TS_RECENT}]
+        dm_channels=[DmChannel(channel_id="D001", last_activity_ts=DM_TS_RECENT)]
     )
     ingest_live(port=port, source="slack_mcp", home=home)
     assert port.list_dms_calls == 1
@@ -77,7 +77,7 @@ def test_list_dms_not_called_without_method(tmp_path):
 def test_recent_dm_channel_fetched(tmp_path):
     home = tmp_path / "patina_home"
     port = MockPortWithListDms(
-        dm_channels=[{"channel_id": "D_RECENT", "last_activity_ts": DM_TS_RECENT}]
+        dm_channels=[DmChannel(channel_id="D_RECENT", last_activity_ts=DM_TS_RECENT)]
     )
     ingest_live(port=port, source="slack_mcp", home=home)
     fetched_channels = [ch for ch, _ in port.list_channel_messages_calls]
@@ -87,7 +87,7 @@ def test_recent_dm_channel_fetched(tmp_path):
 def test_stale_dm_channel_skipped(tmp_path):
     home = tmp_path / "patina_home"
     port = MockPortWithListDms(
-        dm_channels=[{"channel_id": "D_STALE", "last_activity_ts": DM_TS_STALE}]
+        dm_channels=[DmChannel(channel_id="D_STALE", last_activity_ts=DM_TS_STALE)]
     )
     ingest_live(port=port, source="slack_mcp", home=home)
     fetched_channels = [ch for ch, _ in port.list_channel_messages_calls]
@@ -98,8 +98,8 @@ def test_mixed_recent_and_stale(tmp_path):
     home = tmp_path / "patina_home"
     port = MockPortWithListDms(
         dm_channels=[
-            {"channel_id": "D_RECENT", "last_activity_ts": DM_TS_RECENT},
-            {"channel_id": "D_STALE", "last_activity_ts": DM_TS_STALE},
+            DmChannel(channel_id="D_RECENT", last_activity_ts=DM_TS_RECENT),
+            DmChannel(channel_id="D_STALE", last_activity_ts=DM_TS_STALE),
         ]
     )
     ingest_live(port=port, source="slack_mcp", home=home)
@@ -119,7 +119,7 @@ def test_dm_messages_ingested(tmp_path):
         user_name="Alice Thornberry",
     )
     port = MockPortWithListDms(
-        dm_channels=[{"channel_id": "D_FILL01", "last_activity_ts": DM_TS_RECENT}],
+        dm_channels=[DmChannel(channel_id="D_FILL01", last_activity_ts=DM_TS_RECENT)],
         channel_messages={"D_FILL01": [dm_msg]},
     )
     result = ingest_live(port=port, source="slack_mcp", home=home)
@@ -147,7 +147,7 @@ def test_dm_obs_id_matches_channel_messages_path(tmp_path):
 
     home = tmp_path / "patina_home"
     port = MockPortWithListDms(
-        dm_channels=[{"channel_id": "D_DEDUP1", "last_activity_ts": DM_TS_RECENT}],
+        dm_channels=[DmChannel(channel_id="D_DEDUP1", last_activity_ts=DM_TS_RECENT)],
         channel_messages={"D_DEDUP1": [msg]},
     )
     ingest_live(port=port, source="slack_mcp", home=home)
@@ -169,7 +169,7 @@ def test_dedup_on_second_run(tmp_path):
         user_name="Corinne Vass",
     )
     port = MockPortWithListDms(
-        dm_channels=[{"channel_id": "D_DUP001", "last_activity_ts": DM_TS_RECENT}],
+        dm_channels=[DmChannel(channel_id="D_DUP001", last_activity_ts=DM_TS_RECENT)],
         channel_messages={"D_DUP001": [dm_msg]},
     )
 
