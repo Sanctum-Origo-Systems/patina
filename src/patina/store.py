@@ -171,6 +171,11 @@ CREATE TABLE IF NOT EXISTS watched_channels (
     priority TEXT DEFAULT 'normal',
     added_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS migrations (
+    name TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
 """
 
 _FTS = """
@@ -245,3 +250,28 @@ def init_db(db_path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def run_pending_migrations(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM migrations WHERE name = 'fix_datamark_whitespace_v1'"
+    ).fetchone()
+    if row:
+        return
+
+    cursor = conn.execute(
+        "UPDATE observations SET text = REPLACE(text, CHAR(57344), ' ') "
+        "WHERE text LIKE '%' || CHAR(57344) || '%'"
+    )
+    affected = cursor.rowcount
+
+    conn.execute("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')")
+
+    conn.execute(
+        "INSERT INTO migrations (name, applied_at) "
+        "VALUES ('fix_datamark_whitespace_v1', datetime('now'))"
+    )
+    conn.commit()
+
+    if affected > 0:
+        print(f"Migration fix_datamark_whitespace_v1: fixed {affected} observations")

@@ -15,7 +15,7 @@ from patina.graph import (
 )
 from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation
 from patina.owner import get_owner_entity_id, get_owner_user_ids, mark_entity_as_owner
-from patina.store import connect, get_db_path, init_db
+from patina.store import connect, get_db_path, init_db, run_pending_migrations
 
 
 def _obs_id(source: str, channel_id: str, thread_id: str | None, ts: float) -> str:
@@ -29,6 +29,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
     conn = connect(db_path)
 
     try:
+        run_pending_migrations(conn)
         messages, users, channels = parse_slack_export(zip_path)
         owner_ids = set(get_owner_user_ids(home))
 
@@ -195,6 +196,7 @@ def ingest_live(
     conn = connect(db_path)
 
     try:
+        run_pending_migrations(conn)
         since = time.time() - (lookback_days * 86400)
         messages: list[ChatMessage] = []
 
