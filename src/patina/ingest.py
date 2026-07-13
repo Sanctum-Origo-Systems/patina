@@ -202,6 +202,14 @@ def ingest_live(
             messages.extend(port.list_dm_messages(since))
             messages.extend(port.list_mentions(since))
 
+            if hasattr(port, "list_dms"):
+                dm_channels = port.list_dms()
+                stale_cutoff = time.time() - (180 * 86400)
+                for dm in dm_channels:
+                    if dm.last_activity_ts < stale_cutoff:
+                        continue
+                    messages.extend(port.list_channel_messages(dm.channel_id, since))
+
             if hasattr(port, "list_participant_channels"):
                 owner_ids = get_owner_user_ids(home)
                 if owner_ids:

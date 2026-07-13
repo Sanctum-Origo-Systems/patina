@@ -11,7 +11,7 @@ from patina.adapters._mcp_client import (
     parse_json_content,
     strip_slack_content_tags,
 )
-from patina.models import ChatMessage
+from patina.models import ChatMessage, DmChannel
 
 
 class DmChannel(BaseModel):
@@ -72,6 +72,31 @@ class SlackMcpAdapter:
                     messages_raw.extend(val)
         msgs = [_msg_from_raw(m) for m in messages_raw if isinstance(m, dict)]
         return self._resolve_message_names([m for m in msgs if m.timestamp >= since and _is_dm(m)])
+
+    def list_dms(self) -> list[DmChannel]:
+        channels: list[DmChannel] = []
+        for conv_type in ("im", "mpim"):
+            try:
+                result = self._bridge.call_tool("conversations_list", {"types": conv_type})
+                raw = parse_json_content(result)
+            except Exception:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            conv_list = raw.get("channels", [])
+            if not isinstance(conv_list, list):
+                continue
+            for ch in conv_list:
+                if not isinstance(ch, dict):
+                    continue
+                channels.append(
+                    DmChannel(
+                        channel_id=ch.get("id", ""),
+                        is_group=conv_type == "mpim",
+                        last_activity_ts=float(ch.get("updated", 0)),
+                    )
+                )
+        return channels
 
     def list_mentions(self, since: float) -> list[ChatMessage]:
         since_dt = datetime.fromtimestamp(since, tz=UTC)

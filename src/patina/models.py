@@ -95,6 +95,13 @@ class ChatMessage:
 
 
 @dataclass
+class DmChannel:
+    channel_id: str
+    is_group: bool = False
+    last_activity_ts: float = 0.0
+
+
+@dataclass
 class EmailMessage:
     id: str
     sender: str
