@@ -645,3 +645,89 @@ class TestListParticipantChannels:
         bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
         adapter = SlackMcpAdapter(bridge)
         assert adapter.list_participant_channels("U00000OWNER") == []
+
+
+FIXTURES_DM_CHANNELS = json.dumps(
+    {
+        "channels": [
+            {
+                "id": "D00000DM001",
+                "latest": {"ts": "1781900000.111111"},
+            },
+            {
+                "id": "D00000DM002",
+                "latest": {"ts": "1781800000.222222"},
+            },
+        ],
+    }
+)
+
+FIXTURES_DM_CHANNELS_NO_LATEST = json.dumps(
+    {
+        "channels": [
+            {
+                "id": "D00000DM003",
+                "last_activity_ts": 1781700000.0,
+            },
+        ],
+    }
+)
+
+
+class TestListDms:
+    def test_returns_channel_ids_and_timestamps(self):
+        bridge = _make_bridge({"conversations_list": FIXTURES_DM_CHANNELS})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        assert len(result) == 2
+        assert result[0]["channel_id"] == "D00000DM001"
+        assert result[0]["last_activity_ts"] == 1781900000.111111
+        assert result[1]["channel_id"] == "D00000DM002"
+        assert result[1]["last_activity_ts"] == 1781800000.222222
+
+    def test_calls_with_types_im(self):
+        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
+        adapter = SlackMcpAdapter(bridge)
+        adapter.list_dms()
+        call_args = bridge.call_tool.call_args
+        assert call_args[0][0] == "conversations_list"
+        assert call_args[0][1]["types"] == "im"
+
+    def test_fallback_to_last_activity_ts_field(self):
+        bridge = _make_bridge({"conversations_list": FIXTURES_DM_CHANNELS_NO_LATEST})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        assert len(result) == 1
+        assert result[0]["channel_id"] == "D00000DM003"
+        assert result[0]["last_activity_ts"] == 1781700000.0
+
+    def test_empty_channels_list(self):
+        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_dms() == []
+
+    def test_missing_channels_key(self):
+        bridge = _make_bridge({"conversations_list": json.dumps({"ok": True})})
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_dms() == []
+
+    def test_returns_empty_on_bridge_exception(self):
+        bridge = MagicMock()
+        bridge.call_tool = MagicMock(side_effect=Exception("connection failed"))
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_dms() == []
+
+    def test_returns_empty_on_non_json_payload(self):
+        bridge = _make_bridge({"conversations_list": "not valid json {"})
+        adapter = SlackMcpAdapter(bridge)
+        assert adapter.list_dms() == []
+
+    def test_result_dicts_contain_required_keys(self):
+        bridge = _make_bridge({"conversations_list": FIXTURES_DM_CHANNELS})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        for ch in result:
+            assert "channel_id" in ch
+            assert "last_activity_ts" in ch
+            assert isinstance(ch["channel_id"], str)
+            assert isinstance(ch["last_activity_ts"], float)

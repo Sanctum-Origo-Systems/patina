@@ -140,6 +140,37 @@ class SlackMcpAdapter:
 
     list_group_dms = list_mpim_channels
 
+    def list_dms(self) -> list[dict]:
+        try:
+            result = self._bridge.call_tool("conversations_list", {"types": "im"})
+        except Exception:
+            return []
+        try:
+            raw = parse_json_content(result)
+        except McpClientError:
+            return []
+        if not isinstance(raw, dict):
+            return []
+        channels = raw.get("channels")
+        if not isinstance(channels, list):
+            return []
+        out: list[dict] = []
+        for ch in channels:
+            if not isinstance(ch, dict):
+                continue
+            channel_id = ch.get("id", "")
+            latest = ch.get("latest")
+            if isinstance(latest, dict):
+                ts = latest.get("ts", 0)
+            else:
+                ts = ch.get("last_activity_ts", 0)
+            try:
+                last_activity_ts = float(ts)
+            except (TypeError, ValueError):
+                last_activity_ts = 0.0
+            out.append({"channel_id": channel_id, "last_activity_ts": last_activity_ts})
+        return out
+
     def get_thread(self, channel_id: str, thread_id: str) -> list[ChatMessage]:
         try:
             result = self._bridge.call_tool(
