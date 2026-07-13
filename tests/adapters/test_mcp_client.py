@@ -116,8 +116,8 @@ class TestStripSlackContentTags:
         assert strip_slack_content_tags("plain text") == "plain text"
 
     def test_restores_datamarked_whitespace(self):
-        text = "HonestlyAndysecuritychangessoquickly"
-        assert strip_slack_content_tags(text) == "Honestly Andy security changes so quickly"
+        text = "Honestlythesecuritychangessoquickly"
+        assert strip_slack_content_tags(text) == "Honestly the security changes so quickly"
 
     def test_restores_datamarked_whitespace_with_tags(self):
         text = '<slack-user-content sender="U042">\nMovedtotomorrow\n</slack-user-content>'
