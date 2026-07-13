@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
-from patina.ingest import ingest_live
-from patina.models import CalendarEvent, ChatMessage, EmailMessage
+from patina.ingest import _obs_id, ingest_live
+from patina.models import CalendarEvent, ChatMessage, DmChannel, EmailMessage
 from patina.store import connect, get_db_path
 
 
@@ -229,3 +230,269 @@ def test_config_swap_no_code_change(tmp_path):
     oauth_port = MockOAuthSlackPort()
     result2 = ingest_live(port=oauth_port, source="slack_oauth", home=home)
     assert result2["messages_inserted"] >= 0
+
+
+def test_ingest_dm_1on1_channel(tmp_path):
+    home = tmp_path / "patina_home"
+    now = time.time()
+
+    class MockPort:
+        @property
+        def platform(self) -> str:
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return []
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            if channel_id == "D123":
+                return [
+                    ChatMessage(
+                        user_id="U00000ZARA1",
+                        text="Hey, want to grab lunch?",
+                        timestamp=now,
+                        channel_id="D123",
+                        user_name="Zara",
+                    ),
+                ]
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+        def list_dms(self):
+            return [DmChannel(channel_id="D123", is_group=False, last_activity_ts=now)]
+
+    result = ingest_live(port=MockPort(), source="slack_mcp", home=home)
+    assert result["messages_inserted"] == 1
+
+    conn = connect(get_db_path(home))
+    rows = conn.execute("SELECT text FROM observations WHERE channel_id = 'D123'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["text"] == "Hey, want to grab lunch?"
+    conn.close()
+
+
+def test_ingest_dm_group_channel(tmp_path):
+    home = tmp_path / "patina_home"
+    now = time.time()
+
+    class MockPort:
+        @property
+        def platform(self) -> str:
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return []
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            if channel_id == "C456":
+                return [
+                    ChatMessage(
+                        user_id="U00000QUINN",
+                        text="Group project update",
+                        timestamp=now,
+                        channel_id="C456",
+                        user_name="Quinn",
+                    ),
+                    ChatMessage(
+                        user_id="U00000RILEY",
+                        text="Sounds good, will review",
+                        timestamp=now + 1,
+                        channel_id="C456",
+                        user_name="Riley",
+                    ),
+                ]
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+        def list_dms(self):
+            return [DmChannel(channel_id="C456", is_group=True, last_activity_ts=now)]
+
+    result = ingest_live(port=MockPort(), source="slack_mcp", home=home)
+    assert result["messages_inserted"] == 2
+
+    conn = connect(get_db_path(home))
+    rows = conn.execute("SELECT text FROM observations WHERE channel_id = 'C456'").fetchall()
+    assert len(rows) == 2
+    texts = {r["text"] for r in rows}
+    assert "Group project update" in texts
+    assert "Sounds good, will review" in texts
+    conn.close()
+
+
+def test_ingest_dm_stale_channel_skipped(tmp_path):
+    home = tmp_path / "patina_home"
+    stale_ts = time.time() - (181 * 86400)
+    channel_messages_calls: list[str] = []
+
+    class MockPort:
+        @property
+        def platform(self) -> str:
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return []
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            channel_messages_calls.append(channel_id)
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+        def list_dms(self):
+            return [DmChannel(channel_id="D_STALE", last_activity_ts=stale_ts)]
+
+    ingest_live(port=MockPort(), source="slack_mcp", home=home)
+    assert "D_STALE" not in channel_messages_calls
+
+
+def test_ingest_dm_second_run_dedup(tmp_path):
+    home = tmp_path / "patina_home"
+    now = time.time()
+
+    class MockPort:
+        @property
+        def platform(self) -> str:
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return []
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            if channel_id == "D_DEDUP":
+                return [
+                    ChatMessage(
+                        user_id="U00000ZARA1",
+                        text="First message",
+                        timestamp=now,
+                        channel_id="D_DEDUP",
+                        user_name="Zara",
+                    ),
+                    ChatMessage(
+                        user_id="U00000QUINN",
+                        text="Second message",
+                        timestamp=now + 1,
+                        channel_id="D_DEDUP",
+                        user_name="Quinn",
+                    ),
+                ]
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+        def list_dms(self):
+            return [DmChannel(channel_id="D_DEDUP", last_activity_ts=now)]
+
+    port = MockPort()
+    result1 = ingest_live(port=port, source="slack_mcp", home=home)
+    result2 = ingest_live(port=port, source="slack_mcp", home=home)
+    assert result1["messages_inserted"] == 2
+    assert result2["messages_skipped"] == result1["messages_inserted"]
+    assert result2["messages_inserted"] == 0
+
+
+def test_ingest_dm_independent_of_watched_channels(tmp_path):
+    home = tmp_path / "patina_home"
+    now = time.time()
+    channel_messages_calls: list[str] = []
+
+    class MockPort:
+        @property
+        def platform(self) -> str:
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return []
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            channel_messages_calls.append(channel_id)
+            if channel_id == "D_INDEP":
+                return [
+                    ChatMessage(
+                        user_id="U00000RILEY",
+                        text="Independent DM message",
+                        timestamp=now,
+                        channel_id="D_INDEP",
+                        user_name="Riley",
+                    ),
+                ]
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+        def list_dms(self):
+            return [DmChannel(channel_id="D_INDEP", last_activity_ts=now)]
+
+    result = ingest_live(port=MockPort(), source="slack_mcp", home=home)
+    assert "D_INDEP" in channel_messages_calls
+    assert result["messages_inserted"] == 1
+
+
+def test_ingest_dm_obs_id_cross_path_equivalence(tmp_path):
+    home = tmp_path / "patina_home"
+    now = time.time()
+
+    shared_msg = ChatMessage(
+        user_id="U00000ZARA1",
+        text="Cross path message",
+        timestamp=now,
+        channel_id="D_CROSS",
+        user_name="Zara",
+    )
+
+    class MockPort:
+        @property
+        def platform(self) -> str:
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return [shared_msg]
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            if channel_id == "D_CROSS":
+                return [shared_msg]
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+        def list_dms(self):
+            return [DmChannel(channel_id="D_CROSS", last_activity_ts=now)]
+
+    result = ingest_live(port=MockPort(), source="slack_mcp", home=home)
+
+    conn = connect(get_db_path(home))
+    rows = conn.execute("SELECT id FROM observations WHERE channel_id = 'D_CROSS'").fetchall()
+    assert len(rows) == 1
+
+    dm_path_id = _obs_id("slack_mcp", "D_CROSS", None, now)
+    backfill_path_id = _obs_id("slack_mcp", "D_CROSS", None, now)
+    assert dm_path_id == backfill_path_id
+    assert rows[0]["id"] == dm_path_id
+
+    assert result["messages_skipped"] >= 1
+    conn.close()

@@ -3,21 +3,13 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
-from pydantic import BaseModel
-
 from patina.adapters._mcp_client import (
     McpClientError,
     McpSyncBridge,
     parse_json_content,
     strip_slack_content_tags,
 )
-from patina.models import ChatMessage
-
-
-class DmChannel(BaseModel):
-    channel_id: str
-    is_group: bool
-    last_activity_ts: float
+from patina.models import ChatMessage, DmChannel
 
 
 class SlackMcpAdapter:
