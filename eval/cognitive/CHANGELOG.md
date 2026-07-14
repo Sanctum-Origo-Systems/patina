@@ -149,3 +149,6 @@
 - #103: feat: Auto-bump pyproject.toml version on PR merge by commit prefi (#78) ($0.82) [2026-07-13]
 - #102: feat: Wire main() to merge all three collectors into EvalSnapshot  (#89) ($1.88) [2026-07-13]
 - #101: feat: Implement collect_merge_rate() and collect_time_to_implement (#86) ($1.11) [2026-07-13]
+- #192: feat: docs: add anonymization rule to CLAUDE.md conventions (#190) ($0.5) [2026-07-14]
+- #191: feat: fix: migrate existing observations to restore datamarked whi (#188) ($0.78) [2026-07-14]
+- #189: feat: fix: restore datamarked whitespace (\uE000) to spaces in Sla (#187) ($0.32) [2026-07-14]
