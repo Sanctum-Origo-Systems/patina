@@ -33,7 +33,7 @@ packages = ["src/patina"]
 
 [dependency-groups]
 dev = [
-    "autoloop @ git+https://github.com/Sanctum-Origo-Systems/autoloop@v0.1.0",
+    "autoloop @ git+https://github.com/Sanctum-Origo-Systems/autoloop@main",
     "black>=26.5.1",
     "pytest>=8",
     "ruff>=0.11",
