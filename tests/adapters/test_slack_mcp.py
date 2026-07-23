@@ -361,7 +361,7 @@ class TestUserIdResolution:
         messages = json.dumps(
             [
                 {
-                    "user": "W017PHFLRFE",
+                    "user": "W0USERID001",
                     "text": "Design review is ready",
                     "ts": "1781900000.111111",
                     "channel": {"id": "D00000DM003", "name": "dm-jianwei", "is_im": True},
@@ -372,7 +372,7 @@ class TestUserIdResolution:
         adapter = SlackMcpAdapter(bridge)
         msgs = adapter.list_dm_messages(since=0.0)
         assert len(msgs) == 1
-        assert msgs[0].user_id == "W017PHFLRFE"
+        assert msgs[0].user_id == "W0USERID001"
         assert msgs[0].user_name == "Jianwei Nakamura"
 
     def test_u_prefix_id_resolved_via_profile(self):
@@ -397,13 +397,13 @@ class TestUserIdResolution:
         messages = json.dumps(
             [
                 {
-                    "user": "W017H76HY5R",
+                    "user": "W0USERID002",
                     "text": "First message",
                     "ts": "1781900000.111111",
                     "channel_id": "C001",
                 },
                 {
-                    "user": "W017H76HY5R",
+                    "user": "W0USERID002",
                     "text": "Second message",
                     "ts": "1781900001.222222",
                     "channel_id": "C001",
@@ -424,7 +424,7 @@ class TestUserIdResolution:
         messages = json.dumps(
             [
                 {
-                    "user": "W0171T4JRQF",
+                    "user": "W0USERID003",
                     "text": "Bot message",
                     "ts": "1781900000.111111",
                     "channel_id": "C001",
@@ -446,7 +446,7 @@ class TestUserIdResolution:
         adapter = SlackMcpAdapter(bridge)
         msgs = adapter.list_channel_messages("C001", since=0.0)
         assert len(msgs) == 1
-        assert msgs[0].user_id == "W0171T4JRQF"
+        assert msgs[0].user_id == "W0USERID003"
         assert msgs[0].user_name is None
 
     def test_resolution_skips_non_user_ids(self):
@@ -473,7 +473,7 @@ class TestUserIdResolution:
         messages = json.dumps(
             [
                 {
-                    "user": {"id": "W017PHFLRFE", "real_name": "Priya Lindqvist"},
+                    "user": {"id": "W0USERID001", "real_name": "Priya Lindqvist"},
                     "text": "Already named",
                     "ts": "1781900000.111111",
                     "channel_id": "C001",
@@ -494,7 +494,7 @@ class TestUserIdResolution:
         search_results = json.dumps(
             [
                 {
-                    "user": "W017PHFLRFE",
+                    "user": "W0USERID001",
                     "text": "Please review the deployment plan",
                     "ts": "1781900000.111111",
                     "channel": {"id": "C001", "name": "ops"},
@@ -511,7 +511,7 @@ class TestUserIdResolution:
         thread_messages = json.dumps(
             [
                 {
-                    "user": "W0171T4JRQF",
+                    "user": "W0USERID003",
                     "text": "Thread reply",
                     "ts": "1781900000.111111",
                     "thread_ts": "1781800000.000000",

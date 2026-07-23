@@ -509,9 +509,9 @@ class TestStripCautionBanner:
             "CAUTION: This email originated from outside of the organization. "
             "Do not click links or open attachments unless you recognize the sender "
             "and know the content is safe.\n\n"
-            "++ Akshatha"
+            "++ Dana"
         )
-        assert _strip_caution_banner(body) == "++ Akshatha"
+        assert _strip_caution_banner(body) == "++ Dana"
 
     def test_strips_banner_with_confirm_variant(self):
         body = (
@@ -566,12 +566,12 @@ class TestEmailFromRawCautionBanner:
                 "CAUTION: This email originated from outside of the organization. "
                 "Do not click links or open attachments unless you recognize the sender "
                 "and know the content is safe.\n\n"
-                "++ Akshatha"
+                "++ Dana"
             ),
         }
         email = _email_from_raw(raw)
         assert "CAUTION" not in email.text
-        assert "++ Akshatha" in email.text
+        assert "++ Dana" in email.text
 
     def test_banner_stripped_from_body_preview(self):
         raw = {
