@@ -152,3 +152,4 @@
 - #192: feat: docs: add anonymization rule to CLAUDE.md conventions (#190) ($0.5) [2026-07-14]
 - #191: feat: fix: migrate existing observations to restore datamarked whi (#188) ($0.78) [2026-07-14]
 - #189: feat: fix: restore datamarked whitespace (\uE000) to spaces in Sla (#187) ($0.32) [2026-07-14]
+- #196: feat: test: sanitize real data in Slack and Outlook adapter test f (#195) ($0.59) [2026-07-24]
