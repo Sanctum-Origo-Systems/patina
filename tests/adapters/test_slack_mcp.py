@@ -567,12 +567,12 @@ FIXTURES_MPIM_CHANNELS = json.dumps(
             {
                 "id": "G00000MPIM1",
                 "name": "mpdm-alice--bob--owner",
-                "members": ["U00000ALICE", "U00000BOB01", "U00000OWNER"],
+                "members": 3,
             },
             {
                 "id": "G00000MPIM2",
                 "name": "mpdm-carol--dave",
-                "members": ["U00000CAROL", "U00000DAVE1"],
+                "members": 2,
             },
         ],
     }
@@ -580,13 +580,15 @@ FIXTURES_MPIM_CHANNELS = json.dumps(
 
 
 class TestListMpimChannels:
-    def test_filters_to_owner_membership(self):
+    def test_returns_all_mpim_channels(self):
         bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
         adapter = SlackMcpAdapter(bridge)
         result = adapter.list_mpim_channels("U00000OWNER")
-        assert len(result) == 1
+        assert len(result) == 2
         assert result[0]["id"] == "G00000MPIM1"
         assert result[0]["name"] == "mpdm-alice--bob--owner"
+        assert result[1]["id"] == "G00000MPIM2"
+        assert result[1]["name"] == "mpdm-carol--dave"
 
     def test_calls_with_types_mpim(self):
         bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
@@ -621,9 +623,24 @@ class TestListMpimChannels:
         bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
         adapter = SlackMcpAdapter(bridge)
         result = adapter.list_mpim_channels("U00000OWNER")
+        assert len(result) == 2
         for ch in result:
             assert "id" in ch
             assert "name" in ch
+
+    def test_integer_members_not_skipped(self):
+        fixture = json.dumps(
+            {
+                "channels": [
+                    {"id": "G00000MPIM3", "name": "mpdm-test", "members": 5},
+                ],
+            }
+        )
+        bridge = _make_bridge({"conversations_list": fixture})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_mpim_channels("U00000OWNER")
+        assert len(result) == 1
+        assert result[0]["id"] == "G00000MPIM3"
 
 
 class TestListParticipantChannels:
@@ -631,7 +648,10 @@ class TestListParticipantChannels:
         bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
         adapter = SlackMcpAdapter(bridge)
         result = adapter.list_participant_channels("U00000OWNER")
-        assert result == [("G00000MPIM1", "mpdm-alice--bob--owner")]
+        assert result == [
+            ("G00000MPIM1", "mpdm-alice--bob--owner"),
+            ("G00000MPIM2", "mpdm-carol--dave"),
+        ]
 
     def test_calls_conversations_list_with_types_mpim(self):
         bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
