@@ -147,16 +147,13 @@ class SlackMcpAdapter:
         channels = raw.get("channels")
         if not isinstance(channels, list):
             return []
-        out: list[dict] = []
-        for ch in channels:
-            if not isinstance(ch, dict):
-                continue
-            members = ch.get("members", [])
-            if not isinstance(members, list):
-                continue
-            if owner_user_id in members:
-                out.append({"id": ch.get("id", ""), "name": ch.get("name", "")})
-        return out
+        # conversations_list with types=mpim already scopes to the authenticated
+        # user's conversations, so no per-channel membership filter is needed.
+        return [
+            {"id": ch.get("id", ""), "name": ch.get("name", "")}
+            for ch in channels
+            if isinstance(ch, dict)
+        ]
 
     list_group_dms = list_mpim_channels
 
