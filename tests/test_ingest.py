@@ -131,6 +131,152 @@ def test_ingest_live_dedup(tmp_path):
     assert result2["messages_skipped"] == 2
 
 
+class MockChatPortWithOwner:
+    """Chat port that simulates both owner and non-owner messages in a DM."""
+
+    @property
+    def platform(self) -> str:
+        return "mock"
+
+    def list_dm_messages(self, since: float) -> list[ChatMessage]:
+        return [
+            ChatMessage(
+                user_id="U001",
+                text="Message from other party",
+                timestamp=_FIXED_TS,
+                channel_id="D001",
+                user_name="Alice",
+            ),
+        ]
+
+    def list_mentions(self, since: float) -> list[ChatMessage]:
+        return []
+
+    def list_sent_messages(self, since: float) -> list[ChatMessage]:
+        return [
+            ChatMessage(
+                user_id="U_OWNER",
+                text="Reply from owner",
+                timestamp=_FIXED_TS + 50,
+                channel_id="D001",
+                user_name="Jasper",
+            ),
+            ChatMessage(
+                user_id="U_OWNER",
+                text="Follow-up from owner",
+                timestamp=_FIXED_TS + 80,
+                channel_id="D001",
+                user_name="Jasper",
+            ),
+        ]
+
+    def list_channel_messages(self, channel_id, since):
+        return []
+
+    def get_thread(self, channel_id, thread_id):
+        return []
+
+
+def test_ingest_live_owner_messages_persist(tmp_path):
+    home = tmp_path / "live_home"
+    port = MockChatPortWithOwner()
+    result = ingest_live(port=port, source="mock", home=home)
+    assert result["messages_inserted"] == 3
+
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(home))
+    rows = conn.execute(
+        "SELECT text, sender_entity_id FROM observations ORDER BY timestamp"
+    ).fetchall()
+    assert len(rows) == 3
+    assert rows[0]["text"] == "Message from other party"
+    assert rows[1]["text"] == "Reply from owner"
+    assert rows[2]["text"] == "Follow-up from owner"
+    conn.close()
+
+
+def test_ingest_live_owner_messages_correct_attribution(tmp_path):
+    home = tmp_path / "live_home"
+    port = MockChatPortWithOwner()
+    ingest_live(port=port, source="mock", home=home)
+
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(home))
+    owner_obs = conn.execute(
+        "SELECT o.sender_entity_id, e.name FROM observations o "
+        "JOIN entities e ON o.sender_entity_id = e.id "
+        "WHERE o.text = 'Reply from owner'"
+    ).fetchone()
+    assert owner_obs is not None
+    assert owner_obs["name"] == "Jasper"
+
+    other_obs = conn.execute(
+        "SELECT o.sender_entity_id, e.name FROM observations o "
+        "JOIN entities e ON o.sender_entity_id = e.id "
+        "WHERE o.text = 'Message from other party'"
+    ).fetchone()
+    assert other_obs is not None
+    assert other_obs["name"] == "Alice"
+    assert owner_obs["sender_entity_id"] != other_obs["sender_entity_id"]
+    conn.close()
+
+
+def test_ingest_live_cross_source_dedup(tmp_path):
+    """Owner message already present from export backfill is not duplicated."""
+    home = tmp_path / "live_home"
+
+    from patina.ingest import _ingest_messages
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    export_msgs = [
+        ChatMessage(
+            user_id="U_OWNER",
+            text="Reply from owner",
+            timestamp=_FIXED_TS + 50,
+            channel_id="D001",
+            user_name="Jasper",
+        ),
+    ]
+    inserted, _, _ = _ingest_messages(conn, export_msgs, "slack_export")
+    assert inserted == 1
+    conn.close()
+
+    port = MockChatPortWithOwner()
+    result = ingest_live(port=port, source="mock", home=home)
+
+    assert result["messages_inserted"] == 2
+    assert result["messages_skipped"] == 1
+
+    conn = connect(db_path)
+    total = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()
+    assert total["cnt"] == 3
+    conn.close()
+
+
+def test_ingest_live_owner_messages_searchable(tmp_path):
+    """Owner messages are findable via direct query after live ingest."""
+    home = tmp_path / "live_home"
+    port = MockChatPortWithOwner()
+    ingest_live(port=port, source="mock", home=home)
+
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(home))
+    rows = conn.execute("SELECT * FROM observations WHERE text LIKE '%owner%'").fetchall()
+    assert len(rows) == 2
+    texts = {r["text"] for r in rows}
+    assert "Reply from owner" in texts
+    assert "Follow-up from owner" in texts
+    conn.close()
+
+
 def test_ingest_all_no_adapters(tmp_path):
     result = ingest_all(home=tmp_path)
     assert result["adapters_run"] == 0

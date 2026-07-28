@@ -85,6 +85,26 @@ class SlackMcpAdapter:
             return []
         return self._resolve_message_names(_extract_search_messages(raw))
 
+    def list_sent_messages(self, since: float) -> list[ChatMessage]:
+        since_dt = datetime.fromtimestamp(since, tz=UTC)
+        query = f"from:me after:{since_dt.strftime('%Y-%m-%d')}"
+        try:
+            args = {
+                "query": query,
+                "count": 100,
+                "scope": "messages",
+                "sort": "timestamp",
+                "sort_dir": "desc",
+            }
+            result = self._bridge.call_tool("search", args)
+        except Exception:
+            return []
+        try:
+            raw = parse_json_content(result)
+        except McpClientError:
+            return []
+        return self._resolve_message_names(_extract_search_messages(raw))
+
     def list_channel_messages(self, channel_id: str, since: float) -> list[ChatMessage]:
         since_iso = datetime.fromtimestamp(since, tz=UTC).isoformat()
         try:

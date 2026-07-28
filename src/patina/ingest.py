@@ -109,6 +109,15 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
 
     for msg in messages:
         obs_id = _obs_id(source, msg.channel_id, msg.thread_id, msg.timestamp)
+
+        dup = conn.execute(
+            "SELECT 1 FROM observations WHERE channel_id = ? AND timestamp = ?",
+            (msg.channel_id, msg.timestamp),
+        ).fetchone()
+        if dup:
+            skipped += 1
+            continue
+
         obs = Observation(
             id=obs_id,
             source=source,
@@ -203,6 +212,9 @@ def ingest_live(
         if isinstance(port, ChatPort):
             messages.extend(port.list_dm_messages(since))
             messages.extend(port.list_mentions(since))
+
+            if hasattr(port, "list_sent_messages"):
+                messages.extend(port.list_sent_messages(since))
 
             if hasattr(port, "list_dms"):
                 dm_channels = port.list_dms()
