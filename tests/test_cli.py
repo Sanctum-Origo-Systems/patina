@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import zipfile
 
+import yaml
 from typer.testing import CliRunner
 
 from patina.cli import _bootstrap_home, app
+from patina.store import connect, get_db_path, init_db
 
 runner = CliRunner()
 
@@ -118,3 +120,183 @@ def test_status_after_init(tmp_path):
     assert result.exit_code == 0
     assert "Observations" in result.output
     assert "Entities" in result.output
+
+
+def _fake_ingest_all(channels_seen=0, newly_watched=0, zero_streak=0):
+    def fake(*, home=None, lookback_days=3):
+        return {
+            "messages_inserted": 5,
+            "messages_skipped": 2,
+            "entities_created": 3,
+            "total_observations": 10,
+            "total_entities": 5,
+            "adapters_run": 1,
+            "channels_seen": channels_seen,
+            "newly_watched": newly_watched,
+            "zero_streak": zero_streak,
+        }
+
+    return fake
+
+
+def test_ingest_discovery_summary_always_printed(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=12, newly_watched=1),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Discovery: 12 channels seen, 1 newly watched" in result.output
+
+
+def test_ingest_discovery_summary_with_zero_values(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, newly_watched=0),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Discovery: 0 channels seen, 0 newly watched" in result.output
+
+
+def test_ingest_streak_warning_at_threshold(tmp_path, monkeypatch):
+    init_db(get_db_path(tmp_path))
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, zero_streak=3),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Warning: discovery returned 0 channels for 3 consecutive runs" in result.output
+    assert "adapter/bridge response-shape change" in result.output
+    assert "permission loss" in result.output
+    assert "no group DMs" in result.output
+
+
+def test_ingest_streak_warning_above_threshold(tmp_path, monkeypatch):
+    init_db(get_db_path(tmp_path))
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, zero_streak=5),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Warning: discovery returned 0 channels for 5 consecutive runs" in result.output
+
+
+def test_ingest_no_warning_below_threshold(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, zero_streak=2),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Warning" not in result.output
+
+
+def test_ingest_no_warning_when_channels_seen(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=5, zero_streak=3),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Warning" not in result.output
+
+
+def test_ingest_streak_warning_writes_journal(tmp_path, monkeypatch):
+    init_db(get_db_path(tmp_path))
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, zero_streak=3),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        row = conn.execute(
+            "SELECT body, entry_type FROM journal WHERE entry_type = 'note' "
+            "AND body LIKE '%discovery returned 0 channels%'"
+        ).fetchone()
+        assert row is not None
+        assert row["entry_type"] == "note"
+        assert "adapter/bridge response-shape change" in row["body"]
+        assert "permission loss" in row["body"]
+        assert "no group DMs" in row["body"]
+    finally:
+        conn.close()
+
+
+def test_ingest_no_journal_when_no_warning(tmp_path, monkeypatch):
+    init_db(get_db_path(tmp_path))
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, zero_streak=2),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        row = conn.execute(
+            "SELECT body FROM journal WHERE entry_type = 'note' "
+            "AND body LIKE '%discovery returned 0 channels%'"
+        ).fetchone()
+        assert row is None
+    finally:
+        conn.close()
+
+
+def test_ingest_no_journal_when_channels_seen(tmp_path, monkeypatch):
+    init_db(get_db_path(tmp_path))
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=5, zero_streak=3),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        row = conn.execute(
+            "SELECT body FROM journal WHERE entry_type = 'note' "
+            "AND body LIKE '%discovery returned 0 channels%'"
+        ).fetchone()
+        assert row is None
+    finally:
+        conn.close()
+
+
+def test_ingest_discovery_threshold_default(tmp_path, monkeypatch):
+    init_db(get_db_path(tmp_path))
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, zero_streak=3),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Warning" in result.output
+
+
+def test_ingest_discovery_threshold_from_config(tmp_path, monkeypatch):
+    init_db(get_db_path(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"discovery": {"zero_streak_threshold": 5}}))
+
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, zero_streak=3),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Warning" not in result.output
+
+    monkeypatch.setattr(
+        "patina.ingest.ingest_all",
+        _fake_ingest_all(channels_seen=0, zero_streak=5),
+    )
+    result = runner.invoke(app, ["ingest", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Warning" in result.output
+    assert "5 consecutive runs" in result.output
