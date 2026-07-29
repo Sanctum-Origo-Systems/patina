@@ -3,7 +3,11 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 
-from patina.conversations import build_checkpoint_summary, get_recent_messages
+from patina.conversations import (
+    build_checkpoint_summary,
+    get_recent_observations,
+    resolve_channel_id,
+)
 from patina.store import connect, get_db_path, init_db
 
 
@@ -14,15 +18,19 @@ def _get_conn():
 
 
 def recent_messages(channel: str, limit: int = 5) -> str:
-    """Retrieve recent conversation messages for a channel."""
+    """Retrieve recent ingested messages from the observations store for a channel.
+
+    Accepts a raw channel_id or a watched-channel alias (display name).
+    """
     conn = _get_conn()
     try:
-        messages = get_recent_messages(conn, channel, limit)
+        channel_id = resolve_channel_id(conn, channel) or channel
+        messages = get_recent_observations(conn, channel_id, limit)
         if not messages:
             return f"No recent messages on channel '{channel}'."
         lines = []
         for msg in messages:
-            lines.append(f"- [{msg['role']}]: {msg['content']}")
+            lines.append(f"- [{msg['sender']}]: {msg['text']}")
         return "\n".join(lines)
     finally:
         conn.close()
