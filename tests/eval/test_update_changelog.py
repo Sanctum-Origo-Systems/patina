@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-from eval.cognitive.update_changelog import append_entry, trim_changelog
+from eval.cognitive.update_changelog import append_entry, has_open_changelog_pr, trim_changelog
 
 
 @pytest.fixture()
@@ -195,3 +197,54 @@ class TestTrimChangelog:
 
         assert "#1: Boundary" in changelog.read_text()
         assert not archive.exists()
+
+
+class TestHasOpenChangelogPr:
+    def test_returns_true_when_open_pr_exists(self) -> None:
+        fake = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='[{"number": 197}]', stderr=""
+        )
+        with patch("eval.cognitive.update_changelog.subprocess.run", return_value=fake) as mock:
+            assert has_open_changelog_pr("owner/repo") is True
+        args = mock.call_args[0][0]
+        assert "--state" in args
+        assert args[args.index("--state") + 1] == "open"
+        assert "head:chore/changelog-" in args
+
+    def test_returns_false_when_no_open_pr(self) -> None:
+        fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="[]", stderr="")
+        with patch("eval.cognitive.update_changelog.subprocess.run", return_value=fake):
+            assert has_open_changelog_pr("owner/repo") is False
+
+    def test_returns_false_on_gh_failure(self) -> None:
+        fake = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
+        with patch("eval.cognitive.update_changelog.subprocess.run", return_value=fake):
+            assert has_open_changelog_pr("owner/repo") is False
+
+
+class TestDailySkipsOnOpenPr:
+    def test_skips_when_open_changelog_pr_exists(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with (
+            patch(
+                "eval.cognitive.update_changelog.has_open_changelog_pr", return_value=True
+            ) as mock_check,
+            patch("eval.cognitive.update_changelog.fetch_merged_prs") as mock_fetch,
+        ):
+            from eval.cognitive.update_changelog import daily
+
+            daily("owner/repo")
+
+        mock_check.assert_called_once_with("owner/repo")
+        mock_fetch.assert_not_called()
+        assert "skipping" in capsys.readouterr().out.lower()
+
+    def test_proceeds_when_no_open_changelog_pr(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with (
+            patch("eval.cognitive.update_changelog.has_open_changelog_pr", return_value=False),
+            patch("eval.cognitive.update_changelog.fetch_merged_prs", return_value=[]),
+        ):
+            from eval.cognitive.update_changelog import daily
+
+            daily("owner/repo")
+
+        assert "no new merged prs" in capsys.readouterr().out.lower()
