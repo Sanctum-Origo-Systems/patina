@@ -256,22 +256,44 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
     row = conn.execute(
         "SELECT 1 FROM migrations WHERE name = 'fix_datamark_whitespace_v1'"
     ).fetchone()
-    if row:
-        return
+    if not row:
+        cursor = conn.execute(
+            "UPDATE observations SET text = REPLACE(text, CHAR(57344), ' ') "
+            "WHERE text LIKE '%' || CHAR(57344) || '%'"
+        )
+        affected = cursor.rowcount
 
-    cursor = conn.execute(
-        "UPDATE observations SET text = REPLACE(text, CHAR(57344), ' ') "
-        "WHERE text LIKE '%' || CHAR(57344) || '%'"
-    )
-    affected = cursor.rowcount
+        conn.execute("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')")
 
-    conn.execute("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')")
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('fix_datamark_whitespace_v1', datetime('now'))"
+        )
+        conn.commit()
 
+        if affected > 0:
+            print(f"Migration fix_datamark_whitespace_v1: fixed {affected} observations")
+
+    row = conn.execute("SELECT 1 FROM migrations WHERE name = 'add_kv_table_v1'").fetchone()
+    if not row:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS kv (    key TEXT PRIMARY KEY,    value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) VALUES ('add_kv_table_v1', datetime('now'))"
+        )
+        conn.commit()
+
+
+def kv_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def kv_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(
-        "INSERT INTO migrations (name, applied_at) "
-        "VALUES ('fix_datamark_whitespace_v1', datetime('now'))"
+        "INSERT INTO kv (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
     )
     conn.commit()
-
-    if affected > 0:
-        print(f"Migration fix_datamark_whitespace_v1: fixed {affected} observations")
