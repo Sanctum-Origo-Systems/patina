@@ -15,7 +15,7 @@ from patina.graph import (
 )
 from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation
 from patina.owner import get_owner_entity_id, get_owner_user_ids, mark_entity_as_owner
-from patina.store import connect, get_db_path, init_db, run_pending_migrations
+from patina.store import connect, get_db_path, init_db, kv_get, kv_set, run_pending_migrations
 
 
 def _obs_id(source: str, channel_id: str, thread_id: str | None, ts: float) -> str:
@@ -224,12 +224,15 @@ def ingest_live(
                         continue
                     messages.extend(port.list_channel_messages(dm.channel_id, since))
 
+            channels_seen = 0
+            newly_watched = 0
             if hasattr(port, "list_participant_channels"):
                 owner_ids = get_owner_user_ids(home)
                 if owner_ids:
                     discovered = port.list_participant_channels(owner_ids[0])
+                    channels_seen = len(discovered)
                     for channel_id, channel_name in discovered:
-                        conn.execute(
+                        cur = conn.execute(
                             "INSERT OR IGNORE INTO watched_channels"
                             " (channel_id, channel_name, reason, added_at)"
                             " VALUES (?, ?, ?, ?)",
@@ -240,7 +243,15 @@ def ingest_live(
                                 datetime.now(UTC).isoformat(),
                             ),
                         )
+                        newly_watched += cur.rowcount
                     conn.commit()
+
+            streak = int(kv_get(conn, "discovery_zero_streak") or "0")
+            if channels_seen > 0:
+                streak = 0
+            else:
+                streak += 1
+            kv_set(conn, "discovery_zero_streak", str(streak))
 
             watched = conn.execute("SELECT channel_id FROM watched_channels").fetchall()
             for ch in watched:
@@ -259,12 +270,17 @@ def ingest_live(
         messages.sort(key=lambda m: m.timestamp)
         inserted, skipped, entity_ids = _ingest_messages(conn, messages, source)
 
+        zero_streak = int(kv_get(conn, "discovery_zero_streak") or "0")
+
         return {
             "messages_inserted": inserted,
             "messages_skipped": skipped,
             "entities_created": len(entity_ids),
             "total_observations": count_observations(conn),
             "total_entities": count_entities(conn),
+            "channels_seen": channels_seen if isinstance(port, ChatPort) else 0,
+            "newly_watched": newly_watched if isinstance(port, ChatPort) else 0,
+            "zero_streak": zero_streak,
         }
     finally:
         conn.close()
