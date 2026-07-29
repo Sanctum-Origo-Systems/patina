@@ -47,8 +47,8 @@ wheels = [
 
 [[package]]
 name = "autoloop"
-version = "0.1.0"
-source = { git = "https://github.com/Sanctum-Origo-Systems/autoloop?rev=v0.1.0#79a426650a476b35d12e48c8653020a82a32c48e" }
+version = "0.3.0"
+source = { git = "https://github.com/Sanctum-Origo-Systems/autoloop?rev=main#d62ba87f362e1a62be94b4d0904c2efdafd430e2" }
 
 [[package]]
 name = "black"
@@ -395,7 +395,7 @@ wheels = [
 
 [[package]]
 name = "patina"
-version = "0.7.0"
+version = "0.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },
@@ -430,7 +430,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "autoloop", git = "https://github.com/Sanctum-Origo-Systems/autoloop?rev=v0.1.0" },
+    { name = "autoloop", git = "https://github.com/Sanctum-Origo-Systems/autoloop?rev=main" },
     { name = "black", specifier = ">=26.5.1" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.11" },
