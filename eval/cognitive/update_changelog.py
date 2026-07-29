@@ -138,6 +138,33 @@ def existing_pr_numbers(changelog_path: Path | None = None) -> set[int]:
     return numbers
 
 
+def has_open_changelog_pr(repo: str) -> bool:
+    """Check if an open PR already exists from a chore/changelog-* branch."""
+    result = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--search",
+            "head:chore/changelog-",
+            "--json",
+            "number",
+            "--limit",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False
+    prs = json.loads(result.stdout)
+    return len(prs) > 0
+
+
 def fetch_merged_prs(repo: str, since_days: int = 1) -> list[dict]:
     """Fetch PRs merged in the last N days, excluding chore: PRs."""
     since = (date.today() - timedelta(days=since_days)).isoformat()
@@ -173,6 +200,10 @@ def extract_cost(body: str) -> float:
 
 def daily(repo: str, since_days: int = 1) -> None:
     """Batch changelog + version bump for all PRs merged since last run."""
+    if has_open_changelog_pr(repo):
+        print("Open changelog PR already exists — skipping.")
+        return
+
     prs = fetch_merged_prs(repo, since_days)
     if not prs:
         print("No new merged PRs.")
