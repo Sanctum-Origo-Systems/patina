@@ -139,6 +139,9 @@ class SlackMcpAdapter:
 
             all_messages.extend(page_msgs)
 
+            if page_msgs and all(m.timestamp < since for m in page_msgs):
+                break
+
             if not isinstance(raw, dict) or not raw.get("hasMore"):
                 break
             cursor = raw.get("nextCursor")
