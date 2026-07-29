@@ -4,7 +4,12 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from patina.adapters.slack_mcp import DmChannel, SlackMcpAdapter, _extract_display_name
+from patina.adapters.slack_mcp import (
+    DmChannel,
+    SlackMcpAdapter,
+    _extract_display_name,
+    _parse_activity_ts,
+)
 from patina.ports.chat import ChatPort
 
 
@@ -670,14 +675,14 @@ class TestListParticipantChannels:
 FIXTURES_DMS = json.dumps(
     [
         {
-            "channel_id": "D00000DM001",
-            "is_group": False,
-            "last_activity_ts": 1781900000.111111,
+            "channelId": "D00000DM001",
+            "isGroup": False,
+            "lastActivity": "2026-06-19T10:13:20.111Z",
         },
         {
-            "channel_id": "G00000GRP01",
-            "is_group": True,
-            "last_activity_ts": 1781850000.222222,
+            "channelId": "G00000GRP01",
+            "isGroup": True,
+            "lastActivity": "2026-06-18T20:20:00.222Z",
         },
     ]
 )
@@ -697,10 +702,11 @@ class TestListDms:
         result = adapter.list_dms()
         assert result[0].channel_id == "D00000DM001"
         assert result[0].is_group is False
-        assert result[0].last_activity_ts == 1781900000.111111
+        assert result[0].last_activity_ts > 0.0
         assert result[1].channel_id == "G00000GRP01"
         assert result[1].is_group is True
-        assert result[1].last_activity_ts == 1781850000.222222
+        assert result[1].last_activity_ts > 0.0
+        assert result[0].last_activity_ts > result[1].last_activity_ts
 
     def test_default_passes_include_dormant_false(self):
         bridge = _make_bridge({"list_dms": "[]"})
@@ -734,9 +740,9 @@ class TestListDms:
             {
                 "channels": [
                     {
-                        "channel_id": "D00000DM005",
-                        "is_group": False,
-                        "last_activity_ts": 1781700000.333333,
+                        "channelId": "D00000DM005",
+                        "isGroup": False,
+                        "lastActivity": "2026-06-16T15:06:40.333Z",
                     },
                 ],
             }
@@ -746,3 +752,76 @@ class TestListDms:
         result = adapter.list_dms()
         assert len(result) == 1
         assert result[0].channel_id == "D00000DM005"
+
+    def test_iso8601_last_activity_parsed_to_epoch(self):
+        fixture = json.dumps(
+            [
+                {
+                    "channelId": "D00000DM010",
+                    "isGroup": False,
+                    "lastActivity": "2026-07-28T13:47:54.920Z",
+                },
+            ]
+        )
+        bridge = _make_bridge({"list_dms": fixture})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        assert len(result) == 1
+        assert result[0].last_activity_ts > 1_000_000_000.0
+        assert result[0].last_activity_ts != 0.0
+
+    def test_stale_iso8601_produces_old_epoch(self):
+        fixture = json.dumps(
+            [
+                {
+                    "channelId": "D00000DM011",
+                    "isGroup": False,
+                    "lastActivity": "2020-01-01T00:00:00.000Z",
+                },
+            ]
+        )
+        bridge = _make_bridge({"list_dms": fixture})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        assert result[0].last_activity_ts < 1_600_000_000.0
+
+    def test_snake_case_fields_still_supported(self):
+        fixture = json.dumps(
+            [
+                {
+                    "channel_id": "D00000DM012",
+                    "is_group": False,
+                    "last_activity_ts": 1781900000.0,
+                },
+            ]
+        )
+        bridge = _make_bridge({"list_dms": fixture})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        assert result[0].channel_id == "D00000DM012"
+        assert result[0].last_activity_ts == 1781900000.0
+
+
+class TestParseActivityTs:
+    def test_iso8601_with_z_suffix(self):
+        ts = _parse_activity_ts("2026-07-28T13:47:54.920Z")
+        assert ts > 1_000_000_000.0
+
+    def test_iso8601_with_offset(self):
+        ts = _parse_activity_ts("2026-07-28T13:47:54.920+00:00")
+        assert ts > 1_000_000_000.0
+
+    def test_numeric_float_passthrough(self):
+        assert _parse_activity_ts(1781900000.111) == 1781900000.111
+
+    def test_numeric_int_passthrough(self):
+        assert _parse_activity_ts(1781900000) == 1781900000.0
+
+    def test_invalid_string_returns_zero(self):
+        assert _parse_activity_ts("not-a-date") == 0.0
+
+    def test_none_returns_zero(self):
+        assert _parse_activity_ts(None) == 0.0
+
+    def test_zero_fallback(self):
+        assert _parse_activity_ts(0.0) == 0.0

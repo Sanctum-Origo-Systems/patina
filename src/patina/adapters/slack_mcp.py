@@ -175,9 +175,11 @@ class SlackMcpAdapter:
                 items = []
         return [
             DmChannel(
-                channel_id=ch.get("channel_id", ch.get("id", "")),
-                is_group=ch.get("is_group", False),
-                last_activity_ts=float(ch.get("last_activity_ts", ch.get("last_activity", 0.0))),
+                channel_id=ch.get("channelId", ch.get("channel_id", ch.get("id", ""))),
+                is_group=ch.get("isGroup", ch.get("is_group", False)),
+                last_activity_ts=_parse_activity_ts(
+                    ch.get("lastActivity", ch.get("last_activity_ts", ch.get("last_activity", 0.0)))
+                ),
             )
             for ch in items
             if isinstance(ch, dict)
@@ -205,6 +207,17 @@ class SlackMcpAdapter:
                     [_msg_from_raw(m) for m in items if isinstance(m, dict)]
                 )
         return []
+
+
+def _parse_activity_ts(value) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 def _is_dm(msg: ChatMessage) -> bool:
