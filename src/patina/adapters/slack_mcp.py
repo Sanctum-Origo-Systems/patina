@@ -107,27 +107,45 @@ class SlackMcpAdapter:
 
     def list_channel_messages(self, channel_id: str, since: float) -> list[ChatMessage]:
         since_iso = datetime.fromtimestamp(since, tz=UTC).isoformat()
-        try:
-            result = self._bridge.call_tool(
-                "get_messages", {"channel": channel_id, "since": since_iso}
-            )
-        except Exception:
-            return []
-        try:
-            raw = parse_json_content(result)
-        except McpClientError:
-            return []
-        if isinstance(raw, list):
-            return self._resolve_message_names(
-                [_msg_from_raw(m) for m in raw if isinstance(m, dict)]
-            )
-        if isinstance(raw, dict):
-            items = raw.get("messages", [])
-            if isinstance(items, list):
-                return self._resolve_message_names(
-                    [_msg_from_raw(m) for m in items if isinstance(m, dict)]
-                )
-        return []
+        all_messages: list[ChatMessage] = []
+        cursor = None
+        max_pages = 50
+
+        for _ in range(max_pages):
+            args: dict = {
+                "channel": channel_id,
+                "since": since_iso,
+                "limit": 200,
+                "includeThreadReplies": False,
+            }
+            if cursor:
+                args["cursor"] = cursor
+            try:
+                result = self._bridge.call_tool("get_messages", args)
+            except Exception:
+                break
+            try:
+                raw = parse_json_content(result)
+            except McpClientError:
+                break
+
+            page_msgs: list[ChatMessage] = []
+            if isinstance(raw, list):
+                page_msgs = [_msg_from_raw(m) for m in raw if isinstance(m, dict)]
+            elif isinstance(raw, dict):
+                items = raw.get("messages", [])
+                if isinstance(items, list):
+                    page_msgs = [_msg_from_raw(m) for m in items if isinstance(m, dict)]
+
+            all_messages.extend(page_msgs)
+
+            if not isinstance(raw, dict) or not raw.get("hasMore"):
+                break
+            cursor = raw.get("nextCursor")
+            if not cursor:
+                break
+
+        return self._resolve_message_names(all_messages)
 
     def list_participant_channels(self, owner_user_id: str) -> list[tuple[str, str]]:
         channels = self.list_mpim_channels(owner_user_id)
