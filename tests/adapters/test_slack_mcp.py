@@ -246,6 +246,198 @@ class TestListChannelMessages:
         assert call_args[0][0] == "get_messages"
         assert call_args[0][1]["channel"] == "C00000CH001"
 
+    def test_passes_limit_and_include_thread_replies(self):
+        bridge = _make_bridge({"get_messages": "[]"})
+        adapter = SlackMcpAdapter(bridge)
+        adapter.list_channel_messages("C00000CH001", since=0.0)
+        call_args = bridge.call_tool.call_args
+        assert call_args[0][1]["limit"] == 200
+        assert call_args[0][1]["includeThreadReplies"] is False
+
+    def test_paginates_across_multiple_pages(self):
+        page1 = json.dumps(
+            {
+                "messages": [
+                    {
+                        "user": "U00000ALICE",
+                        "text": "Message from page one",
+                        "ts": "1781900300.333333",
+                        "channel_id": "C00000CH001",
+                        "reactions": [],
+                    },
+                    {
+                        "user": "U00000BOB01",
+                        "text": "Another page one message",
+                        "ts": "1781900200.222222",
+                        "channel_id": "C00000CH001",
+                        "reactions": [],
+                    },
+                ],
+                "hasMore": True,
+                "nextCursor": "cursor_page2",
+            }
+        )
+        page2 = json.dumps(
+            {
+                "messages": [
+                    {
+                        "user": "U00000FRANK",
+                        "text": "Message from page two",
+                        "ts": "1781900100.111111",
+                        "channel_id": "C00000CH001",
+                        "reactions": [],
+                    },
+                ],
+                "hasMore": False,
+            }
+        )
+        pages = [page1, page2]
+        call_index = {"n": 0}
+
+        bridge = MagicMock()
+
+        def call_tool(name, arguments=None, **kwargs):
+            idx = call_index["n"]
+            call_index["n"] += 1
+            text = pages[idx] if idx < len(pages) else "[]"
+            return SimpleNamespace(isError=False, content=[SimpleNamespace(text=text)])
+
+        bridge.call_tool = MagicMock(side_effect=call_tool)
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C00000CH001", since=0.0)
+
+        assert len(msgs) == 3
+        assert msgs[0].user_id == "U00000ALICE"
+        assert msgs[1].user_id == "U00000BOB01"
+        assert msgs[2].user_id == "U00000FRANK"
+        get_msg_calls = [c for c in bridge.call_tool.call_args_list if c[0][0] == "get_messages"]
+        assert len(get_msg_calls) == 2
+        assert get_msg_calls[1][0][1]["cursor"] == "cursor_page2"
+
+    def test_stops_when_has_more_false(self):
+        page = json.dumps(
+            {
+                "messages": [
+                    {
+                        "user": "U00000ALICE",
+                        "text": "Only page",
+                        "ts": "1781900100.111111",
+                        "channel_id": "C00000CH001",
+                        "reactions": [],
+                    },
+                ],
+                "hasMore": False,
+            }
+        )
+        bridge = _make_bridge({"get_messages": page})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C00000CH001", since=0.0)
+        assert len(msgs) == 1
+        get_msg_calls = [c for c in bridge.call_tool.call_args_list if c[0][0] == "get_messages"]
+        assert len(get_msg_calls) == 1
+
+    def test_stops_when_all_page_messages_older_than_since(self):
+        page1 = json.dumps(
+            {
+                "messages": [
+                    {
+                        "user": "U00000ALICE",
+                        "text": "Recent message",
+                        "ts": "1781900300.333333",
+                        "channel_id": "C00000CH001",
+                        "reactions": [],
+                    },
+                ],
+                "hasMore": True,
+                "nextCursor": "cursor_page2",
+            }
+        )
+        page2 = json.dumps(
+            {
+                "messages": [
+                    {
+                        "user": "U00000BOB01",
+                        "text": "Old message",
+                        "ts": "1000000000.111111",
+                        "channel_id": "C00000CH001",
+                        "reactions": [],
+                    },
+                ],
+                "hasMore": True,
+                "nextCursor": "cursor_page3",
+            }
+        )
+        pages = [page1, page2]
+        call_index = {"n": 0}
+
+        bridge = MagicMock()
+
+        def call_tool(name, arguments=None, **kwargs):
+            idx = call_index["n"]
+            call_index["n"] += 1
+            text = pages[idx] if idx < len(pages) else "[]"
+            return SimpleNamespace(isError=False, content=[SimpleNamespace(text=text)])
+
+        bridge.call_tool = MagicMock(side_effect=call_tool)
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C00000CH001", since=1781900000.0)
+
+        assert len(msgs) == 2
+        get_msg_calls = [c for c in bridge.call_tool.call_args_list if c[0][0] == "get_messages"]
+        assert len(get_msg_calls) == 2
+
+    def test_max_pages_safety_cap(self):
+        always_more = json.dumps(
+            {
+                "messages": [
+                    {
+                        "user": "U00000ALICE",
+                        "text": "Repeated page",
+                        "ts": "1781900100.111111",
+                        "channel_id": "C00000CH001",
+                        "reactions": [],
+                    },
+                ],
+                "hasMore": True,
+                "nextCursor": "cursor_next",
+            }
+        )
+
+        bridge = MagicMock()
+
+        def call_tool(name, arguments=None, **kwargs):
+            return SimpleNamespace(isError=False, content=[SimpleNamespace(text=always_more)])
+
+        bridge.call_tool = MagicMock(side_effect=call_tool)
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C00000CH001", since=0.0)
+
+        get_msg_calls = [c for c in bridge.call_tool.call_args_list if c[0][0] == "get_messages"]
+        assert len(get_msg_calls) == 50
+        assert len(msgs) == 50
+
+    def test_stops_on_missing_next_cursor(self):
+        page = json.dumps(
+            {
+                "messages": [
+                    {
+                        "user": "U00000ALICE",
+                        "text": "Page with hasMore but no cursor",
+                        "ts": "1781900100.111111",
+                        "channel_id": "C00000CH001",
+                        "reactions": [],
+                    },
+                ],
+                "hasMore": True,
+            }
+        )
+        bridge = _make_bridge({"get_messages": page})
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C00000CH001", since=0.0)
+        assert len(msgs) == 1
+        get_msg_calls = [c for c in bridge.call_tool.call_args_list if c[0][0] == "get_messages"]
+        assert len(get_msg_calls) == 1
+
 
 class TestGetThread:
     def test_list_format(self):
