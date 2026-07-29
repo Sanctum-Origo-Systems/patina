@@ -39,6 +39,37 @@ def get_recent_messages(conn: sqlite3.Connection, channel: str, limit: int = 5) 
     ]
 
 
+def get_recent_observations(
+    conn: sqlite3.Connection, channel_id: str, limit: int = 5
+) -> list[dict]:
+    rows = conn.execute(
+        """SELECT o.source, o.text, o.timestamp,
+                  e.name AS sender_name
+           FROM observations o
+           LEFT JOIN entities e ON o.sender_entity_id = e.id
+           WHERE o.channel_id = ?
+           ORDER BY o.timestamp DESC
+           LIMIT ?""",
+        (channel_id, limit),
+    ).fetchall()
+    return [
+        {
+            "sender": r["sender_name"] or "unknown",
+            "text": r["text"] or "",
+            "timestamp": r["timestamp"],
+        }
+        for r in reversed(rows)
+    ]
+
+
+def resolve_channel_id(conn: sqlite3.Connection, alias: str) -> str | None:
+    row = conn.execute(
+        "SELECT channel_id FROM watched_channels WHERE channel_name = ?",
+        (alias,),
+    ).fetchone()
+    return row["channel_id"] if row else None
+
+
 def prune_conversations(conn: sqlite3.Connection, max_age_days: int = 30) -> int:
     cutoff = time.time() - (max_age_days * 86400)
     cur = conn.execute("DELETE FROM conversations WHERE timestamp < ?", (cutoff,))
