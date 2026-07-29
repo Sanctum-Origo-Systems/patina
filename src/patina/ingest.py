@@ -97,6 +97,9 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
             "styles_built": styles_built,
             "total_observations": count_observations(conn),
             "total_entities": count_entities(conn),
+            "channels_seen": 0,
+            "newly_watched": 0,
+            "zero_streak": 0,
         }
     finally:
         conn.close()
@@ -294,6 +297,9 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
         "total_observations": 0,
         "total_entities": 0,
         "adapters_run": 0,
+        "channels_seen": 0,
+        "newly_watched": 0,
+        "zero_streak": 0,
     }
 
     adapters = _load_adapters(home)
@@ -308,6 +314,9 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
             totals["total_observations"] = result["total_observations"]
             totals["total_entities"] = result["total_entities"]
             totals["adapters_run"] += 1
+            totals["channels_seen"] += result.get("channels_seen", 0)
+            totals["newly_watched"] += result.get("newly_watched", 0)
+            totals["zero_streak"] = result.get("zero_streak", 0)
     finally:
         for _, port in adapters:
             if hasattr(port, "close"):

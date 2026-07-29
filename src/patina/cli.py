@@ -200,6 +200,43 @@ def extract_cmd(
     )
 
 
+def _get_discovery_threshold(home: Path | None) -> int:
+    import yaml
+
+    from patina.store import DEFAULT_HOME
+
+    config_path = (home or DEFAULT_HOME) / "config.yaml"
+    if not config_path.exists():
+        return 3
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+    except Exception:
+        return 3
+    return config.get("discovery", {}).get("zero_streak_threshold", 3)
+
+
+def _write_journal_warning(home: Path | None, warning: str) -> None:
+    import hashlib
+    from datetime import UTC, datetime
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        now = datetime.now(UTC).isoformat()
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        entry_id = hashlib.sha256(f"journal:{today}:{now}".encode()).hexdigest()[:16]
+        conn.execute(
+            """INSERT INTO journal (id, date, body, entry_type, created_at)
+               VALUES (?, ?, ?, 'note', ?)""",
+            (entry_id, today, warning, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @app.command()
 def ingest(
     from_export: Path | None = typer.Option(None, "--from-export", help="Path to Slack export zip"),
@@ -231,6 +268,22 @@ def ingest(
         f"Total: {result['total_observations']} observations, "
         f"{result['total_entities']} entities."
     )
+
+    channels_seen = result.get("channels_seen", 0)
+    newly_watched = result.get("newly_watched", 0)
+    typer.echo(f"Discovery: {channels_seen} channels seen, {newly_watched} newly watched")
+
+    zero_streak = result.get("zero_streak", 0)
+    threshold = _get_discovery_threshold(home)
+    if channels_seen == 0 and zero_streak >= threshold:
+        warning = (
+            f"Warning: discovery returned 0 channels for "
+            f"{zero_streak} consecutive runs. "
+            f"Likely causes: adapter/bridge response-shape change, "
+            f"permission loss, or no group DMs."
+        )
+        typer.echo(warning)
+        _write_journal_warning(home, warning)
 
 
 @app.command()
