@@ -263,7 +263,7 @@ def test_ingest_dm_1on1_channel(tmp_path):
         def get_thread(self, channel_id, thread_id):
             return []
 
-        def list_dms(self):
+        def list_dms(self, include_dormant=False):
             return [DmChannel(channel_id="D123", is_group=False, last_activity_ts=now)]
 
     result = ingest_live(port=MockPort(), source="slack_mcp", home=home)
@@ -314,7 +314,7 @@ def test_ingest_dm_group_channel(tmp_path):
         def get_thread(self, channel_id, thread_id):
             return []
 
-        def list_dms(self):
+        def list_dms(self, include_dormant=False):
             return [DmChannel(channel_id="C456", is_group=True, last_activity_ts=now)]
 
     result = ingest_live(port=MockPort(), source="slack_mcp", home=home)
@@ -352,7 +352,7 @@ def test_ingest_dm_stale_channel_skipped(tmp_path):
         def get_thread(self, channel_id, thread_id):
             return []
 
-        def list_dms(self):
+        def list_dms(self, include_dormant=False):
             return [DmChannel(channel_id="D_STALE", last_activity_ts=stale_ts)]
 
     ingest_live(port=MockPort(), source="slack_mcp", home=home)
@@ -397,7 +397,7 @@ def test_ingest_dm_second_run_dedup(tmp_path):
         def get_thread(self, channel_id, thread_id):
             return []
 
-        def list_dms(self):
+        def list_dms(self, include_dormant=False):
             return [DmChannel(channel_id="D_DEDUP", last_activity_ts=now)]
 
     port = MockPort()
@@ -441,7 +441,7 @@ def test_ingest_dm_independent_of_watched_channels(tmp_path):
         def get_thread(self, channel_id, thread_id):
             return []
 
-        def list_dms(self):
+        def list_dms(self, include_dormant=False):
             return [DmChannel(channel_id="D_INDEP", last_activity_ts=now)]
 
     result = ingest_live(port=MockPort(), source="slack_mcp", home=home)
@@ -480,7 +480,7 @@ def test_ingest_dm_obs_id_cross_path_equivalence(tmp_path):
         def get_thread(self, channel_id, thread_id):
             return []
 
-        def list_dms(self):
+        def list_dms(self, include_dormant=False):
             return [DmChannel(channel_id="D_CROSS", last_activity_ts=now)]
 
     result = ingest_live(port=MockPort(), source="slack_mcp", home=home)

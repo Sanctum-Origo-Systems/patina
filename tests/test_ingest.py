@@ -6,7 +6,7 @@ import zipfile
 import pytest
 
 from patina.ingest import ingest_all, ingest_from_export, ingest_live
-from patina.models import ChatMessage
+from patina.models import ChatMessage, DmChannel
 
 
 @pytest.fixture
@@ -278,10 +278,10 @@ def test_ingest_live_owner_messages_searchable(tmp_path):
 
 
 class MockChatPortWithDiscovery:
-    """Chat port that returns configurable discovered channels."""
+    """Chat port that returns configurable DM channels for auto-watch discovery."""
 
-    def __init__(self, channels: list[tuple[str, str]] | None = None):
-        self._channels = channels or []
+    def __init__(self, dm_channels: list | None = None):
+        self._dm_channels = dm_channels or []
 
     @property
     def platform(self) -> str:
@@ -299,12 +299,12 @@ class MockChatPortWithDiscovery:
     def get_thread(self, channel_id, thread_id):
         return []
 
-    def list_participant_channels(self, owner_id: str) -> list[tuple[str, str]]:
-        return self._channels
+    def list_dms(self, include_dormant=False) -> list:
+        return self._dm_channels
 
 
 def _setup_owner(home):
-    """Write a minimal config so list_participant_channels is called."""
+    """Write a minimal config with owner user_ids."""
     import yaml
 
     home.mkdir(parents=True, exist_ok=True)
@@ -315,7 +315,7 @@ def _setup_owner(home):
 def test_zero_streak_increments_on_empty_discovery(tmp_path):
     home = tmp_path / "live_home"
     _setup_owner(home)
-    port = MockChatPortWithDiscovery(channels=[])
+    port = MockChatPortWithDiscovery(dm_channels=[])
 
     r1 = ingest_live(port=port, source="mock", home=home)
     assert r1["zero_streak"] == 1
@@ -332,12 +332,15 @@ def test_zero_streak_resets_on_nonempty_discovery(tmp_path):
     home = tmp_path / "live_home"
     _setup_owner(home)
 
-    empty_port = MockChatPortWithDiscovery(channels=[])
+    empty_port = MockChatPortWithDiscovery(dm_channels=[])
     ingest_live(port=empty_port, source="mock", home=home)
     ingest_live(port=empty_port, source="mock", home=home)
 
     port_with_channels = MockChatPortWithDiscovery(
-        channels=[("C100", "proj-alpha"), ("C101", "proj-beta")]
+        dm_channels=[
+            DmChannel(channel_id="C100", is_group=True),
+            DmChannel(channel_id="C101", is_group=True),
+        ]
     )
     result = ingest_live(port=port_with_channels, source="mock", home=home)
     assert result["zero_streak"] == 0
@@ -351,7 +354,7 @@ def test_zero_streak_persisted_in_store(tmp_path):
 
     from patina.store import connect, get_db_path, kv_get
 
-    empty_port = MockChatPortWithDiscovery(channels=[])
+    empty_port = MockChatPortWithDiscovery(dm_channels=[])
     ingest_live(port=empty_port, source="mock", home=home)
     ingest_live(port=empty_port, source="mock", home=home)
 
@@ -359,7 +362,9 @@ def test_zero_streak_persisted_in_store(tmp_path):
     assert kv_get(conn, "discovery_zero_streak") == "2"
     conn.close()
 
-    port_with_channels = MockChatPortWithDiscovery(channels=[("C200", "design-team")])
+    port_with_channels = MockChatPortWithDiscovery(
+        dm_channels=[DmChannel(channel_id="C200", is_group=True)]
+    )
     ingest_live(port=port_with_channels, source="mock", home=home)
 
     conn = connect(get_db_path(home))

@@ -219,35 +219,33 @@ def ingest_live(
             if hasattr(port, "list_sent_messages"):
                 messages.extend(port.list_sent_messages(since))
 
+            channels_seen = 0
+            newly_watched = 0
             if hasattr(port, "list_dms"):
-                dm_channels = port.list_dms()
+                dm_channels = port.list_dms(include_dormant=True)
+
+                group_dms = [dm for dm in dm_channels if dm.is_group]
+                channels_seen = len(group_dms)
+                for dm in group_dms:
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO watched_channels"
+                        " (channel_id, channel_name, reason, added_at)"
+                        " VALUES (?, ?, ?, ?)",
+                        (
+                            dm.channel_id,
+                            dm.channel_id,
+                            "auto-detected: user is participant",
+                            datetime.now(UTC).isoformat(),
+                        ),
+                    )
+                    newly_watched += cur.rowcount
+                conn.commit()
+
                 stale_cutoff = time.time() - (180 * 86400)
                 for dm in dm_channels:
                     if dm.last_activity_ts < stale_cutoff:
                         continue
                     messages.extend(port.list_channel_messages(dm.channel_id, since))
-
-            channels_seen = 0
-            newly_watched = 0
-            if hasattr(port, "list_participant_channels"):
-                owner_ids = get_owner_user_ids(home)
-                if owner_ids:
-                    discovered = port.list_participant_channels(owner_ids[0])
-                    channels_seen = len(discovered)
-                    for channel_id, channel_name in discovered:
-                        cur = conn.execute(
-                            "INSERT OR IGNORE INTO watched_channels"
-                            " (channel_id, channel_name, reason, added_at)"
-                            " VALUES (?, ?, ?, ?)",
-                            (
-                                channel_id,
-                                channel_name,
-                                "auto-detected: user is participant",
-                                datetime.now(UTC).isoformat(),
-                            ),
-                        )
-                        newly_watched += cur.rowcount
-                    conn.commit()
 
             streak = int(kv_get(conn, "discovery_zero_streak") or "0")
             if channels_seen > 0:

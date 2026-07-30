@@ -35,7 +35,7 @@ class MockPortWithListDms:
     def get_thread(self, channel_id: str, thread_id: str) -> list[ChatMessage]:
         return []
 
-    def list_dms(self) -> list[DmChannel]:
+    def list_dms(self, include_dormant=False) -> list[DmChannel]:
         self.list_dms_calls += 1
         return self._dm_channels
 
