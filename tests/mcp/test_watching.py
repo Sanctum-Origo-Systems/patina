@@ -11,7 +11,7 @@ from patina.mcp.tools_catch_up import (
     sender_unwatch,
     sender_watch,
 )
-from patina.models import ChatMessage
+from patina.models import ChatMessage, DmChannel
 from patina.store import connect, get_db_path, init_db
 
 
@@ -286,8 +286,10 @@ class TestAutoWatch:
             def get_thread(self, channel_id, thread_id):
                 return []
 
-            def list_participant_channels(self, owner_user_id):
-                return [("G_MPIM1", "group-dm-1")]
+            def list_dms(self, include_dormant=False):
+                return [
+                    DmChannel(channel_id="G_MPIM1", is_group=True, last_activity_ts=time.time())
+                ]
 
         return MockChatPort()
 
