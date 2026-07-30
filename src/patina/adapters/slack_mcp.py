@@ -150,34 +150,6 @@ class SlackMcpAdapter:
 
         return self._resolve_message_names(all_messages)
 
-    def list_participant_channels(self, owner_user_id: str) -> list[tuple[str, str]]:
-        channels = self.list_mpim_channels(owner_user_id)
-        return [(ch["id"], ch["name"]) for ch in channels]
-
-    def list_mpim_channels(self, owner_user_id: str) -> list[dict]:
-        try:
-            result = self._bridge.call_tool("conversations_list", {"types": "mpim"})
-        except Exception:
-            return []
-        try:
-            raw = parse_json_content(result)
-        except McpClientError:
-            return []
-        if not isinstance(raw, dict):
-            return []
-        channels = raw.get("channels")
-        if not isinstance(channels, list):
-            return []
-        # conversations_list with types=mpim already scopes to the authenticated
-        # user's conversations, so no per-channel membership filter is needed.
-        return [
-            {"id": ch.get("id", ""), "name": ch.get("name", "")}
-            for ch in channels
-            if isinstance(ch, dict)
-        ]
-
-    list_group_dms = list_mpim_channels
-
     def list_dms(self, include_dormant: bool = False) -> list[DmChannel]:
         try:
             result = self._bridge.call_tool("list_dms", {"includeDormant": include_dormant})
