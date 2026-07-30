@@ -758,112 +758,6 @@ class TestExtractDisplayName:
         assert _extract_display_name(raw) == "Anya Petrova"
 
 
-FIXTURES_MPIM_CHANNELS = json.dumps(
-    {
-        "channels": [
-            {
-                "id": "G00000MPIM1",
-                "name": "mpdm-alice--bob--owner",
-                "members": 3,
-            },
-            {
-                "id": "G00000MPIM2",
-                "name": "mpdm-carol--dave",
-                "members": 2,
-            },
-        ],
-    }
-)
-
-
-class TestListMpimChannels:
-    def test_returns_all_mpim_channels(self):
-        bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
-        adapter = SlackMcpAdapter(bridge)
-        result = adapter.list_mpim_channels("U00000OWNER")
-        assert len(result) == 2
-        assert result[0]["id"] == "G00000MPIM1"
-        assert result[0]["name"] == "mpdm-alice--bob--owner"
-        assert result[1]["id"] == "G00000MPIM2"
-        assert result[1]["name"] == "mpdm-carol--dave"
-
-    def test_calls_with_types_mpim(self):
-        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
-        adapter = SlackMcpAdapter(bridge)
-        adapter.list_mpim_channels("U00000OWNER")
-        call_args = bridge.call_tool.call_args
-        assert call_args[0][0] == "conversations_list"
-        assert call_args[0][1]["types"] == "mpim"
-
-    def test_empty_channels_list(self):
-        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
-        adapter = SlackMcpAdapter(bridge)
-        assert adapter.list_mpim_channels("U00000OWNER") == []
-
-    def test_missing_channels_key(self):
-        bridge = _make_bridge({"conversations_list": json.dumps({"ok": True})})
-        adapter = SlackMcpAdapter(bridge)
-        assert adapter.list_mpim_channels("U00000OWNER") == []
-
-    def test_returns_empty_on_bridge_exception(self):
-        bridge = MagicMock()
-        bridge.call_tool = MagicMock(side_effect=Exception("connection failed"))
-        adapter = SlackMcpAdapter(bridge)
-        assert adapter.list_mpim_channels("U00000OWNER") == []
-
-    def test_returns_empty_on_non_json_payload(self):
-        bridge = _make_bridge({"conversations_list": "not valid json {"})
-        adapter = SlackMcpAdapter(bridge)
-        assert adapter.list_mpim_channels("U00000OWNER") == []
-
-    def test_result_dicts_contain_id_and_name(self):
-        bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
-        adapter = SlackMcpAdapter(bridge)
-        result = adapter.list_mpim_channels("U00000OWNER")
-        assert len(result) == 2
-        for ch in result:
-            assert "id" in ch
-            assert "name" in ch
-
-    def test_integer_members_not_skipped(self):
-        fixture = json.dumps(
-            {
-                "channels": [
-                    {"id": "G00000MPIM3", "name": "mpdm-test", "members": 5},
-                ],
-            }
-        )
-        bridge = _make_bridge({"conversations_list": fixture})
-        adapter = SlackMcpAdapter(bridge)
-        result = adapter.list_mpim_channels("U00000OWNER")
-        assert len(result) == 1
-        assert result[0]["id"] == "G00000MPIM3"
-
-
-class TestListParticipantChannels:
-    def test_returns_tuples(self):
-        bridge = _make_bridge({"conversations_list": FIXTURES_MPIM_CHANNELS})
-        adapter = SlackMcpAdapter(bridge)
-        result = adapter.list_participant_channels("U00000OWNER")
-        assert result == [
-            ("G00000MPIM1", "mpdm-alice--bob--owner"),
-            ("G00000MPIM2", "mpdm-carol--dave"),
-        ]
-
-    def test_calls_conversations_list_with_types_mpim(self):
-        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
-        adapter = SlackMcpAdapter(bridge)
-        adapter.list_participant_channels("U00000OWNER")
-        call_args = bridge.call_tool.call_args
-        assert call_args[0][0] == "conversations_list"
-        assert call_args[0][1]["types"] == "mpim"
-
-    def test_empty_returns_empty_list(self):
-        bridge = _make_bridge({"conversations_list": json.dumps({"channels": []})})
-        adapter = SlackMcpAdapter(bridge)
-        assert adapter.list_participant_channels("U00000OWNER") == []
-
-
 FIXTURES_DMS = json.dumps(
     [
         {
@@ -992,6 +886,67 @@ class TestListDms:
         result = adapter.list_dms()
         assert result[0].channel_id == "D00000DM012"
         assert result[0].last_activity_ts == 1781900000.0
+
+    def test_filter_group_dms_via_is_group(self):
+        bridge = _make_bridge({"list_dms": FIXTURES_DMS})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        group_dms = [ch for ch in result if ch.is_group]
+        one_on_one = [ch for ch in result if not ch.is_group]
+        assert len(group_dms) == 1
+        assert group_dms[0].channel_id == "G00000GRP01"
+        assert len(one_on_one) == 1
+        assert one_on_one[0].channel_id == "D00000DM001"
+
+    def test_is_group_defaults_to_false(self):
+        fixture = json.dumps(
+            [
+                {
+                    "channelId": "D00000DM020",
+                    "lastActivity": "2026-06-19T10:00:00.000Z",
+                },
+            ]
+        )
+        bridge = _make_bridge({"list_dms": fixture})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        assert len(result) == 1
+        assert result[0].is_group is False
+
+    def test_all_group_dms_filtered(self):
+        fixture = json.dumps(
+            [
+                {
+                    "channelId": "G00000GRP10",
+                    "isGroup": True,
+                    "lastActivity": "2026-06-19T10:00:00.000Z",
+                },
+                {
+                    "channelId": "G00000GRP11",
+                    "isGroup": True,
+                    "lastActivity": "2026-06-18T10:00:00.000Z",
+                },
+                {
+                    "channelId": "D00000DM030",
+                    "isGroup": False,
+                    "lastActivity": "2026-06-17T10:00:00.000Z",
+                },
+            ]
+        )
+        bridge = _make_bridge({"list_dms": fixture})
+        adapter = SlackMcpAdapter(bridge)
+        result = adapter.list_dms()
+        group_dms = [ch for ch in result if ch.is_group]
+        one_on_one = [ch for ch in result if not ch.is_group]
+        assert len(group_dms) == 2
+        assert len(one_on_one) == 1
+
+    def test_no_deprecated_methods_on_adapter(self):
+        bridge = _make_bridge()
+        adapter = SlackMcpAdapter(bridge)
+        assert not hasattr(adapter, "list_mpim_channels")
+        assert not hasattr(adapter, "list_participant_channels")
+        assert not hasattr(adapter, "list_group_dms")
 
 
 class TestParseActivityTs:
