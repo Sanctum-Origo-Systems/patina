@@ -1,45 +1,105 @@
-- #185: feat: daily changelog + version bump via PR, auto-tag on merge ($0.0) [2026-07-13]
-- #183: feat: feat: configurable lookback window for ingest backfill (#175) ($0.71) [2026-07-13]
-- #182: feat: Add integration tests for DM backfill path (6 acceptance cri (#179) ($1.27) [2026-07-13]
-- #181: feat: Add `list_dms()` method and `DmChannel` model to `slack_mcp. (#176) ($0.49) [2026-07-13]
-- #180: feat: Add DM backfill loop with 180-day stale cutoff to ingest_liv (#178) ($1.09) [2026-07-13]
-- #173: refactor: remove in-tree autoloop, use standalone package ($0.0) [2026-07-13]
-- #171: feat: Add unit tests for auto-watch behavior (#162) ($0.93) [2026-07-13]
-- #170: feat: Wire auto-watch into ingest pipeline with dedup guard (#161) ($1.19) [2026-07-13]
-- #169: feat: Add mpim channel discovery helper to slack_mcp.py (#160) ($0.47) [2026-07-13]
-- #168: fix: auto_close_parent.py ModuleNotFoundError in CI ($0.0) [2026-07-13]
-- #166: fix: fix: strip CAUTION email banner from ingested external email (#154) ($0.5) [2026-07-13]
-- #165: fix: fix: journal_search returns truncated snippets instead of fu (#156) ($0.28) [2026-07-13]
-- #164: fix: fix: resolve W-prefix Slack user IDs to display names (#158) ($1.44) [2026-07-13]
-- #163: fix: fix: store_search fails on queries containing colons (#157) ($0.67) [2026-07-13]
-- #155: fix: prevent changelog workflow from recording its own PRs ($0.0) [2026-07-13]
-- #151: feat: add protected_paths guard to prevent builder self-modification ($0.0) [2026-07-13]
-- #150: fix: align verify_cmd naming in triage_issues and autoloop.toml ($0.0) [2026-07-13]
-- #149: feat: add autoloop/init.py to scaffold autoloop onto new repos ($0.0) [2026-07-13]
-- #148: feat: add autoloop/init.py to scaffold autoloop onto new repos ($0.0) [2026-07-13]
-- #147: docs: add required label setup instructions to autoloop.toml ($0.0) [2026-07-13]
-- #146: Removed ai-dlc ($0.0) [2026-07-13]
-- #145: refactor: rename ai-dlc to autoloop across config, docs, and CI ($0.0) [2026-07-13]
-- #144: feat: feat: add --version flag to autoloop scripts (#143) ($1.42) [2026-07-13]
-- #141: feat: Add close_completed_parents() to auto-close finished parent  (#138) ($1.39) [2026-07-13]
-- #140: feat: feat: add --assignee to changelog PR creation in update_chan (#139) ($0.54) [2026-07-13]
-- #137: feat: Copy and generalize implement_issue and claude_runner into a (#122) ($6.63) [2026-07-13]
-- #136: feat: feat: create autoloop/triage_issues.py with config-driven pa (#123) ($3.41) [2026-07-13]
-- #135: feat: feat: add autoloop/create_issue.py with config-driven repo a (#124) ($1.45) [2026-07-13]
-- #134: feat: Add tests/autoloop/ test suite mirroring tests/ai_dlc/ (#126) ($1.69) [2026-07-13]
-- #133: feat: Define cfg shape and parameterize path-only functions in ai- (#129) ($1.13) [2026-07-13]
-- #132: feat: Create autoloop/auto_close_parent.py with cfg.repo parameter (#127) ($0.91) [2026-07-13]
-- #131: feat: feat: add AutoLoopConfig dataclass and autoloop.toml config  (#121) ($1.01) [2026-07-13]
-- #111: feat: changelog script creates PR instead of pushing directly to main ($0.0) [2026-07-13]
-- #110: feat: add cron-based changelog update script ($0.0) [2026-07-13]
-- #109: feat: feat: parse Metric Target comments from issues and strip the (#82) ($0.92) [2026-07-13]
-- #108: feat: feat: add post-merge hook script that runs run.py then compa (#81) ($2.36) [2026-07-13]
-- #106: feat: feat: implement compare.py delta reporter with non-zero exit (#80) ($0.69) [2026-07-13]
-- #105: feat: feat: add file-issue skill to capture conversation context i (#74) ($4.35) [2026-07-13]
-- #104: feat: Add session start directives to agent operational instructio (#77) ($0.47) [2026-07-13]
-- #103: feat: Auto-bump pyproject.toml version on PR merge by commit prefi (#78) ($0.82) [2026-07-13]
-- #102: feat: Wire main() to merge all three collectors into EvalSnapshot  (#89) ($1.88) [2026-07-13]
-- #101: feat: Implement collect_merge_rate() and collect_time_to_implement (#86) ($1.11) [2026-07-13]
-- #192: feat: docs: add anonymization rule to CLAUDE.md conventions (#190) ($0.5) [2026-07-14]
-- #191: feat: fix: migrate existing observations to restore datamarked whi (#188) ($0.78) [2026-07-14]
-- #189: feat: fix: restore datamarked whitespace (\uE000) to spaces in Sla (#187) ($0.32) [2026-07-14]
+## v0.9.0 (2026-07-14)
+- #192: Feat: docs: add anonymization rule to CLAUDE.md conventions ($0.50)
+- #191: Feat: fix: migrate existing observations to restore datamarked whi ($0.78)
+- #189: Feat: fix: restore datamarked whitespace () to spaces in Sla ($0.32)
+Total: 3 PRs, $1.60
+
+## v0.8.0 (2026-07-13)
+- #185: Feat: daily changelog + version bump via PR, auto-tag on merge ($0.00)
+- #183: Feat: configurable lookback window for ingest backfill ($0.71)
+- #182: Feat: Add integration tests for DM backfill path (6 acceptance cri ($1.27)
+- #181: Feat: Add `list_dms()` method and `DmChannel` model to `slack_mcp. ($0.49)
+- #180: Feat: Add DM backfill loop with 180-day stale cutoff to ingest_liv ($1.09)
+- #173: Refactor: remove in-tree autoloop, use standalone package ($0.00)
+- #171: Feat: Add unit tests for auto-watch behavior ($0.93)
+- #170: Feat: Wire auto-watch into ingest pipeline with dedup guard ($1.19)
+- #169: Feat: Add mpim channel discovery helper to slack_mcp.py ($0.47)
+- #168: Fix: auto_close_parent.py ModuleNotFoundError in CI ($0.00)
+- #167: Chore: update cognitive changelog (2026-07-11) ($0.00)
+- #166: Fix: strip CAUTION email banner from ingested external email ($0.50)
+- #165: Fix: journal_search returns truncated snippets instead of fu ($0.28)
+- #164: Fix: resolve W-prefix Slack user IDs to display names ($1.44)
+- #163: Fix: store_search fails on queries containing colons ($0.67)
+- #155: Fix: prevent changelog workflow from recording its own PRs ($0.00)
+- #152: Chore: update cognitive changelog (2026-07-09) ($0.00)
+- #151: Feat: add protected_paths guard to prevent builder self-modification ($0.00)
+- #150: Fix: align verify_cmd naming in triage_issues and autoloop.toml ($0.00)
+- #149: Feat: add autoloop/init.py to scaffold autoloop onto new repos ($0.00)
+- #148: Feat: add autoloop/init.py to scaffold autoloop onto new repos ($0.00)
+- #147: Docs: add required label setup instructions to autoloop.toml ($0.00)
+- #146: Removed ai-dlc ($0.00)
+- #145: Refactor: rename ai-dlc to autoloop across config, docs, and CI ($0.00)
+- #144: Feat: add --version flag to autoloop scripts ($1.42)
+- #141: Feat: Add close_completed_parents() to auto-close finished parent ($1.39)
+- #140: Feat: add --assignee to changelog PR creation in update_chan ($0.54)
+- #137: Feat: Copy and generalize implement_issue and claude_runner into a ($6.63)
+- #136: Feat: create autoloop/triage_issues.py with config-driven pa ($3.41)
+- #135: Feat: add autoloop/create_issue.py with config-driven repo a ($1.45)
+- #134: Feat: Add tests/autoloop/ test suite mirroring tests/ai_dlc/ ($1.69)
+- #133: Feat: Define cfg shape and parameterize path-only functions in ai- ($1.13)
+- #132: Feat: Create autoloop/auto_close_parent.py with cfg.repo parameter ($0.91)
+- #131: Feat: add AutoLoopConfig dataclass and autoloop.toml config ($1.01)
+- #114: Chore: update cognitive changelog (2026-07-08) ($0.00)
+Total: 35 PRs, $28.62
+
+## v0.7.0 (2026-07-07)
+- #113: Chore: bump version to 0.7.0 ($0.00)
+- #112: Chore: update cognitive changelog (2026-07-07) ($0.00)
+- #111: Feat: changelog script creates PR instead of pushing directly to main ($0.00)
+- #110: Feat: add cron-based changelog update script ($0.00)
+- #109: Feat: parse Metric Target comments from issues and strip the ($0.92)
+- #108: Feat: add post-merge hook script that runs run.py then compa ($2.36)
+- #107: Chore: gitignore run_history.jsonl ($0.00)
+- #106: Feat: implement compare.py delta reporter with non-zero exit ($0.69)
+- #105: Feat: add file-issue skill to capture conversation context i ($4.35)
+- #104: Feat: Add session start directives to agent operational instructio ($0.47)
+- #103: Feat: Auto-bump pyproject.toml version on PR merge by commit prefi ($0.82)
+- #102: Feat: Wire main() to merge all three collectors into EvalSnapshot ($1.88)
+- #101: Feat: Implement collect_merge_rate() and collect_time_to_implement ($1.11)
+- #100: Feat: Add post-merge step to ai-dlc-cleanup.yml that invokes updat ($1.22)
+- #99: Feat: Implement collect_tool_reliability() in eval/cognitive/run.p ($0.93)
+- #98: Feat: auto-unblock issues when dependencies are resolved ($2.61)
+- #97: Feat: filter unmet dependencies in select_top_issue() ($1.85)
+- #96: Feat: ensure clean main branch state before each issue in ba ($1.84)
+- #92: Feat: Define EvalSnapshot Pydantic schema in eval/cognitive/__init ($1.11)
+- #91: Feat: Create eval/cognitive/update_changelog.py with append and tr ($0.72)
+- #90: Fix: infinite loop on blocked issue ($0.00)
+- #73: Feat: add --version flag to ai-dlc scripts ($0.98)
+- #72: Chore: bump version to 0.6.0 ($0.00)
+Total: 23 PRs, $23.86
+
+## v0.6.0 (2026-07-05)
+- #70: Feat: test: VPS builder smoke test ($0.96)
+- #68: Set default builder model to claude opus 4.6 1M context window ($0.00)
+- #67: Feat: add semantic review step to AI-DLC pipeline ($2.26)
+- #66: Feat: include project tree and CLAUDE.md in triage prompt ($0.82)
+- #65: Feat: auto-fix rejected issues in triage bot ($1.63)
+- #64: Feat: auto-assign PRs and post bot comment on issue claim ($0.99)
+- #63: Feat: Add journal memory directives to SOUL.md init template ($0.34)
+- #62: Feat: add journal directives to _OPERATIONAL_INSTRUCTIONS ($0.38)
+- #61: Feat: prioritize standalone issues over lower-priority sub-i ($0.40)
+- #60: Feat: Wire auto-close step into ai-dlc-cleanup.yml on pull_request ($0.65)
+- #59: Feat: Implement auto-close helpers: parse parent reference from su ($0.88)
+- #58: Feat: test: cover all design-gate acceptance criteria scenarios ($0.78)
+- #54: Feat: add design gate logic to implement_issue.py (flag, lab ($1.62)
+- #51: Feat: add design_issue() function to AI-DLC with subprocess ($0.85)
+- #48: Enhanced ai-dlc-cleanup logic ($0.00)
+- #47: Feat: Generate LLM-enriched fields for sub-issues on decomposition ($1.83)
+- #42: Feat: group sub-issues by parent in get_top_ready_issue() ($0.75)
+- #39: Feat: auto-create sub-issues on needs-decomposition verdict ($0.94)
+- #38: Feat: replace flat-rate cost estimates with real token usage ($0.00)
+- #37: Feat: add --issue flag to implement_issue.py for targeted is ($0.00)
+- #35: Feat: Remove in-review label from issues when their PR is merged ($0.00)
+- #27: Merged enhancement spec to ai-dlc-v2 spec doc ($0.00)
+- #26: Feat: Feed Errors Back on Retry ($0.00)
+- #25: Add core specs to repo ($0.00)
+- #24: Feat: Make AI-DLC model and timeout configurable via env vars ($0.00)
+Total: 25 PRs, $16.08
+
+## v0.5.0 (2026-07-01)
+- #23: Feat: Add --max-issues flag to implement_issue.py for batch proces ($0.00)
+- #22: Feat: Pull latest main before creating feature branch ($0.00)
+- #21: Added PR token usage cost ($0.00)
+- #20: Feat: Track timing, Claude call count, and cost estimate per AI-DL ($0.00)
+- #19: Refactored AI-DLC scripts ($0.00)
+Total: 5 PRs, $0.00
