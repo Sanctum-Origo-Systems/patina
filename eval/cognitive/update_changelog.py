@@ -18,20 +18,107 @@ REPO_DIR = CHANGELOG_DIR.parent.parent
 MINOR_PREFIXES = ("feat:",)
 PATCH_PREFIXES = ("fix:", "refactor:", "test:", "docs:")
 
+_COMMIT_PREFIXES = ("fix", "feat", "refactor", "test", "docs", "chore")
+
+
+def clean_title(title: str) -> str:
+    """Strip duplicate conventional-commit prefixes and trailing (#NNN) refs."""
+    title = title.strip()
+    title = re.sub(r"\s*\(#\d+\)\s*$", "", title)
+    for p in _COMMIT_PREFIXES:
+        dup = re.compile(rf"^{p}:\s*{p}:\s*", re.IGNORECASE)
+        if dup.match(title):
+            return dup.sub(f"{p.capitalize()}: ", title).strip()
+    for p in _COMMIT_PREFIXES:
+        single = re.compile(rf"^{p}:", re.IGNORECASE)
+        if single.match(title):
+            return (p.capitalize() + title[len(p) :]).strip()
+    return title.strip()
+
+
+def current_version(pyproject_path: Path | None = None) -> str:
+    path = pyproject_path or PYPROJECT_PATH
+    text = path.read_text()
+    match = re.search(r'^version\s*=\s*"(\d+\.\d+\.\d+)"', text, re.MULTILINE)
+    return match.group(1) if match else "0.0.0"
+
 
 def append_entry(
     number: int,
     title: str,
     cost: float,
     *,
+    version: str,
     changelog_path: Path | None = None,
     today: date | None = None,
 ) -> None:
     path = changelog_path or CHANGELOG_PATH
     stamp = (today or date.today()).isoformat()
-    line = f"- #{number}: {title} (${cost}) [{stamp}]\n"
-    with open(path, "a") as f:
-        f.write(line)
+    cleaned = clean_title(title)
+    entry = f"- #{number}: {cleaned} (${cost:.2f})"
+    header_line = f"## v{version} ({stamp})"
+
+    if not path.exists() or not path.read_text().strip():
+        path.write_text(f"{header_line}\n{entry}\nTotal: 1 PRs, ${cost:.2f}\n")
+        return
+
+    text = path.read_text()
+    lines = text.splitlines(keepends=True)
+
+    version_prefix = f"## v{version} "
+    header_idx = None
+    for i, line in enumerate(lines):
+        if line.startswith(version_prefix):
+            header_idx = i
+            break
+
+    if header_idx is not None:
+        total_idx = None
+        for i in range(header_idx + 1, len(lines)):
+            if lines[i].startswith("Total:"):
+                total_idx = i
+                break
+            if lines[i].startswith("## "):
+                break
+
+        if total_idx is not None:
+            total_match = re.match(r"Total: (\d+) PRs?, \$(\d+\.?\d*)", lines[total_idx])
+            if total_match:
+                n = int(total_match.group(1)) + 1
+                total_cost = float(total_match.group(2)) + cost
+                lines.insert(total_idx, entry + "\n")
+                lines[total_idx + 1] = f"Total: {n} PRs, ${total_cost:.2f}\n"
+        else:
+            lines.insert(header_idx + 1, entry + "\n")
+            lines.insert(header_idx + 2, f"Total: 1 PRs, ${cost:.2f}\n")
+    else:
+        block = f"{header_line}\n{entry}\nTotal: 1 PRs, ${cost:.2f}\n\n"
+        path.write_text(block + text)
+        return
+
+    path.write_text("".join(lines))
+
+
+def _parse_version_blocks(text: str) -> list[tuple[date | None, str]]:
+    """Parse changelog into (header_date, block_text) tuples."""
+    blocks: list[tuple[date | None, str]] = []
+    current_date: date | None = None
+    current_lines: list[str] = []
+
+    for line in text.splitlines(keepends=True):
+        if line.startswith("## "):
+            if current_lines:
+                blocks.append((current_date, "".join(current_lines)))
+            current_lines = [line]
+            m = re.search(r"\((\d{4}-\d{2}-\d{2})\)", line)
+            current_date = date.fromisoformat(m.group(1)) if m else None
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        blocks.append((current_date, "".join(current_lines)))
+
+    return blocks
 
 
 def trim_changelog(
@@ -50,18 +137,18 @@ def trim_changelog(
         return
 
     text = cl.read_text()
-    if not text:
+    if not text.strip():
         return
 
+    blocks = _parse_version_blocks(text)
     keep: list[str] = []
     archive: list[str] = []
 
-    for line in text.splitlines(keepends=True):
-        entry_date = _parse_date(line)
-        if entry_date is not None and entry_date < cutoff:
-            archive.append(line)
+    for block_date, block_text in blocks:
+        if block_date is not None and block_date < cutoff:
+            archive.append(block_text)
         else:
-            keep.append(line)
+            keep.append(block_text)
 
     if not archive:
         return
@@ -70,17 +157,6 @@ def trim_changelog(
         f.writelines(archive)
 
     cl.write_text("".join(keep))
-
-
-def _parse_date(line: str) -> date | None:
-    start = line.rfind("[")
-    end = line.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    try:
-        return date.fromisoformat(line[start + 1 : end])
-    except ValueError:
-        return None
 
 
 def bump_type_from_title(title: str) -> str | None:
@@ -215,13 +291,6 @@ def daily(repo: str, since_days: int = 1) -> None:
         print("All merged PRs already in changelog.")
         return
 
-    for pr in new_prs:
-        cost = extract_cost(pr.get("body", ""))
-        append_entry(pr["number"], pr["title"], cost)
-        print(f"  Added #{pr['number']}: {pr['title']}")
-
-    trim_changelog()
-
     titles = [pr["title"] for pr in new_prs]
     kind = highest_bump_type(titles)
     new_version = None
@@ -229,6 +298,15 @@ def daily(repo: str, since_days: int = 1) -> None:
         new_version = bump_version(kind)
         if new_version:
             print(f"  Bumped version to {new_version}")
+
+    version = new_version or current_version()
+
+    for pr in new_prs:
+        cost = extract_cost(pr.get("body", ""))
+        append_entry(pr["number"], pr["title"], cost, version=version)
+        print(f"  Added #{pr['number']}: {pr['title']}")
+
+    trim_changelog()
 
     stamp = date.today().isoformat()
     branch = f"chore/changelog-{stamp}"
@@ -281,6 +359,7 @@ def main(argv: list[str] | None = None) -> None:
     single.add_argument("--number", type=int, required=True)
     single.add_argument("--title", required=True)
     single.add_argument("--cost", type=float, required=True)
+    single.add_argument("--version", help="Version to group under (default: current)")
 
     batch = sub.add_parser("daily", help="Batch update from merged PRs and create PR")
     batch.add_argument("--repo", required=True, help="GitHub owner/repo")
@@ -289,7 +368,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.command == "single":
-        append_entry(number=args.number, title=args.title, cost=args.cost)
+        version = args.version or current_version()
+        append_entry(number=args.number, title=args.title, cost=args.cost, version=version)
         trim_changelog()
         kind = bump_type_from_title(args.title)
         if kind:
