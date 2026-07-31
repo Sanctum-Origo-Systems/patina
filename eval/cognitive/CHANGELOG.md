@@ -113,3 +113,5 @@
 - #212: fix: fix: list_dms timestamp field name mismatch — all DMs treate (#209) ($0.7) [2026-07-30]
 - #211: feat: Add discovery_zero_streak persistence and counter logic in i (#203) ($0.8) [2026-07-30]
 - #210: feat: fix: recent_messages queries observations by channel_id inst (#205) ($0.82) [2026-07-30]
+- #225: feat: Consolidate ingest.py to single list_dms call for DM fetchin (#220) ($2.16) [2026-07-31]
+- #221: feat: Remove conversations_list adapter methods and update adapter (#219) ($0.9) [2026-07-31]
