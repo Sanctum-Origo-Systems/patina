@@ -107,6 +107,26 @@ class TestStoreSearch:
         result = store_search("Atlas staging")
         assert "staging" in result
 
+    def test_non_adjacent_keywords(self, db_conn, db_path, tmp_path):
+        """Multi-word query finds docs where terms appear non-adjacently."""
+        init_db(db_path)
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        obs = Observation(
+            id="o_nonadj",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=time.time(),
+            sender_entity_id="e1",
+            text="Things stalled on the security side",
+            metadata={"channel_name": "general"},
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+        result = store_search("stalled security")
+        assert "stalled" in result
+        assert "security" in result
+
     def test_missing_sender_shows_unknown(self, db_conn, db_path, tmp_path):
         init_db(db_path)
         obs = Observation(
@@ -259,10 +279,19 @@ class TestSanitizeFtsQuery:
         assert _sanitize_fts_query("re:Invent") == '"re:Invent"'
 
     def test_escapes_embedded_quotes(self):
-        assert _sanitize_fts_query('say "hi"') == '"say ""hi"""'
+        assert _sanitize_fts_query('say "hi"') == '"say" """hi"""'
 
     def test_empty_string(self):
         assert _sanitize_fts_query("") == '""'
+
+    def test_multi_word_produces_per_term_quoting(self):
+        assert _sanitize_fts_query("stalled security") == '"stalled" "security"'
+
+    def test_multi_word_with_colon(self):
+        assert _sanitize_fts_query("re:Invent talk") == '"re:Invent" "talk"'
+
+    def test_fts_operators_quoted_per_term(self):
+        assert _sanitize_fts_query("cats AND dogs") == '"cats" "AND" "dogs"'
 
 
 class TestStoreSearchSpecialChars:

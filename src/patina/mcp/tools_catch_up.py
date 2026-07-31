@@ -128,8 +128,12 @@ def done(item_id: str) -> str:
 
 
 def _sanitize_fts_query(query: str) -> str:
-    """Wrap query in double quotes to disable FTS5 special syntax."""
-    return '"' + query.replace('"', '""') + '"'
+    """Quote each term to escape FTS5 special syntax while allowing non-adjacent matching."""
+    terms = query.split()
+    if not terms:
+        return '""'
+    safe_terms = ['"' + t.replace('"', '""') + '"' for t in terms]
+    return " ".join(safe_terms)
 
 
 def store_search(query: str, limit: int = 20) -> str:
