@@ -167,6 +167,10 @@ uv run pytest eval/deterministic/
 uv run ruff check && uv run ruff format
 ```
 
+## Related
+
+- [autoloop](https://github.com/Sanctum-Origo-Systems/autoloop) — the autonomous builder pipeline that implements issues filed by the observer
+
 ## License
 
 Apache 2.0
