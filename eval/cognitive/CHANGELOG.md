@@ -1,3 +1,9 @@
+## v0.12.0 (2026-08-01)
+- #231: Feat: fix: store_search uses phrase matching for multi-word querie ($0.56)
+- #228: Feat: docs: add autoloop reference to README ($0.40)
+- #227: Feat: refactor: clean PR titles, add version-grouped format, and u ($4.64)
+Total: 3 PRs, $5.60
+
 ## v0.11.0 (2026-07-31)
 - #225: Feat: Consolidate ingest.py to single list_dms call for DM fetching ($2.16)
 - #221: Feat: Remove conversations_list adapter methods and update adapter ($0.90)
