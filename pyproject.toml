@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "patina"
-version = "0.12.0"
+version = "0.13.0"
 description = "A cognitive app that compounds — learns you, mirrors your judgment, and improves with every interaction."
 readme = "README.md"
 license = "Apache-2.0"

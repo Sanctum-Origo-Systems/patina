@@ -1,3 +1,7 @@
+## v0.13.0 (2026-08-04)
+- #234: Feat: fix: remove autoloop from Python dependencies — it's a CLI t ($0.61)
+Total: 1 PRs, $0.61
+
 ## v0.12.0 (2026-08-01)
 - #231: Feat: fix: store_search uses phrase matching for multi-word querie ($0.56)
 - #228: Feat: docs: add autoloop reference to README ($0.40)
