@@ -1,3 +1,7 @@
+## v0.14.0 (2026-08-05)
+- #237: Feat: docs: reframe README from assistant to cognitive framework + ($0.48)
+Total: 1 PRs, $0.48
+
 ## v0.13.0 (2026-08-04)
 - #234: Feat: fix: remove autoloop from Python dependencies — it's a CLI t ($0.61)
 Total: 1 PRs, $0.61
