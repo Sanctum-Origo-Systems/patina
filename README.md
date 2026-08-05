@@ -1,12 +1,8 @@
 # Patina
 
-> An AI that learns you — the longer you use it, the less you need to tell it.
+> A cognitive framework that builds beliefs about a subject, tracks confidence over time, detects contradictions, and acts on what it notices — with governed autonomy and human gates.
 
-Your cognitive ceiling isn't set by your intelligence. It's set by your cognitive load. Patina is a persistent extension of your cognition: it holds your context, tracks your beliefs about your world, mirrors your judgment, and improves with every interaction.
-
-- **Day 1:** Export your Slack. In 5 minutes, see everything you've missed, forgotten, or let slip.
-- **Day 30:** It knows your priorities, drafts in your voice, and dismisses noise automatically.
-- **Day 90:** It predicts what you'd do, catches contradictions across conversations, and operates silently.
+Patina is an architecture for building systems that form, hold, decay, and act on beliefs about a subject. It maintains an epistemically honest model with quantified confidence, temporal decay, contradiction detection, and graduated autonomy earned through accuracy. The framework is subject-agnostic: demonstrated at personal scale (one person's Slack history), designed for team and organizational scale.
 
 ![Patina Demo](patina-demo.gif)
 
@@ -94,18 +90,25 @@ patina gateway
 
 The system is fully functional at Tier 1 alone (zero LLM calls). Each tier adds capability but never load-bears. Local-first: all data stays in `~/.patina/store.db`.
 
+### The Observer-Builder Loop
+
+The core operational pattern is a two-agent loop with human gates at both ends: the **observer** watches the belief graph, notices drift, staleness, or contradictions, and drafts an issue. A human approves (or edits) the issue. The **builder** picks up the approved issue, ships the fix, and opens a PR. A human reviews and merges. Both agents act; neither ships without a gate.
+
+The observer maintains two belief graphs: beliefs about the world it watches, and beliefs about its own operational reliability — enabling self-correction over time.
+
 ## What Makes This Different
 
-1. **Persistent belief model with decay** — not a message archive, a living world model
-2. **Judgment learned from your decisions** — not universal rules, YOUR priorities
+1. **Cognitive framework, not an assistant** — an architecture for systems that form, hold, and act on beliefs
+2. **Persistent belief model with decay** — not a message archive, a living world model
 3. **Graduated autonomy earned by accuracy** — not configured, proven
-4. **Local-first, model-agnostic** — runs offline, no vendor lock-in
-5. **Deterministic core** — the intelligence is math and graphs, not LLM calls
-6. **Day-one value from export** — no warm-up period
+4. **Cognitive layer, not standalone agent** — plugs into any MCP host, provides memory and judgment
+5. **Local-first, model-agnostic** — runs offline, no vendor lock-in
+6. **Deterministic core** — the intelligence is math and graphs, not LLM calls
+7. **Day-one value from export** — no warm-up period
 
-## MCP Server
+## MCP Server — Cognitive Layer, Not Standalone Agent
 
-Patina runs as an MCP server for conversational use from Claude Code, Cline, or any MCP host. 25 tools including `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
+Patina is not a standalone agent competing with autonomous agent projects. It is a cognitive layer — 31 MCP tools — that plugs into any host agent (Claude Code, Kiro, Cursor, or any MCP host). The host agent provides the interface; Patina provides the memory, epistemics, and judgment. Tools include `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
 
 ```json
 {
@@ -166,6 +169,11 @@ uv run pytest eval/deterministic/
 # Lint
 uv run ruff check && uv run ruff format
 ```
+
+## Read More
+
+- [The $110/month self-improving pipeline](https://andywidjaja.com/blog/110-pipeline) — how the builder works
+- [The observer files the bug. The builder ships the fix.](https://andywidjaja.com/blog/observer-builder) — how the observer and builder work together
 
 ## Related
 
