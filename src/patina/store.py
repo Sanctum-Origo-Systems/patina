@@ -202,6 +202,19 @@ CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
         VALUES ('delete', old.rowid, old.text);
     INSERT INTO observations_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
+
+CREATE TRIGGER IF NOT EXISTS journal_ai AFTER INSERT ON journal BEGIN
+    INSERT INTO journal_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS journal_ad AFTER DELETE ON journal BEGIN
+    INSERT INTO journal_fts(journal_fts, rowid, body)
+        VALUES ('delete', old.rowid, old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS journal_au AFTER UPDATE ON journal BEGIN
+    INSERT INTO journal_fts(journal_fts, rowid, body)
+        VALUES ('delete', old.rowid, old.body);
+    INSERT INTO journal_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
 """
 
 _INDEXES = """

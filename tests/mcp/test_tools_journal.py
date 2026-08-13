@@ -29,21 +29,21 @@ def test_journal_search_returns_full_content(db_path):
 
 
 def test_journal_search_respects_snippet_chars(db_path):
-    long_body = "A" * 3000
+    long_body = "widget " * 500
     journal_write("2026-07-02", long_body)
 
-    result = journal_search("A", snippet_chars=500)
+    result = journal_search("widget", snippet_chars=500)
     entry_text = result.split("] ", 1)[1]
     assert len(entry_text) == 501  # 500 chars + ellipsis character
     assert entry_text.endswith("…")
-    assert entry_text[:500] == "A" * 500
+    assert entry_text[:500] == long_body[:500]
 
 
 def test_journal_search_snippet_chars_zero_returns_unlimited(db_path):
-    long_body = "B" * 5000
+    long_body = "gadget " * 750
     journal_write("2026-07-03", long_body)
 
-    result = journal_search("B", snippet_chars=0)
+    result = journal_search("gadget", snippet_chars=0)
     assert long_body in result
 
 
@@ -57,10 +57,10 @@ def test_journal_search_no_truncation_when_under_limit(db_path):
 
 
 def test_journal_search_default_snippet_chars_is_2000(db_path):
-    body = "X" * 2500
+    body = "sprocket " * 300
     journal_write("2026-07-05", body)
 
-    result = journal_search("X")
+    result = journal_search("sprocket")
     entry_text = result.split("] ", 1)[1]
     assert len(entry_text) == 2001  # 2000 chars + ellipsis
     assert entry_text.endswith("…")
@@ -75,3 +75,24 @@ def test_journal_search_limit_controls_result_count(db_path):
 
     result_all = journal_search("widgets", limit=10)
     assert result_all.count("- [") == 5
+
+
+def test_journal_search_multi_word_non_adjacent(db_path):
+    journal_write(
+        "2026-07-10",
+        "Discussed the alpha project timeline and reviewed beta docs before gamma release",
+    )
+
+    result = journal_search("alpha beta gamma")
+    assert "alpha" in result
+    assert "2026-07-10" in result
+
+    result2 = journal_search("alpha gamma")
+    assert "2026-07-10" in result2
+
+
+def test_journal_search_colon_does_not_crash(db_path):
+    journal_write("2026-07-11", "Follow-up on re:Invent planning session")
+
+    result = journal_search("re:Invent")
+    assert "re:Invent" in result
