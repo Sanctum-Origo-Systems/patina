@@ -1,3 +1,5 @@
+import uuid
+
 from patina.store import connect, run_pending_migrations
 
 DM = ""
@@ -129,6 +131,65 @@ def test_migration_flag_recorded(db_path):
 
     row = conn.execute(
         "SELECT name, applied_at FROM migrations WHERE name = 'fix_datamark_whitespace_v1'"
+    ).fetchone()
+    assert row is not None
+    assert row["applied_at"] is not None
+    conn.close()
+
+
+def test_rebuild_journal_fts_indexes_preexisting_entries(db_path):
+    conn = connect(db_path)
+    entry_id = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO journal (id, date, body, created_at) VALUES (?, ?, ?, datetime('now'))",
+        (entry_id, "2026-05-01", "Reviewed the zephyr proposal and delta roadmap"),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM journal_fts")
+    conn.commit()
+
+    results = conn.execute("SELECT * FROM journal_fts WHERE journal_fts MATCH 'zephyr'").fetchall()
+    assert len(results) == 0
+
+    run_pending_migrations(conn)
+
+    results = conn.execute("SELECT * FROM journal_fts WHERE journal_fts MATCH 'zephyr'").fetchall()
+    assert len(results) == 1
+
+    results = conn.execute(
+        "SELECT * FROM journal_fts WHERE journal_fts MATCH 'zephyr delta'"
+    ).fetchall()
+    assert len(results) == 1
+    conn.close()
+
+
+def test_rebuild_journal_fts_is_idempotent(db_path):
+    conn = connect(db_path)
+    entry_id = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO journal (id, date, body, created_at) VALUES (?, ?, ?, datetime('now'))",
+        (entry_id, "2026-06-01", "Notes about the vortex integration"),
+    )
+    conn.commit()
+
+    conn.execute("DELETE FROM journal_fts")
+    conn.commit()
+
+    run_pending_migrations(conn)
+    run_pending_migrations(conn)
+
+    results = conn.execute("SELECT * FROM journal_fts WHERE journal_fts MATCH 'vortex'").fetchall()
+    assert len(results) == 1
+    conn.close()
+
+
+def test_rebuild_journal_fts_flag_recorded(db_path):
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    row = conn.execute(
+        "SELECT name, applied_at FROM migrations WHERE name = 'rebuild_journal_fts_v1'"
     ).fetchone()
     assert row is not None
     assert row["applied_at"] is not None

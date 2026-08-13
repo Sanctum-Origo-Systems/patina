@@ -287,6 +287,15 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
         if affected > 0:
             print(f"Migration fix_datamark_whitespace_v1: fixed {affected} observations")
 
+    row = conn.execute("SELECT 1 FROM migrations WHERE name = 'rebuild_journal_fts_v1'").fetchone()
+    if not row:
+        conn.execute("INSERT INTO journal_fts(journal_fts) VALUES('rebuild')")
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('rebuild_journal_fts_v1', datetime('now'))"
+        )
+        conn.commit()
+
     row = conn.execute("SELECT 1 FROM migrations WHERE name = 'add_kv_table_v1'").fetchone()
     if not row:
         conn.execute(
