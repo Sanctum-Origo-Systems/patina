@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 
+from patina.mcp.tools_catch_up import _sanitize_fts_query
 from patina.store import connect, get_db_path, init_db
 
 
@@ -39,13 +40,15 @@ def journal_search(query: str, limit: int = 10, snippet_chars: int = 2000) -> st
     """
     conn = _get_conn()
     try:
+        safe_query = _sanitize_fts_query(query)
         rows = conn.execute(
             """SELECT j.id, j.date, j.body
-               FROM journal j
-               WHERE j.body LIKE ?
+               FROM journal_fts f
+               JOIN journal j ON f.rowid = j.rowid
+               WHERE journal_fts MATCH ?
                ORDER BY j.date DESC
                LIMIT ?""",
-            (f"%{query}%", limit),
+            (safe_query, limit),
         ).fetchall()
         if not rows:
             return f"No journal entries matching '{query}'."
