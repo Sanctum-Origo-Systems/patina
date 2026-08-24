@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -311,6 +312,21 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
         "SELECT 1 FROM migrations WHERE name = 'deduplicate_observations_v1'"
     ).fetchone()
     if not row:
+        db_row = conn.execute("PRAGMA database_list").fetchone()
+        db_file = Path(db_row[2]) if db_row and db_row[2] else None
+        default_live = DEFAULT_HOME / "store.db"
+        if db_file and db_file.resolve() == default_live.resolve():
+            backup_exists = any(default_live.parent.glob("store.db.bak*")) or any(
+                default_live.parent.glob("store.db.backup*")
+            )
+            if not backup_exists and not os.environ.get("PATINA_DEDUP_ALLOW_LIVE"):
+                raise RuntimeError(
+                    "Refusing to run deduplicate_observations_v1 on the live store "
+                    f"({db_file}) without a backup. Copy the store first:\n"
+                    f"  cp {db_file} {db_file}.bak\n"
+                    "Or set PATINA_DEDUP_ALLOW_LIVE=1 to proceed without a backup."
+                )
+
         score = (
             "(CASE WHEN channel_id IS NOT NULL AND channel_id != ''"
             " THEN 1 ELSE 0 END"

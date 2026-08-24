@@ -1,6 +1,8 @@
 import json
 
-from patina.store import connect, run_pending_migrations
+import pytest
+
+from patina.store import connect, init_db, run_pending_migrations
 
 
 def _insert_obs(
@@ -342,4 +344,64 @@ def test_dedup_fts_no_orphaned_entries(db_path):
         ).fetchall()
     }
     assert fts_rowids == real_rowids
+    conn.close()
+
+
+def test_dedup_aborts_on_live_store_without_backup(tmp_path, monkeypatch):
+    live_home = tmp_path / ".patina"
+    live_home.mkdir()
+    monkeypatch.setattr("patina.store.DEFAULT_HOME", live_home)
+    monkeypatch.delenv("PATINA_DEDUP_ALLOW_LIVE", raising=False)
+
+    db_path = live_home / "store.db"
+    init_db(db_path)
+    conn = connect(db_path)
+    _insert_obs(conn, "obs-a", channel_id="", text="test")
+    _insert_obs(conn, "obs-b", channel_id="C1", text="test")
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match="without a backup"):
+        run_pending_migrations(conn)
+    conn.close()
+
+
+def test_dedup_proceeds_on_live_store_with_backup_file(tmp_path, monkeypatch):
+    live_home = tmp_path / ".patina"
+    live_home.mkdir()
+    monkeypatch.setattr("patina.store.DEFAULT_HOME", live_home)
+    monkeypatch.delenv("PATINA_DEDUP_ALLOW_LIVE", raising=False)
+
+    db_path = live_home / "store.db"
+    init_db(db_path)
+    (live_home / "store.db.bak").write_bytes(db_path.read_bytes())
+
+    conn = connect(db_path)
+    _insert_obs(conn, "obs-a", channel_id="", text="test")
+    _insert_obs(conn, "obs-b", channel_id="C1", text="test")
+    conn.commit()
+
+    run_pending_migrations(conn)
+
+    count = conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    assert count == 1
+    conn.close()
+
+
+def test_dedup_proceeds_on_live_store_with_env_override(tmp_path, monkeypatch):
+    live_home = tmp_path / ".patina"
+    live_home.mkdir()
+    monkeypatch.setattr("patina.store.DEFAULT_HOME", live_home)
+    monkeypatch.setenv("PATINA_DEDUP_ALLOW_LIVE", "1")
+
+    db_path = live_home / "store.db"
+    init_db(db_path)
+    conn = connect(db_path)
+    _insert_obs(conn, "obs-a", channel_id="", text="test")
+    _insert_obs(conn, "obs-b", channel_id="C1", text="test")
+    conn.commit()
+
+    run_pending_migrations(conn)
+
+    count = conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+    assert count == 1
     conn.close()
