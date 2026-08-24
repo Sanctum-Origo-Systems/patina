@@ -585,6 +585,24 @@ def test_obs_id_slack_sources_collapse():
     assert len(ids) == 1
 
 
+def test_obs_id_null_channel_id_uses_empty_string():
+    """_obs_id with channel_id=None produces '' in the key, not 'None'."""
+    from patina.ingest import _obs_id
+
+    id_none = _obs_id("outlook_mcp_email", None, None, 1700000100.0)
+    id_empty = _obs_id("outlook_mcp_email", "", None, 1700000100.0)
+    assert id_none == id_empty
+
+
+def test_obs_id_populated_channel_id_unchanged():
+    """_obs_id with a non-None channel_id is unaffected by the None guard."""
+    from patina.ingest import _obs_id
+
+    id_val = _obs_id("outlook_mcp_email", "inbox:123", None, 1700000100.0)
+    id_none = _obs_id("outlook_mcp_email", None, None, 1700000100.0)
+    assert id_val != id_none
+
+
 def _dedup_v2_setup(home):
     """Shared setup: init db, run prior migrations, skip v2 so we can insert test data."""
     from patina.store import connect, get_db_path, init_db, run_pending_migrations
