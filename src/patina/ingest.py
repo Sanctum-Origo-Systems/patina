@@ -31,7 +31,7 @@ def _obs_id(source: str, channel_id: str, thread_id: str | None, ts: float) -> s
     if family == "slack":
         key = f"slack:{ts}"
     else:
-        key = f"{family}:{channel_id}:{thread_id or ''}:{ts}"
+        key = f"{family}:{channel_id or ''}:{thread_id or ''}:{ts}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
