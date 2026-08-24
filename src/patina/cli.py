@@ -871,6 +871,30 @@ def reject_cmd(
         conn.close()
 
 
+@app.command("backfill-decisions")
+def backfill_decisions_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview count without writing"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Backfill decisions from historical reactions by the owner."""
+    from patina.backfill import run_backfill
+
+    result = run_backfill(home=home, dry_run=dry_run)
+
+    if result.get("error") == "no_owner_ids":
+        typer.echo(
+            "No owner user IDs configured. Set owner.user_ids in config.yaml first.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    mode = "Dry run" if dry_run else "Backfill"
+    typer.echo(f"{mode} complete.")
+    typer.echo(f"  Observations with reactions: {result['scanned']}")
+    typer.echo(f"  Decisions inserted: {result['inserted']}")
+    typer.echo(f"  Already had decision: {result['skipped']}")
+
+
 connect_app = typer.Typer(help="Connect live data sources.")
 app.add_typer(connect_app, name="connect")
 
