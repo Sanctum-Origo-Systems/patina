@@ -21,6 +21,8 @@ from patina.store import connect, get_db_path, init_db, kv_get, kv_set, run_pend
 def _source_family(source: str) -> str:
     if "slack" in source:
         return "slack"
+    if "outlook" in source:
+        return "outlook"
     return source
 
 
@@ -29,7 +31,7 @@ def _obs_id(source: str, channel_id: str, thread_id: str | None, ts: float) -> s
     if family == "slack":
         key = f"slack:{ts}"
     else:
-        key = f"{source}:{channel_id}:{thread_id or ''}:{ts}"
+        key = f"{family}:{channel_id or ''}:{thread_id or ''}:{ts}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
