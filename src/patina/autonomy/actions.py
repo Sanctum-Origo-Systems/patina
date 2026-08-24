@@ -97,7 +97,34 @@ def reject_action(conn: sqlite3.Connection, action_id: str) -> bool:
     if cur.rowcount == 0:
         return False
 
+    row = conn.execute(
+        "SELECT target_observation_id FROM action_queue WHERE id = ?",
+        (action_id,),
+    ).fetchone()
+    if row and row["target_observation_id"]:
+        record_decision(conn, row["target_observation_id"], "rejected")
+
     freeze_advancement(conn)
+    return True
+
+
+def edit_action(conn: sqlite3.Connection, action_id: str) -> bool:
+    now = datetime.now(UTC).isoformat()
+    cur = conn.execute(
+        """UPDATE action_queue SET status = 'edited', resolved_at = ?
+           WHERE id = ? AND status = 'proposed'""",
+        (now, action_id),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        return False
+
+    row = conn.execute(
+        "SELECT target_observation_id FROM action_queue WHERE id = ?",
+        (action_id,),
+    ).fetchone()
+    if row and row["target_observation_id"]:
+        record_decision(conn, row["target_observation_id"], "edited")
     return True
 
 
