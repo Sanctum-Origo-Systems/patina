@@ -97,6 +97,13 @@ def reject_action(conn: sqlite3.Connection, action_id: str) -> bool:
     if cur.rowcount == 0:
         return False
 
+    row = conn.execute(
+        "SELECT target_observation_id FROM action_queue WHERE id = ?",
+        (action_id,),
+    ).fetchone()
+    if row and row["target_observation_id"]:
+        record_decision(conn, row["target_observation_id"], "rejected")
+
     freeze_advancement(conn)
     return True
 
