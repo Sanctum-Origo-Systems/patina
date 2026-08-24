@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import zipfile
 
 import pytest
 
-from patina.ingest import ingest_all, ingest_from_export, ingest_live
+from patina.ingest import _source_family, ingest_all, ingest_from_export, ingest_live
 from patina.models import ChatMessage, DmChannel
 
 
@@ -543,4 +544,414 @@ def test_channel_id_not_overwritten_when_already_set(tmp_path):
 
     row = conn.execute("SELECT channel_id FROM observations").fetchone()
     assert row["channel_id"] == "D_ORIGINAL"
+    conn.close()
+
+
+class TestSourceFamily:
+    def test_slack_variants(self):
+        assert _source_family("slack") == "slack"
+        assert _source_family("slack_mcp") == "slack"
+        assert _source_family("slack_export") == "slack"
+        assert _source_family("slack_live") == "slack"
+        assert _source_family("slack_mention") == "slack"
+        assert _source_family("slack_watched") == "slack"
+
+    def test_outlook_variants(self):
+        assert _source_family("outlook_mcp_email") == "outlook"
+        assert _source_family("outlook_mcp_calendar") == "outlook"
+
+    def test_other_sources_unchanged(self):
+        assert _source_family("imap") == "imap"
+        assert _source_family("mock") == "mock"
+
+
+def test_obs_id_outlook_sources_collapse(tmp_path):
+    """outlook_mcp_email and outlook_mcp_calendar produce the same obs_id."""
+    from patina.ingest import _obs_id
+
+    id_email = _obs_id("outlook_mcp_email", "calendar:ev1", None, 1700000100.0)
+    id_cal = _obs_id("outlook_mcp_calendar", "calendar:ev1", None, 1700000100.0)
+    assert id_email == id_cal
+
+
+def test_obs_id_slack_sources_collapse():
+    """All slack-family sources with the same ts produce the same obs_id."""
+    from patina.ingest import _obs_id
+
+    ids = {
+        _obs_id(src, "C001", None, 1700000100.0)
+        for src in ("slack", "slack_mcp", "slack_export", "slack_live")
+    }
+    assert len(ids) == 1
+
+
+def _dedup_v2_setup(home):
+    """Shared setup: init db, run prior migrations, skip v2 so we can insert test data."""
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    conn.execute(
+        "INSERT INTO migrations (name, applied_at)"
+        " VALUES ('deduplicate_observations_v2', datetime('now'))"
+    )
+    conn.commit()
+    run_pending_migrations(conn)
+    return conn
+
+
+def _insert_obs_raw(conn, obs):
+    """Insert observation with FK checks off (test helper)."""
+    from patina.graph import insert_observation
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    insert_observation(conn, obs)
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _run_dedup_v2(conn):
+    """Remove the v2 migration marker and re-run migrations."""
+    from patina.store import run_pending_migrations
+
+    conn.execute("DELETE FROM migrations WHERE name = 'deduplicate_observations_v2'")
+    conn.commit()
+    run_pending_migrations(conn)
+
+
+def test_dedup_v2_merges_cross_family_duplicates(tmp_path):
+    """deduplicate_observations_v2 merges rows from different sources in the same family."""
+    home = tmp_path / "dedup_v2"
+    conn = _dedup_v2_setup(home)
+
+    from patina.ingest import _obs_id
+    from patina.models import Observation
+
+    obs1_id = _obs_id("slack_export", "C001", None, 1700000100.0)
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=obs1_id,
+            source="slack_export",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="The quick brown fox",
+            metadata={"channel_name": "general"},
+        ),
+    )
+
+    obs2_id = hashlib.sha256(b"force_different_id").hexdigest()[:16]
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=obs2_id,
+            source="slack_mcp",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="The quick brown fox",
+            metadata={"reactions": [{"name": "thumbsup"}]},
+        ),
+    )
+
+    total = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()
+    assert total["cnt"] == 2
+
+    _run_dedup_v2(conn)
+
+    total = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()
+    assert total["cnt"] == 1
+
+    survivor = conn.execute("SELECT * FROM observations").fetchone()
+    assert survivor["source"] == "slack_mcp"
+    conn.close()
+
+
+def test_dedup_v2_folds_metadata(tmp_path):
+    """Victim metadata keys absent from survivor are folded in."""
+    home = tmp_path / "dedup_v2_meta"
+    conn = _dedup_v2_setup(home)
+
+    from patina.models import Observation
+
+    survivor_id = hashlib.sha256(b"survivor_row").hexdigest()[:16]
+    victim_id = hashlib.sha256(b"victim_row").hexdigest()[:16]
+
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=survivor_id,
+            source="slack_mcp",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="Hello world",
+            metadata={"channel_name": "general"},
+        ),
+    )
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=victim_id,
+            source="slack_export",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="Hello world",
+            metadata={"is_mention": True, "extra_flag": "yes"},
+        ),
+    )
+
+    _run_dedup_v2(conn)
+
+    row = conn.execute("SELECT metadata FROM observations").fetchone()
+    meta = json.loads(row["metadata"])
+    assert meta["channel_name"] == "general"
+    assert meta["is_mention"] is True
+    assert meta["extra_flag"] == "yes"
+    conn.close()
+
+
+def test_dedup_v2_repoints_foreign_keys(tmp_path):
+    """Foreign keys in decisions and action_queue are repointed to the survivor."""
+    home = tmp_path / "dedup_v2_fk"
+    conn = _dedup_v2_setup(home)
+
+    from patina.models import Observation
+
+    survivor_id = hashlib.sha256(b"survivor_fk").hexdigest()[:16]
+    victim_id = hashlib.sha256(b"victim_fk").hexdigest()[:16]
+
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=survivor_id,
+            source="slack_mcp",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="FK test",
+            metadata={},
+        ),
+    )
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=victim_id,
+            source="slack_export",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="FK test",
+            metadata={},
+        ),
+    )
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute(
+        "INSERT INTO decisions (id, observation_id, action, acted_at)"
+        " VALUES (?, ?, ?, datetime('now'))",
+        ("d1", victim_id, "reply"),
+    )
+    conn.execute(
+        "INSERT INTO action_queue"
+        " (id, action_type, target_observation_id,"
+        " confidence, autonomy_level, created_at)"
+        " VALUES (?, ?, ?, ?, ?, datetime('now'))",
+        ("a1", "draft_reply", victim_id, 0.9, 1),
+    )
+    conn.execute(
+        "INSERT INTO claims"
+        " (id, subject_id, predicate, object,"
+        " first_asserted, last_confirmed, source_ids)"
+        " VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), ?)",
+        ("cl1", "e1", "likes", "coffee", json.dumps([victim_id, "other_id"])),
+    )
+    conn.execute(
+        "INSERT INTO relationships"
+        " (id, subject_id, predicate, object_id,"
+        " first_seen, last_confirmed, source_ids)"
+        " VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), ?)",
+        ("r1", "e1", "knows", "e2", json.dumps([victim_id])),
+    )
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.commit()
+
+    _run_dedup_v2(conn)
+
+    dec = conn.execute("SELECT observation_id FROM decisions WHERE id = 'd1'").fetchone()
+    assert dec["observation_id"] == survivor_id
+
+    aq = conn.execute("SELECT target_observation_id FROM action_queue WHERE id = 'a1'").fetchone()
+    assert aq["target_observation_id"] == survivor_id
+
+    cl = conn.execute("SELECT source_ids FROM claims WHERE id = 'cl1'").fetchone()
+    assert json.loads(cl["source_ids"]) == [survivor_id, "other_id"]
+
+    rel = conn.execute("SELECT source_ids FROM relationships WHERE id = 'r1'").fetchone()
+    assert json.loads(rel["source_ids"]) == [survivor_id]
+
+    conn.close()
+
+
+def test_dedup_v2_rebuilds_fts(tmp_path):
+    """FTS index is rebuilt after dedup and search still works."""
+    home = tmp_path / "dedup_v2_fts"
+    conn = _dedup_v2_setup(home)
+
+    from patina.models import Observation
+
+    survivor_id = hashlib.sha256(b"survivor_fts").hexdigest()[:16]
+    victim_id = hashlib.sha256(b"victim_fts").hexdigest()[:16]
+
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=survivor_id,
+            source="slack_mcp",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="Searchable content here",
+            metadata={},
+        ),
+    )
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=victim_id,
+            source="slack_export",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="Searchable content here",
+            metadata={},
+        ),
+    )
+
+    _run_dedup_v2(conn)
+
+    fts_rows = conn.execute(
+        "SELECT * FROM observations_fts WHERE observations_fts MATCH 'searchable'"
+    ).fetchall()
+    assert len(fts_rows) == 1
+    conn.close()
+
+
+def test_dedup_v2_idempotent(tmp_path):
+    """Running deduplicate_observations_v2 twice produces the same result."""
+    home = tmp_path / "dedup_v2_idem"
+    conn = _dedup_v2_setup(home)
+
+    from patina.models import Observation
+
+    id1 = hashlib.sha256(b"idem_survivor").hexdigest()[:16]
+    id2 = hashlib.sha256(b"idem_victim").hexdigest()[:16]
+
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=id1,
+            source="slack_mcp",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="Idempotent test",
+            metadata={"a": 1},
+        ),
+    )
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=id2,
+            source="slack_export",
+            channel_id="C001",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="Idempotent test",
+            metadata={"b": 2},
+        ),
+    )
+
+    _run_dedup_v2(conn)
+
+    count_after_first = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()["cnt"]
+    assert count_after_first == 1
+
+    meta_after_first = json.loads(
+        conn.execute("SELECT metadata FROM observations").fetchone()["metadata"]
+    )
+
+    _run_dedup_v2(conn)
+
+    count_after_second = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()["cnt"]
+    assert count_after_second == count_after_first
+
+    meta_after_second = json.loads(
+        conn.execute("SELECT metadata FROM observations").fetchone()["metadata"]
+    )
+    assert meta_after_second == meta_after_first
+    conn.close()
+
+
+def test_dedup_v2_survivor_preference_outlook(tmp_path):
+    """outlook_mcp_calendar is preferred over outlook_mcp_email."""
+    home = tmp_path / "dedup_v2_outlook"
+    conn = _dedup_v2_setup(home)
+
+    from patina.models import Observation
+
+    id_email = hashlib.sha256(b"outlook_email").hexdigest()[:16]
+    id_cal = hashlib.sha256(b"outlook_cal").hexdigest()[:16]
+
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=id_email,
+            source="outlook_mcp_email",
+            channel_id="email:conv1",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="[Meeting: Standup] Organizer: Fern, Attendees: Gale",
+            metadata={"subject": "Standup"},
+        ),
+    )
+    _insert_obs_raw(
+        conn,
+        Observation(
+            id=id_cal,
+            source="outlook_mcp_calendar",
+            channel_id="email:conv1",
+            thread_id=None,
+            timestamp=1700000100.0,
+            sender_entity_id="e1",
+            text="[Meeting: Standup] Organizer: Fern, Attendees: Gale",
+            metadata={"attendees": ["Fern", "Gale"], "duration_minutes": 30},
+        ),
+    )
+
+    _run_dedup_v2(conn)
+
+    total = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()
+    assert total["cnt"] == 1
+
+    survivor = conn.execute("SELECT * FROM observations").fetchone()
+    assert survivor["source"] == "outlook_mcp_calendar"
+
+    meta = json.loads(survivor["metadata"])
+    assert meta["attendees"] == ["Fern", "Gale"]
+    assert meta["duration_minutes"] == 30
+    assert meta["subject"] == "Standup"
     conn.close()
