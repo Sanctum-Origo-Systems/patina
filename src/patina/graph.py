@@ -164,29 +164,39 @@ def insert_claim(conn: sqlite3.Connection, claim: Claim) -> None:
 
 
 def insert_observation(conn: sqlite3.Connection, obs: Observation) -> bool:
-    try:
-        conn.execute(
-            """INSERT INTO observations
-                   (id, source, channel_id, thread_id, timestamp,
-                    sender_entity_id, text, metadata, ingested_at, processed)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                obs.id,
-                obs.source,
-                obs.channel_id,
-                obs.thread_id,
-                obs.timestamp,
-                obs.sender_entity_id,
-                obs.text,
-                json.dumps(obs.metadata),
-                obs.ingested_at,
-                obs.processed,
-            ),
-        )
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
+    existing = conn.execute("SELECT 1 FROM observations WHERE id = ?", (obs.id,)).fetchone()
+
+    conn.execute(
+        """INSERT INTO observations
+               (id, source, channel_id, thread_id, timestamp,
+                sender_entity_id, text, metadata, ingested_at, processed)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               channel_id = CASE
+                   WHEN observations.channel_id IS NULL OR observations.channel_id = ''
+                   THEN excluded.channel_id
+                   ELSE observations.channel_id
+               END,
+               thread_id = CASE
+                   WHEN observations.thread_id IS NULL OR observations.thread_id = ''
+                   THEN excluded.thread_id
+                   ELSE observations.thread_id
+               END""",
+        (
+            obs.id,
+            obs.source,
+            obs.channel_id,
+            obs.thread_id,
+            obs.timestamp,
+            obs.sender_entity_id,
+            obs.text,
+            json.dumps(obs.metadata),
+            obs.ingested_at,
+            obs.processed,
+        ),
+    )
+    conn.commit()
+    return existing is None
 
 
 def get_entity(conn: sqlite3.Connection, entity_id: str) -> Entity | None:
