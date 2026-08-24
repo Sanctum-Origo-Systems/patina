@@ -33,7 +33,11 @@ class OutlookMcpAdapter:
             return []
 
         email_list = _unwrap_email_list(raw)
-        emails = [_email_from_raw(item) for item in email_list if isinstance(item, dict)]
+        emails = [
+            _email_from_raw(item)
+            for item in email_list
+            if isinstance(item, dict) and not _is_meeting_message(item)
+        ]
         return [e for e in emails if e.timestamp >= since]
 
     def search_sent(self, query: str) -> list[EmailMessage]:
@@ -65,6 +69,14 @@ class OutlookMcpAdapter:
         if not isinstance(raw, list):
             raw = [raw] if isinstance(raw, dict) else []
         return [_calendar_event_from_raw(item) for item in raw if isinstance(item, dict)]
+
+
+_MEETING_CLASS_PREFIX = "IPM.Schedule.Meeting."
+
+
+def _is_meeting_message(raw: dict) -> bool:
+    msg_class = raw.get("messageClass", raw.get("message_class", ""))
+    return isinstance(msg_class, str) and msg_class.startswith(_MEETING_CLASS_PREFIX)
 
 
 def _parse_outlook_datetime(dt_str: str) -> float:
