@@ -249,7 +249,7 @@ def test_ingest_live_cross_source_dedup(tmp_path):
     conn.close()
 
     port = MockChatPortWithOwner()
-    result = ingest_live(port=port, source="mock", home=home)
+    result = ingest_live(port=port, source="slack_live", home=home)
 
     assert result["messages_inserted"] == 2
     assert result["messages_skipped"] == 1
@@ -385,3 +385,162 @@ def test_ingest_all_no_adapters(tmp_path):
     result = ingest_all(home=tmp_path)
     assert result["adapters_run"] == 0
     assert result["messages_inserted"] == 0
+
+
+def test_dedup_when_channel_id_differs(tmp_path):
+    """Same Slack message ingested with different channel_ids produces one row."""
+    home = tmp_path / "dedup_home"
+
+    from patina.ingest import _ingest_messages
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    msg_empty_channel = [
+        ChatMessage(
+            user_id="U001",
+            text="The quick brown fox",
+            timestamp=1700000100.0,
+            channel_id="",
+            user_name="Fern",
+        ),
+    ]
+    inserted1, _, _ = _ingest_messages(conn, msg_empty_channel, "slack_mcp")
+    assert inserted1 == 1
+
+    msg_populated_channel = [
+        ChatMessage(
+            user_id="U001",
+            text="The quick brown fox",
+            timestamp=1700000100.0,
+            channel_id="D00000DM001",
+            user_name="Fern",
+        ),
+    ]
+    inserted2, skipped2, _ = _ingest_messages(conn, msg_populated_channel, "slack_mcp")
+    assert inserted2 == 0
+    assert skipped2 == 1
+
+    total = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()
+    assert total["cnt"] == 1
+    conn.close()
+
+
+def test_dedup_across_slack_sources(tmp_path):
+    """Same message from slack_export and slack_mcp produces one row."""
+    home = tmp_path / "dedup_home"
+
+    from patina.ingest import _ingest_messages
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    msg = [
+        ChatMessage(
+            user_id="U001",
+            text="The quick brown fox",
+            timestamp=1700000100.0,
+            channel_id="C001",
+            user_name="Fern",
+        ),
+    ]
+    inserted1, _, _ = _ingest_messages(conn, msg, "slack_export")
+    assert inserted1 == 1
+
+    inserted2, skipped2, _ = _ingest_messages(conn, msg, "slack_mcp")
+    assert inserted2 == 0
+    assert skipped2 == 1
+
+    total = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()
+    assert total["cnt"] == 1
+    conn.close()
+
+
+def test_channel_id_enrichment_on_conflict(tmp_path):
+    """Second ingest enriches an empty channel_id via ON CONFLICT DO UPDATE."""
+    home = tmp_path / "enrich_home"
+
+    from patina.ingest import _ingest_messages
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    msg_empty = [
+        ChatMessage(
+            user_id="U001",
+            text="The quick brown fox",
+            timestamp=1700000100.0,
+            channel_id="",
+            user_name="Fern",
+        ),
+    ]
+    _ingest_messages(conn, msg_empty, "slack_mcp")
+
+    row = conn.execute("SELECT channel_id FROM observations").fetchone()
+    assert row["channel_id"] == ""
+
+    msg_enriched = [
+        ChatMessage(
+            user_id="U001",
+            text="The quick brown fox",
+            timestamp=1700000100.0,
+            channel_id="D00000DM001",
+            user_name="Fern",
+        ),
+    ]
+    _ingest_messages(conn, msg_enriched, "slack_mcp")
+
+    row = conn.execute("SELECT channel_id FROM observations").fetchone()
+    assert row["channel_id"] == "D00000DM001"
+
+    total = conn.execute("SELECT COUNT(*) as cnt FROM observations").fetchone()
+    assert total["cnt"] == 1
+    conn.close()
+
+
+def test_channel_id_not_overwritten_when_already_set(tmp_path):
+    """Enrichment does not overwrite an existing non-empty channel_id."""
+    home = tmp_path / "enrich_home"
+
+    from patina.ingest import _ingest_messages
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    msg_first = [
+        ChatMessage(
+            user_id="U001",
+            text="The quick brown fox",
+            timestamp=1700000100.0,
+            channel_id="D_ORIGINAL",
+            user_name="Fern",
+        ),
+    ]
+    _ingest_messages(conn, msg_first, "slack_mcp")
+
+    msg_second = [
+        ChatMessage(
+            user_id="U001",
+            text="The quick brown fox",
+            timestamp=1700000100.0,
+            channel_id="D_DIFFERENT",
+            user_name="Fern",
+        ),
+    ]
+    _ingest_messages(conn, msg_second, "slack_mcp")
+
+    row = conn.execute("SELECT channel_id FROM observations").fetchone()
+    assert row["channel_id"] == "D_ORIGINAL"
+    conn.close()
