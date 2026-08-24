@@ -23,3 +23,4 @@ def db_conn(db_path):
 @pytest.fixture(autouse=True)
 def _isolate_home(tmp_path, monkeypatch):
     monkeypatch.setattr(store_module, "DEFAULT_HOME", tmp_path)
+    monkeypatch.setenv("PATINA_DEDUP_ALLOW_LIVE", "1")
