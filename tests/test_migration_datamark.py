@@ -21,6 +21,10 @@ def test_migration_fixes_observations(db_path):
         "VALUES (?, ?, ?, ?, datetime('now'))",
         ("obs1", "test", 1.0, f"security{DM}changes{DM}quickly"),
     )
+    conn.execute(
+        "INSERT OR IGNORE INTO migrations (name, applied_at) "
+        "VALUES ('rekey_observations_v3', datetime('now'))"
+    )
     conn.commit()
 
     run_pending_migrations(conn)
@@ -36,6 +40,10 @@ def test_migration_runs_exactly_once(db_path):
         "INSERT INTO observations (id, source, timestamp, text, ingested_at) "
         "VALUES (?, ?, ?, ?, datetime('now'))",
         ("obs1", "test", 1.0, f"Moved{DM}to{DM}tomorrow"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO migrations (name, applied_at) "
+        "VALUES ('rekey_observations_v3', datetime('now'))"
     )
     conn.commit()
 
@@ -78,6 +86,10 @@ def test_migration_skips_clean_observations(db_path):
         "INSERT INTO observations (id, source, timestamp, text, ingested_at) "
         "VALUES (?, ?, ?, ?, datetime('now'))",
         ("obs1", "test", 1.0, "already clean text"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO migrations (name, applied_at) "
+        "VALUES ('rekey_observations_v3', datetime('now'))"
     )
     conn.commit()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -559,6 +560,191 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
         if deleted > 0:
             print(
                 f"Migration deduplicate_observations_v2: removed {deleted} duplicate observations"
+            )
+
+    row = conn.execute("SELECT 1 FROM migrations WHERE name = 'rekey_observations_v3'").fetchone()
+    if not row:
+        db_row = conn.execute("PRAGMA database_list").fetchone()
+        db_file = Path(db_row[2]) if db_row and db_row[2] else None
+        default_live = DEFAULT_HOME / "store.db"
+        if db_file and db_file.resolve() == default_live.resolve():
+            backup_exists = any(default_live.parent.glob("store.db.bak*")) or any(
+                default_live.parent.glob("store.db.backup*")
+            )
+            if not backup_exists and not os.environ.get("PATINA_DEDUP_ALLOW_LIVE"):
+                raise RuntimeError(
+                    "Refusing to run rekey_observations_v3 on the live store "
+                    f"({db_file}) without a backup. Copy the store first:\n"
+                    f"  cp {db_file} {db_file}.bak\n"
+                    "Or set PATINA_DEDUP_ALLOW_LIVE=1 to proceed without a backup."
+                )
+
+        obs_rows = conn.execute(
+            "SELECT rowid, id, source, channel_id, thread_id, timestamp FROM observations"
+        ).fetchall()
+
+        def _target_id(source, channel_id, thread_id, ts):
+            if "slack" in source:
+                family = "slack"
+            elif "outlook" in source:
+                family = "outlook"
+            else:
+                family = source
+            if family == "slack":
+                key = f"slack:{ts}"
+            else:
+                key = f"{family}:{channel_id or ''}:{thread_id or ''}:{ts}"
+            return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+        groups: dict[str, list[dict]] = {}
+        for r in obs_rows:
+            tid = _target_id(r["source"], r["channel_id"], r["thread_id"], r["timestamp"])
+            groups.setdefault(tid, []).append(dict(r))
+
+        id_map: dict[str, str] = {}
+        victims: set[str] = set()
+
+        _source_pref = {
+            "outlook_mcp_calendar": 3,
+            "slack_mcp": 3,
+            "outlook_mcp_email": 2,
+            "slack_live": 2,
+        }
+
+        def _survivor_sort_key(r):
+            sp = _source_pref.get(r["source"], 1)
+            ch = 1 if r["channel_id"] and r["channel_id"] != "" else 0
+            th = 1 if r["thread_id"] and r["thread_id"] != "" else 0
+            return (-sp, -(ch + th), r["rowid"])
+
+        for target_id, group_rows in groups.items():
+            if len(group_rows) == 1:
+                old_id = group_rows[0]["id"]
+                if old_id != target_id:
+                    id_map[old_id] = target_id
+            else:
+                sorted_rows = sorted(group_rows, key=_survivor_sort_key)
+                survivor = sorted_rows[0]
+                for v in sorted_rows[1:]:
+                    id_map[v["id"]] = target_id
+                    victims.add(v["id"])
+                if survivor["id"] != target_id:
+                    id_map[survivor["id"]] = target_id
+
+        rekeyed = 0
+        deleted = 0
+
+        if id_map:
+            conn.execute("PRAGMA foreign_keys=OFF")
+
+            for target_id, group_rows in groups.items():
+                if len(group_rows) <= 1:
+                    continue
+                sorted_rows = sorted(group_rows, key=_survivor_sort_key)
+                survivor_id = sorted_rows[0]["id"]
+
+                survivor_row = conn.execute(
+                    "SELECT metadata FROM observations WHERE id = ?",
+                    (survivor_id,),
+                ).fetchone()
+                merged = (
+                    json.loads(survivor_row["metadata"])
+                    if survivor_row and survivor_row["metadata"]
+                    else {}
+                )
+                for v in sorted_rows[1:]:
+                    victim_row = conn.execute(
+                        "SELECT metadata FROM observations WHERE id = ?",
+                        (v["id"],),
+                    ).fetchone()
+                    if victim_row and victim_row["metadata"]:
+                        for k, val in json.loads(victim_row["metadata"]).items():
+                            if k not in merged:
+                                merged[k] = val
+                conn.execute(
+                    "UPDATE observations SET metadata = ? WHERE id = ?",
+                    (json.dumps(merged), survivor_id),
+                )
+
+            if victims:
+                placeholders = ",".join("?" for _ in victims)
+                conn.execute(
+                    f"DELETE FROM observations WHERE id IN ({placeholders})",
+                    list(victims),
+                )
+                deleted = len(victims)
+
+            for old_id, new_id in id_map.items():
+                if old_id not in victims:
+                    conn.execute(
+                        "UPDATE observations SET id = ? WHERE id = ?",
+                        (new_id, old_id),
+                    )
+                    rekeyed += 1
+
+            conn.execute(
+                "CREATE TEMP TABLE _rekey_map_v3 (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL)"
+            )
+            conn.executemany(
+                "INSERT INTO _rekey_map_v3 VALUES (?, ?)",
+                list(id_map.items()),
+            )
+
+            conn.execute(
+                """UPDATE decisions SET observation_id = (
+                    SELECT new_id FROM _rekey_map_v3
+                    WHERE old_id = decisions.observation_id
+                ) WHERE observation_id IN (SELECT old_id FROM _rekey_map_v3)"""
+            )
+
+            conn.execute(
+                """UPDATE action_queue SET target_observation_id = (
+                    SELECT new_id FROM _rekey_map_v3
+                    WHERE old_id = action_queue.target_observation_id
+                ) WHERE target_observation_id IN (
+                    SELECT old_id FROM _rekey_map_v3
+                )"""
+            )
+
+            for cr in conn.execute(
+                "SELECT id, source_ids FROM claims WHERE source_ids IS NOT NULL"
+            ).fetchall():
+                sids = json.loads(cr["source_ids"])
+                updated = list(dict.fromkeys(id_map.get(s, s) for s in sids))
+                if updated != sids:
+                    conn.execute(
+                        "UPDATE claims SET source_ids = ? WHERE id = ?",
+                        (json.dumps(updated), cr["id"]),
+                    )
+
+            for rr in conn.execute(
+                "SELECT id, source_ids FROM relationships WHERE source_ids IS NOT NULL"
+            ).fetchall():
+                sids = json.loads(rr["source_ids"])
+                updated = list(dict.fromkeys(id_map.get(s, s) for s in sids))
+                if updated != sids:
+                    conn.execute(
+                        "UPDATE relationships SET source_ids = ? WHERE id = ?",
+                        (json.dumps(updated), rr["id"]),
+                    )
+
+            conn.execute("DROP TABLE _rekey_map_v3")
+
+            conn.execute("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')")
+
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('rekey_observations_v3', datetime('now'))"
+        )
+        conn.commit()
+
+        if id_map:
+            conn.execute("PRAGMA foreign_keys=ON")
+
+        if rekeyed > 0 or deleted > 0:
+            print(
+                f"Migration rekey_observations_v3: re-keyed {rekeyed} observations, "
+                f"removed {deleted} duplicates"
             )
 
 
