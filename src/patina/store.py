@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -305,6 +307,111 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
             "INSERT INTO migrations (name, applied_at) VALUES ('add_kv_table_v1', datetime('now'))"
         )
         conn.commit()
+
+    row = conn.execute(
+        "SELECT 1 FROM migrations WHERE name = 'deduplicate_observations_v1'"
+    ).fetchone()
+    if not row:
+        db_row = conn.execute("PRAGMA database_list").fetchone()
+        db_file = Path(db_row[2]) if db_row and db_row[2] else None
+        default_live = DEFAULT_HOME / "store.db"
+        if db_file and db_file.resolve() == default_live.resolve():
+            backup_exists = any(default_live.parent.glob("store.db.bak*")) or any(
+                default_live.parent.glob("store.db.backup*")
+            )
+            if not backup_exists and not os.environ.get("PATINA_DEDUP_ALLOW_LIVE"):
+                raise RuntimeError(
+                    "Refusing to run deduplicate_observations_v1 on the live store "
+                    f"({db_file}) without a backup. Copy the store first:\n"
+                    f"  cp {db_file} {db_file}.bak\n"
+                    "Or set PATINA_DEDUP_ALLOW_LIVE=1 to proceed without a backup."
+                )
+
+        score = (
+            "(CASE WHEN channel_id IS NOT NULL AND channel_id != ''"
+            " THEN 1 ELSE 0 END"
+            " + CASE WHEN thread_id IS NOT NULL AND thread_id != ''"
+            " THEN 1 ELSE 0 END)"
+        )
+        win = (
+            f"PARTITION BY source, timestamp, sender_entity_id, text"
+            f" ORDER BY {score} DESC, rowid ASC"
+        )
+        victims = conn.execute(
+            f"""SELECT id AS victim_id, survivor_id FROM (
+                SELECT id,
+                    ROW_NUMBER() OVER ({win}) AS rn,
+                    FIRST_VALUE(id) OVER ({win}) AS survivor_id
+                FROM observations
+            ) WHERE rn > 1"""
+        ).fetchall()
+
+        deleted = 0
+        if victims:
+            id_map = {r["victim_id"]: r["survivor_id"] for r in victims}
+
+            conn.execute(
+                "CREATE TEMP TABLE _dedup_map "
+                "(victim_id TEXT PRIMARY KEY, survivor_id TEXT NOT NULL)"
+            )
+            conn.executemany(
+                "INSERT INTO _dedup_map VALUES (?, ?)",
+                list(id_map.items()),
+            )
+
+            conn.execute(
+                """UPDATE decisions SET observation_id = (
+                    SELECT survivor_id FROM _dedup_map
+                    WHERE victim_id = decisions.observation_id
+                ) WHERE observation_id IN (SELECT victim_id FROM _dedup_map)"""
+            )
+
+            conn.execute(
+                """UPDATE action_queue SET target_observation_id = (
+                    SELECT survivor_id FROM _dedup_map
+                    WHERE victim_id = action_queue.target_observation_id
+                ) WHERE target_observation_id IN (SELECT victim_id FROM _dedup_map)"""
+            )
+
+            for cr in conn.execute(
+                "SELECT id, source_ids FROM claims WHERE source_ids IS NOT NULL"
+            ).fetchall():
+                sids = json.loads(cr["source_ids"])
+                updated = list(dict.fromkeys(id_map.get(s, s) for s in sids))
+                if updated != sids:
+                    conn.execute(
+                        "UPDATE claims SET source_ids = ? WHERE id = ?",
+                        (json.dumps(updated), cr["id"]),
+                    )
+
+            for rr in conn.execute(
+                "SELECT id, source_ids FROM relationships WHERE source_ids IS NOT NULL"
+            ).fetchall():
+                sids = json.loads(rr["source_ids"])
+                updated = list(dict.fromkeys(id_map.get(s, s) for s in sids))
+                if updated != sids:
+                    conn.execute(
+                        "UPDATE relationships SET source_ids = ? WHERE id = ?",
+                        (json.dumps(updated), rr["id"]),
+                    )
+
+            conn.execute("DELETE FROM observations WHERE id IN (SELECT victim_id FROM _dedup_map)")
+            deleted = len(id_map)
+
+            conn.execute("DROP TABLE _dedup_map")
+
+            conn.execute("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')")
+
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('deduplicate_observations_v1', datetime('now'))"
+        )
+        conn.commit()
+
+        if deleted > 0:
+            print(
+                f"Migration deduplicate_observations_v1: removed {deleted} duplicate observations"
+            )
 
 
 def kv_get(conn: sqlite3.Connection, key: str) -> str | None:
