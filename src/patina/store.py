@@ -748,6 +748,24 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
             )
 
 
+def get_open_draft_reply_for_channel(
+    conn: sqlite3.Connection,
+    channel_id: str,
+) -> dict | None:
+    row = conn.execute(
+        """SELECT aq.id, aq.target_observation_id, aq.payload
+           FROM action_queue aq
+           JOIN observations o ON aq.target_observation_id = o.id
+           WHERE aq.action_type = 'draft_reply'
+             AND aq.status = 'proposed'
+             AND o.channel_id = ?
+           ORDER BY aq.created_at DESC
+           LIMIT 1""",
+        (channel_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def kv_get(conn: sqlite3.Connection, key: str) -> str | None:
     row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None

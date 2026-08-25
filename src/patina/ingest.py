@@ -4,6 +4,7 @@ import hashlib
 import time
 from pathlib import Path
 
+from patina.decisions import auto_resolve_draft_reply
 from patina.export_parser import parse_slack_export
 from patina.extraction import extract_entities_from_text, extract_sender_entity
 from patina.graph import (
@@ -14,7 +15,12 @@ from patina.graph import (
     upsert_entity,
 )
 from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation
-from patina.owner import get_owner_entity_id, get_owner_user_ids, mark_entity_as_owner
+from patina.owner import (
+    get_owner_entity_id,
+    get_owner_user_ids,
+    is_owner_entity,
+    mark_entity_as_owner,
+)
 from patina.store import connect, get_db_path, init_db, kv_get, kv_set, run_pending_migrations
 
 
@@ -156,6 +162,9 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
             (sender.id, obs_id),
         )
         conn.commit()
+
+        if is_owner_entity(conn, sender.id):
+            auto_resolve_draft_reply(conn, msg.channel_id, msg.text)
 
         text_entities = extract_entities_from_text(msg.text)
         for ent in text_entities:
