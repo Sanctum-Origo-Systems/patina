@@ -38,7 +38,7 @@ def test_backfill_inserts_for_owner_ack(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "thumbsup", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "thumbsup", "users": [OWNER_ID], "count": 1}],
     )
     result = backfill_decisions_from_reactions(db_conn, [OWNER_ID])
     assert result["inserted"] == 1
@@ -55,7 +55,7 @@ def test_backfill_skips_non_owner_reactions(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "thumbsup", "users": [OTHER_ID], "count": 1}],
+        reactions=[{"emoji": "thumbsup", "users": [OTHER_ID], "count": 1}],
     )
     result = backfill_decisions_from_reactions(db_conn, [OWNER_ID])
     assert result["inserted"] == 0
@@ -66,7 +66,7 @@ def test_backfill_skips_non_ack_reactions(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "eyes", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "eyes", "users": [OWNER_ID], "count": 1}],
     )
     result = backfill_decisions_from_reactions(db_conn, [OWNER_ID])
     assert result["inserted"] == 0
@@ -76,7 +76,7 @@ def test_backfill_idempotent(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "+1", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "+1", "users": [OWNER_ID], "count": 1}],
     )
     r1 = backfill_decisions_from_reactions(db_conn, [OWNER_ID])
     assert r1["inserted"] == 1
@@ -95,7 +95,7 @@ def test_backfill_skips_obs_with_existing_decision(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "white_check_mark", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "white_check_mark", "users": [OWNER_ID], "count": 1}],
     )
     record_decision(db_conn, "obs1", "dismissed")
 
@@ -108,7 +108,7 @@ def test_backfill_dry_run_does_not_write(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "thumbsup", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "thumbsup", "users": [OWNER_ID], "count": 1}],
     )
     result = backfill_decisions_from_reactions(db_conn, [OWNER_ID], dry_run=True)
     assert result["inserted"] == 1
@@ -121,7 +121,7 @@ def test_backfill_no_owner_ids_returns_zero(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "thumbsup", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "thumbsup", "users": [OWNER_ID], "count": 1}],
     )
     result = backfill_decisions_from_reactions(db_conn, [])
     assert result["inserted"] == 0
@@ -132,17 +132,17 @@ def test_backfill_multiple_observations(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "thumbsup", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "thumbsup", "users": [OWNER_ID], "count": 1}],
     )
     _make_obs(
         db_conn,
         "obs2",
-        reactions=[{"name": "heavy_check_mark", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "heavy_check_mark", "users": [OWNER_ID], "count": 1}],
     )
     _make_obs(
         db_conn,
         "obs3",
-        reactions=[{"name": "eyes", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "eyes", "users": [OWNER_ID], "count": 1}],
     )
     _make_obs(db_conn, "obs4")
 
@@ -155,7 +155,7 @@ def test_backfill_mixed_owner_and_non_owner_on_same_reaction(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "thumbsup", "users": [OTHER_ID, OWNER_ID], "count": 2}],
+        reactions=[{"emoji": "thumbsup", "users": [OTHER_ID, OWNER_ID], "count": 2}],
     )
     result = backfill_decisions_from_reactions(db_conn, [OWNER_ID])
     assert result["inserted"] == 1
@@ -166,7 +166,7 @@ def test_backfill_multiple_owner_ids(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "+1", "users": [second_owner], "count": 1}],
+        reactions=[{"emoji": "+1", "users": [second_owner], "count": 1}],
     )
     result = backfill_decisions_from_reactions(db_conn, [OWNER_ID, second_owner])
     assert result["inserted"] == 1
@@ -179,12 +179,12 @@ def test_act_on_rate_changes_after_backfill(db_conn):
     _make_obs(
         db_conn,
         "obs1",
-        reactions=[{"name": "thumbsup", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "thumbsup", "users": [OWNER_ID], "count": 1}],
     )
     _make_obs(
         db_conn,
         "obs2",
-        reactions=[{"name": "+1", "users": [OWNER_ID], "count": 1}],
+        reactions=[{"emoji": "+1", "users": [OWNER_ID], "count": 1}],
     )
     backfill_decisions_from_reactions(db_conn, [OWNER_ID])
 
@@ -222,8 +222,28 @@ def test_all_ack_reactions_are_recognized(db_conn):
         _make_obs(
             db_conn,
             f"obs_{i}",
-            reactions=[{"name": name, "users": [OWNER_ID], "count": 1}],
+            reactions=[{"emoji": name, "users": [OWNER_ID], "count": 1}],
         )
 
     result = backfill_decisions_from_reactions(db_conn, [OWNER_ID])
     assert result["inserted"] == len(ACK_REACTIONS)
+
+
+def test_backfill_falls_back_to_name_key(db_conn):
+    _make_obs(
+        db_conn,
+        "obs1",
+        reactions=[{"name": "thumbsup", "users": [OWNER_ID], "count": 1}],
+    )
+    result = backfill_decisions_from_reactions(db_conn, [OWNER_ID])
+    assert result["inserted"] == 1
+
+
+def test_backfill_emoji_key_takes_precedence_over_name(db_conn):
+    _make_obs(
+        db_conn,
+        "obs1",
+        reactions=[{"emoji": "thumbsup", "name": "eyes", "users": [OWNER_ID], "count": 1}],
+    )
+    result = backfill_decisions_from_reactions(db_conn, [OWNER_ID])
+    assert result["inserted"] == 1
