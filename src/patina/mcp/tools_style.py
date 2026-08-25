@@ -39,7 +39,7 @@ def style_show(entity_name: str) -> str:
         conn.close()
 
 
-def draft_reply(to: str, context: str) -> str:
+def draft_reply(to: str, context: str, draft_text: str = "") -> str:
     """Return style context for drafting a reply — the calling agent generates the actual text."""
     conn = _get_conn()
     try:
@@ -92,7 +92,7 @@ def draft_reply(to: str, context: str) -> str:
             action_type="draft_reply",
             target_observation_id=obs["id"] if obs else None,
             target_entity_id=row["id"],
-            payload={"context": context},
+            payload={"context": context, **({"draft_text": draft_text} if draft_text else {})},
             confidence=0.5,
             autonomy_level=1,
         )

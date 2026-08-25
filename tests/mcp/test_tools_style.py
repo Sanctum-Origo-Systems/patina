@@ -133,6 +133,42 @@ class TestDraftReply:
         result = draft_reply("Alice", "hello")
         assert "Alice Smith" in result
 
+    def test_draft_text_persisted_in_payload(self, db_path, db_conn, tmp_path):
+        init_db(db_path)
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Linnea"))
+        _insert_observation(db_conn, "obs1", "e1", "hello from Linnea")
+        db_conn.close()
+
+        draft_reply("Linnea", "follow up", draft_text="test draft")
+
+        conn = connect(db_path)
+        try:
+            row = conn.execute(_PENDING_QUERY).fetchone()
+            assert row is not None
+            payload = json.loads(row["payload"])
+            assert payload["draft_text"] == "test draft"
+            assert payload["context"] == "follow up"
+        finally:
+            conn.close()
+
+    def test_draft_text_omitted_when_empty(self, db_path, db_conn, tmp_path):
+        init_db(db_path)
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Ravi"))
+        _insert_observation(db_conn, "obs1", "e1", "hello from Ravi")
+        db_conn.close()
+
+        draft_reply("Ravi", "check in")
+
+        conn = connect(db_path)
+        try:
+            row = conn.execute(_PENDING_QUERY).fetchone()
+            assert row is not None
+            payload = json.loads(row["payload"])
+            assert "draft_text" not in payload
+            assert payload["context"] == "check in"
+        finally:
+            conn.close()
+
     def test_draft_reply_populates_action_queue(self, db_path, db_conn, tmp_path):
         init_db(db_path)
         upsert_entity(db_conn, Entity(id="e1", type="person", name="Corinne"))
