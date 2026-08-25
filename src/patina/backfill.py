@@ -78,7 +78,7 @@ def backfill_decisions_from_reactions(
 
         has_owner_ack = False
         for reaction in reactions:
-            name = reaction.get("name", "")
+            name = reaction.get("emoji") or reaction.get("name") or ""
             users = reaction.get("users", [])
             if name in ACK_REACTIONS and owner_set.intersection(users):
                 has_owner_ack = True
