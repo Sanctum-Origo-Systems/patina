@@ -1,24 +1,16 @@
+## v0.16.0 (2026-08-25)
+- #263: Feat: _obs_id mishandles NULL channel_id (one-line fix, no migrati ($0.38)
+- #261: Feat: Observation ids not re-keyed to new identity scheme after #2 ($4.13)
+- #259: Feat: Source-family normalization: key observation identity on fam ($2.22)
+- #258: Feat: Outlook adapter: skip meeting-request items at ingest time ( ($0.69)
+- #253: Feat: Observation dedup keys on channel_id, which is unstable — sa ($1.46)
+- #252: Feat: Migration: de-duplicate existing observation rows (channel_i ($2.75)
+- #251: Feat: Fix reject/edit signal capture: record decisions rows for re ($0.62)
+- #250: Feat: Wire draft_reply → propose_action to populate action_queue + ($1.91)
+Total: 8 PRs, $14.16
+
 ## v0.15.0 (2026-08-14)
 - #242: Feat: fix: rebuild journal_fts index for pre-existing entries ($0.82)
 - #240: Feat: fix: journal_search has same phrase-matching limitation as s ($0.72)
 Total: 2 PRs, $1.54
-
-## v0.14.0 (2026-08-05)
-- #237: Feat: docs: reframe README from assistant to cognitive framework + ($0.48)
-Total: 1 PRs, $0.48
-
-## v0.13.0 (2026-08-04)
-- #234: Feat: fix: remove autoloop from Python dependencies — it's a CLI t ($0.61)
-Total: 1 PRs, $0.61
-
-## v0.12.0 (2026-08-01)
-- #231: Feat: fix: store_search uses phrase matching for multi-word querie ($0.56)
-- #228: Feat: docs: add autoloop reference to README ($0.40)
-- #227: Feat: refactor: clean PR titles, add version-grouped format, and u ($4.64)
-Total: 3 PRs, $5.60
-
-## v0.11.0 (2026-07-31)
-- #225: Feat: Consolidate ingest.py to single list_dms call for DM fetching ($2.16)
-- #221: Feat: Remove conversations_list adapter methods and update adapter ($0.90)
-Total: 2 PRs, $3.06
 
