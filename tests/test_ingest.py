@@ -1081,7 +1081,7 @@ def test_auto_resolve_draft_reply_edited(tmp_path):
     home = tmp_path / "resolve_home"
     db_path = _setup_draft_reply(home)
 
-    port = MockOwnerReplyPort("I am too busy this week, let us discuss next Monday instead")
+    port = MockOwnerReplyPort("No need, I already handled the review myself earlier")
     ingest_live(port=port, source="mock", home=home)
 
     from patina.store import connect
@@ -1106,6 +1106,27 @@ def test_auto_resolve_no_matching_action(tmp_path):
     db_path = _setup_draft_reply(home)
 
     port = MockOwnerReplyPort("Random message", channel_id="D999")
+    ingest_live(port=port, source="mock", home=home)
+
+    from patina.store import connect
+
+    conn = connect(db_path)
+    action = conn.execute(
+        "SELECT status FROM action_queue WHERE action_type = 'draft_reply'"
+    ).fetchone()
+    assert action["status"] == "proposed"
+
+    decisions_count = conn.execute("SELECT COUNT(*) as cnt FROM decisions").fetchone()
+    assert decisions_count["cnt"] == 0
+    conn.close()
+
+
+def test_auto_resolve_draft_reply_unrelated_message(tmp_path):
+    """Unrelated owner message in channel with open draft leaves action proposed."""
+    home = tmp_path / "resolve_home"
+    db_path = _setup_draft_reply(home)
+
+    port = MockOwnerReplyPort("Completely unrelated topic about lunch plans")
     ingest_live(port=port, source="mock", home=home)
 
     from patina.store import connect
