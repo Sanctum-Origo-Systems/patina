@@ -18,8 +18,20 @@ from patina.owner import get_owner_entity_id, get_owner_user_ids, mark_entity_as
 from patina.store import connect, get_db_path, init_db, kv_get, kv_set, run_pending_migrations
 
 
+def _source_family(source: str) -> str:
+    if "slack" in source:
+        return "slack"
+    if "outlook" in source:
+        return "outlook"
+    return source
+
+
 def _obs_id(source: str, channel_id: str, thread_id: str | None, ts: float) -> str:
-    key = f"{source}:{channel_id}:{thread_id or ''}:{ts}"
+    family = _source_family(source)
+    if family == "slack":
+        key = f"slack:{ts}"
+    else:
+        key = f"{family}:{channel_id or ''}:{thread_id or ''}:{ts}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -112,14 +124,6 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
 
     for msg in messages:
         obs_id = _obs_id(source, msg.channel_id, msg.thread_id, msg.timestamp)
-
-        dup = conn.execute(
-            "SELECT 1 FROM observations WHERE channel_id = ? AND timestamp = ?",
-            (msg.channel_id, msg.timestamp),
-        ).fetchone()
-        if dup:
-            skipped += 1
-            continue
 
         obs = Observation(
             id=obs_id,

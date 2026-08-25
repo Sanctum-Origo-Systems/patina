@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from patina.autonomy.actions import propose_action
 from patina.store import connect, get_db_path, init_db
 from patina.style.draft import load_style_profile
 
@@ -78,6 +79,23 @@ def draft_reply(to: str, context: str) -> str:
         if user_profile:
             lines.append(f"Your communication style: {user_profile}")
         lines.append("\nMatch their formality, length, and tone. Be concise.")
+
+        obs = conn.execute(
+            """SELECT id FROM observations
+               WHERE sender_entity_id = ?
+               ORDER BY timestamp DESC LIMIT 1""",
+            (row["id"],),
+        ).fetchone()
+
+        propose_action(
+            conn,
+            action_type="draft_reply",
+            target_observation_id=obs["id"] if obs else None,
+            target_entity_id=row["id"],
+            payload={"context": context},
+            confidence=0.5,
+            autonomy_level=1,
+        )
 
         return "\n".join(lines)
     finally:

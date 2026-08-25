@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
+from patina.decisions import get_act_on_rate
 from patina.priority.objectives import list_objectives
 from patina.priority.scoring import score_item
 
@@ -34,6 +35,7 @@ def detect_urgency_shifts(
 
     objectives = list_objectives(active_only=True, home=home)
     now = time.time()
+    act_rate = get_act_on_rate(conn)
     shifts: list[dict] = []
 
     for row in rows:
@@ -55,7 +57,7 @@ def detect_urgency_shifts(
             has_deadline=False,
             sender_tier="unknown",
             objectives=objectives,
-            act_on_rate=None,
+            act_on_rate=act_rate,
         )
         curr_score = score_item(
             item_id=row["id"],
@@ -66,7 +68,7 @@ def detect_urgency_shifts(
             has_deadline=False,
             sender_tier="unknown",
             objectives=objectives,
-            act_on_rate=None,
+            act_on_rate=act_rate,
         )
 
         if prev_score.quadrant == "Q3" and curr_score.quadrant == "Q1":

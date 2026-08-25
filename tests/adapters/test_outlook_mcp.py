@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from patina.adapters.outlook_mcp import (
     OutlookMcpAdapter,
     _email_from_raw,
+    _is_meeting_message,
     _parse_outlook_datetime,
     _strip_caution_banner,
     _unwrap_email_list,
@@ -601,3 +602,121 @@ class TestEmailFromRawCautionBanner:
         }
         email = _email_from_raw(raw)
         assert "How about noon at the cafe?" in email.text
+
+
+FIXTURE_INBOX_WITH_MEETING_REQUEST = json.dumps(
+    [
+        {
+            "id": "AAMkNORM001",
+            "subject": "Quarterly Budget Discussion",
+            "from": {"name": "Park, David", "email": "dpark@example.com"},
+            "receivedDateTime": "2026-07-10T09:00:00Z",
+            "bodyPreview": "Please review the attached figures.",
+            "conversationId": "CONV_NORM001",
+            "toRecipients": [{"name": "Taylor, Morgan", "email": "mtaylor@example.com"}],
+            "messageClass": "IPM.Note",
+        },
+        {
+            "id": "AAMkMTG001",
+            "subject": "Weekly Standup",
+            "from": {"name": "Kim, Sonia", "email": "skim@example.com"},
+            "receivedDateTime": "2026-07-10T10:00:00Z",
+            "bodyPreview": "When: Wednesday 10:00 AM",
+            "conversationId": "CONV_MTG001",
+            "toRecipients": [{"name": "Taylor, Morgan", "email": "mtaylor@example.com"}],
+            "messageClass": "IPM.Schedule.Meeting.Request",
+        },
+        {
+            "id": "AAMkMTG002",
+            "subject": "Re: Weekly Standup",
+            "from": {"name": "Rivera, Lucia", "email": "lrivera@example.com"},
+            "receivedDateTime": "2026-07-10T10:05:00Z",
+            "bodyPreview": "Accepted",
+            "conversationId": "CONV_MTG002",
+            "toRecipients": [{"name": "Taylor, Morgan", "email": "mtaylor@example.com"}],
+            "messageClass": "IPM.Schedule.Meeting.Resp.Pos",
+        },
+        {
+            "id": "AAMkMTG003",
+            "subject": "Cancelled: Weekly Standup",
+            "from": {"name": "Kim, Sonia", "email": "skim@example.com"},
+            "receivedDateTime": "2026-07-10T10:10:00Z",
+            "bodyPreview": "This meeting has been cancelled.",
+            "conversationId": "CONV_MTG003",
+            "toRecipients": [{"name": "Taylor, Morgan", "email": "mtaylor@example.com"}],
+            "messageClass": "IPM.Schedule.Meeting.Canceled",
+        },
+    ]
+)
+
+
+class TestIsMeetingMessage:
+    def test_meeting_request(self):
+        assert _is_meeting_message({"messageClass": "IPM.Schedule.Meeting.Request"})
+
+    def test_meeting_response_positive(self):
+        assert _is_meeting_message({"messageClass": "IPM.Schedule.Meeting.Resp.Pos"})
+
+    def test_meeting_canceled(self):
+        assert _is_meeting_message({"messageClass": "IPM.Schedule.Meeting.Canceled"})
+
+    def test_normal_email(self):
+        assert not _is_meeting_message({"messageClass": "IPM.Note"})
+
+    def test_no_message_class(self):
+        assert not _is_meeting_message({"subject": "Hello"})
+
+    def test_empty_message_class(self):
+        assert not _is_meeting_message({"messageClass": ""})
+
+    def test_snake_case_key(self):
+        assert _is_meeting_message({"message_class": "IPM.Schedule.Meeting.Request"})
+
+
+class TestMeetingRequestFilter:
+    def test_meeting_request_skipped_in_inbox(self):
+        bridge = _make_bridge({"email_inbox": FIXTURE_INBOX_WITH_MEETING_REQUEST})
+        adapter = OutlookMcpAdapter(bridge)
+        emails = adapter.list_inbox(since=0.0)
+        assert len(emails) == 1
+        assert emails[0].subject == "Quarterly Budget Discussion"
+
+    def test_normal_email_returned_in_inbox(self):
+        fixture = json.dumps(
+            [
+                {
+                    "id": "AAMkNOTE001",
+                    "subject": "Project Status Update",
+                    "from": {"name": "Chen, Wei", "email": "wchen@example.com"},
+                    "receivedDateTime": "2026-07-10T08:00:00Z",
+                    "bodyPreview": "Everything is on track.",
+                    "conversationId": "CONV_NOTE001",
+                    "toRecipients": [{"name": "Taylor, Morgan", "email": "mtaylor@example.com"}],
+                    "messageClass": "IPM.Note",
+                }
+            ]
+        )
+        bridge = _make_bridge({"email_inbox": fixture})
+        adapter = OutlookMcpAdapter(bridge)
+        emails = adapter.list_inbox(since=0.0)
+        assert len(emails) == 1
+        assert emails[0].subject == "Project Status Update"
+
+    def test_emails_without_message_class_still_returned(self):
+        fixture = json.dumps(
+            [
+                {
+                    "id": "AAMkNOCLASS001",
+                    "subject": "No Class Field",
+                    "from": {"name": "Park, David", "email": "dpark@example.com"},
+                    "receivedDateTime": "2026-07-10T08:00:00Z",
+                    "bodyPreview": "This item has no messageClass.",
+                    "conversationId": "CONV_NOCLASS001",
+                    "toRecipients": [],
+                }
+            ]
+        )
+        bridge = _make_bridge({"email_inbox": fixture})
+        adapter = OutlookMcpAdapter(bridge)
+        emails = adapter.list_inbox(since=0.0)
+        assert len(emails) == 1
