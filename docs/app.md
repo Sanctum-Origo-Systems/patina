@@ -874,7 +874,7 @@ No other system does all of these simultaneously:
 | 2 — Priority + Judgment | complete | 2,400 | 1,190 | 36 tests, scoring+catch-up+priorities+objectives |
 | 3 — Style + Drafting | complete | 3,000 | 860 | 33 tests, patterns+profiles+draft (MockLLM) |
 | 4 — Belief Graph Intelligence | complete | 1,900 | 840 | 23 tests, decay+contradictions+relationships+synthesis |
-| 5 — Graduated Autonomy | complete | 1,300 | 930 | 22 tests, levels+actions+tracker+anti-patterns |
+| 5 — Graduated Autonomy | complete | 1,300 | 930 | 22 tests, levels+actions+tracker+anti-patterns, draft_reply→action_queue→decisions loop wired |
 | 6 — MCP Server | complete | 2,300 | 680 | 13 tests, 19 tools, FastMCP stdio server |
 | 7 — Live Adapters | complete | 1,800 | 640 | 14 tests, ports+slack+imap+heartbeat+connect CLI |
 | 8 — Eval + Polish | complete | 1,300 | 450 | 16 eval tests, CI workflow, README polish, wheel builds |

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from patina.autonomy.actions import approve_action, reject_action
+from patina.autonomy.actions import approve_action, edit_action, reject_action
 from patina.autonomy.levels import (
     can_advance,
     current_level,
@@ -65,7 +65,19 @@ def reject(action_id: str) -> str:
         conn.close()
 
 
+def edit(action_id: str) -> str:
+    """Mark a pending autonomous action as edited (user modified it before acting)."""
+    conn = _get_conn()
+    try:
+        if edit_action(conn, action_id):
+            return f"Edited [{action_id[:8]}]"
+        return f"No pending action found matching '{action_id}'"
+    finally:
+        conn.close()
+
+
 def register(mcp):
     mcp.tool()(autonomy_status)
     mcp.tool()(approve)
     mcp.tool()(reject)
+    mcp.tool()(edit)

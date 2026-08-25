@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 
+from patina.decisions import get_act_on_rate
 from patina.priority.escalation import escalation_tier
 from patina.priority.objectives import list_objectives
 from patina.priority.scoring import score_item
@@ -33,6 +34,7 @@ def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]
         ).fetchall()
 
         objectives = list_objectives(active_only=True, home=home)
+        act_rate = get_act_on_rate(conn)
 
         needs_action: list[dict] = []
         new: list[dict] = []
@@ -54,7 +56,7 @@ def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]
                 has_deadline=False,
                 sender_tier="unknown",
                 objectives=objectives,
-                act_on_rate=None,
+                act_on_rate=act_rate,
             )
 
             item = {
@@ -115,6 +117,7 @@ def priorities(*, home: Path | None = None, days: int = 7) -> dict[str, list[dic
         ).fetchall()
 
         objectives = list_objectives(active_only=True, home=home)
+        act_rate = get_act_on_rate(conn)
 
         result: dict[str, list[dict]] = {"Q1": [], "Q2": [], "Q3": [], "Q4": []}
 
@@ -133,7 +136,7 @@ def priorities(*, home: Path | None = None, days: int = 7) -> dict[str, list[dic
                 has_deadline=False,
                 sender_tier="unknown",
                 objectives=objectives,
-                act_on_rate=None,
+                act_on_rate=act_rate,
             )
 
             item = {
