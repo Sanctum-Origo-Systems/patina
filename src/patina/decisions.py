@@ -63,6 +63,10 @@ def get_act_on_rate(
     return (row["acted"] or 0) / total
 
 
+SIMILARITY_FLOOR = 0.3
+SIMILARITY_ACTED_THRESHOLD = 0.6
+
+
 def _text_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
@@ -84,7 +88,10 @@ def auto_resolve_draft_reply(
         return None
 
     similarity = _text_similarity(sent_text, draft_text)
-    outcome = "acted" if similarity >= 0.6 else "edited"
+    if similarity < SIMILARITY_FLOOR:
+        return None
+
+    outcome = "acted" if similarity >= SIMILARITY_ACTED_THRESHOLD else "edited"
     status = "approved" if outcome == "acted" else "edited"
 
     now = datetime.now(UTC).isoformat()
