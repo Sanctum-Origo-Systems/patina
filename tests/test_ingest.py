@@ -973,3 +973,194 @@ def test_dedup_v2_survivor_preference_outlook(tmp_path):
     assert meta["duration_minutes"] == 30
     assert meta["subject"] == "Standup"
     conn.close()
+
+
+def _setup_draft_reply(home, draft_text="Sure, I will review it today!"):
+    from patina.autonomy.actions import propose_action
+    from patina.extraction import extract_sender_entity
+    from patina.graph import insert_observation, upsert_entity
+    from patina.models import Observation
+    from patina.owner import mark_entity_as_owner
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    recipient = extract_sender_entity("U001", "Wren")
+    upsert_entity(conn, recipient)
+
+    obs = Observation(
+        id="obs_from_recipient",
+        source="mock",
+        channel_id="D001",
+        thread_id=None,
+        timestamp=_FIXED_TS,
+        sender_entity_id=recipient.id,
+        text="Hey, can you review this?",
+        metadata={},
+    )
+    insert_observation(conn, obs)
+
+    owner = extract_sender_entity("U_OWNER", "Jasper")
+    upsert_entity(conn, owner)
+    mark_entity_as_owner(conn, owner.id)
+
+    propose_action(
+        conn,
+        action_type="draft_reply",
+        target_observation_id="obs_from_recipient",
+        target_entity_id=recipient.id,
+        payload={"context": "review request", "draft_text": draft_text},
+        confidence=0.5,
+        autonomy_level=1,
+    )
+
+    conn.close()
+    return db_path
+
+
+class MockOwnerReplyPort:
+    def __init__(self, reply_text, channel_id="D001"):
+        self._reply_text = reply_text
+        self._channel_id = channel_id
+
+    @property
+    def platform(self):
+        return "mock"
+
+    def list_dm_messages(self, since):
+        return []
+
+    def list_mentions(self, since):
+        return []
+
+    def list_sent_messages(self, since):
+        return [
+            ChatMessage(
+                user_id="U_OWNER",
+                text=self._reply_text,
+                timestamp=_FIXED_TS + 100,
+                channel_id=self._channel_id,
+                user_name="Jasper",
+            ),
+        ]
+
+    def list_channel_messages(self, channel_id, since):
+        return []
+
+    def get_thread(self, channel_id, thread_id):
+        return []
+
+
+def test_auto_resolve_draft_reply_acted(tmp_path):
+    home = tmp_path / "resolve_home"
+    db_path = _setup_draft_reply(home)
+
+    port = MockOwnerReplyPort("Sure, I will review it today!")
+    ingest_live(port=port, source="mock", home=home)
+
+    from patina.store import connect
+
+    conn = connect(db_path)
+    action = conn.execute(
+        "SELECT status FROM action_queue WHERE action_type = 'draft_reply'"
+    ).fetchone()
+    assert action["status"] == "approved"
+
+    decision = conn.execute(
+        "SELECT action FROM decisions WHERE observation_id = 'obs_from_recipient'"
+    ).fetchone()
+    assert decision is not None
+    assert decision["action"] == "acted"
+    conn.close()
+
+
+def test_auto_resolve_draft_reply_edited(tmp_path):
+    home = tmp_path / "resolve_home"
+    db_path = _setup_draft_reply(home)
+
+    port = MockOwnerReplyPort("I am too busy this week, let us discuss next Monday instead")
+    ingest_live(port=port, source="mock", home=home)
+
+    from patina.store import connect
+
+    conn = connect(db_path)
+    action = conn.execute(
+        "SELECT status FROM action_queue WHERE action_type = 'draft_reply'"
+    ).fetchone()
+    assert action["status"] == "edited"
+
+    decision = conn.execute(
+        "SELECT action FROM decisions WHERE observation_id = 'obs_from_recipient'"
+    ).fetchone()
+    assert decision is not None
+    assert decision["action"] == "edited"
+    conn.close()
+
+
+def test_auto_resolve_no_matching_action(tmp_path):
+    """Owner sends message to a different channel — existing proposed action unchanged."""
+    home = tmp_path / "resolve_home"
+    db_path = _setup_draft_reply(home)
+
+    port = MockOwnerReplyPort("Random message", channel_id="D999")
+    ingest_live(port=port, source="mock", home=home)
+
+    from patina.store import connect
+
+    conn = connect(db_path)
+    action = conn.execute(
+        "SELECT status FROM action_queue WHERE action_type = 'draft_reply'"
+    ).fetchone()
+    assert action["status"] == "proposed"
+
+    decisions_count = conn.execute("SELECT COUNT(*) as cnt FROM decisions").fetchone()
+    assert decisions_count["cnt"] == 0
+    conn.close()
+
+
+def test_auto_resolve_false_positive_guard(tmp_path):
+    """Owner sends message to channel with no proposed action — no decision created."""
+    home = tmp_path / "resolve_home"
+
+    from patina.extraction import extract_sender_entity
+    from patina.graph import upsert_entity
+    from patina.owner import mark_entity_as_owner
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    owner = extract_sender_entity("U_OWNER", "Jasper")
+    upsert_entity(conn, owner)
+    mark_entity_as_owner(conn, owner.id)
+    conn.close()
+
+    port = MockOwnerReplyPort("Hello world")
+    ingest_live(port=port, source="mock", home=home)
+
+    conn = connect(db_path)
+    decisions_count = conn.execute("SELECT COUNT(*) as cnt FROM decisions").fetchone()
+    assert decisions_count["cnt"] == 0
+    conn.close()
+
+
+def test_auto_resolve_act_on_rate(tmp_path):
+    """After acted resolution, act_on_rate reflects the resolved decision."""
+    home = tmp_path / "resolve_home"
+    db_path = _setup_draft_reply(home)
+
+    port = MockOwnerReplyPort("Sure, I will review it today!")
+    ingest_live(port=port, source="mock", home=home)
+
+    from patina.decisions import get_act_on_rate
+    from patina.store import connect
+
+    conn = connect(db_path)
+    rate = get_act_on_rate(conn)
+    assert rate == 1.0
+    conn.close()
