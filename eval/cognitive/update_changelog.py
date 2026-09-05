@@ -297,6 +297,7 @@ def daily(repo: str, since_days: int = 1) -> None:
     if kind:
         new_version = bump_version(kind)
         if new_version:
+            subprocess.run(["uv", "lock"], cwd=REPO_DIR, check=True)
             print(f"  Bumped version to {new_version}")
 
     version = new_version or current_version()
@@ -319,6 +320,7 @@ def daily(repo: str, since_days: int = 1) -> None:
     )
     if new_version:
         subprocess.run(["git", "add", "pyproject.toml"], cwd=REPO_DIR)
+        subprocess.run(["git", "add", "uv.lock"], cwd=REPO_DIR)
 
     diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_DIR, capture_output=True)
     if diff.returncode == 0:
@@ -375,6 +377,7 @@ def main(argv: list[str] | None = None) -> None:
         if kind:
             new_version = bump_version(kind)
             if new_version:
+                subprocess.run(["uv", "lock"], cwd=REPO_DIR, check=True)
                 print(f"Bumped version to {new_version}")
     elif args.command == "daily":
         daily(args.repo, args.since_days)
