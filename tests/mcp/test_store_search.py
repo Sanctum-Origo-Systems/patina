@@ -279,19 +279,25 @@ class TestSanitizeFtsQuery:
         assert _sanitize_fts_query("re:Invent") == '"re:Invent"'
 
     def test_escapes_embedded_quotes(self):
-        assert _sanitize_fts_query('say "hi"') == '"say" """hi"""'
+        assert _sanitize_fts_query('say "hi"') == '"say" AND """hi"""'
 
     def test_empty_string(self):
         assert _sanitize_fts_query("") == '""'
 
     def test_multi_word_produces_per_term_quoting(self):
-        assert _sanitize_fts_query("stalled security") == '"stalled" "security"'
+        assert _sanitize_fts_query("stalled security") == '"stalled" AND "security"'
 
     def test_multi_word_with_colon(self):
-        assert _sanitize_fts_query("re:Invent talk") == '"re:Invent" "talk"'
+        assert _sanitize_fts_query("re:Invent talk") == '"re:Invent" AND "talk"'
 
     def test_fts_operators_quoted_per_term(self):
-        assert _sanitize_fts_query("cats AND dogs") == '"cats" "AND" "dogs"'
+        assert _sanitize_fts_query("cats AND dogs") == '"cats" AND "AND" AND "dogs"'
+
+    def test_or_join(self):
+        assert (
+            _sanitize_fts_query("stalled security", join="OR")
+            == '"stalled" OR "security"'
+        )
 
 
 class TestStoreSearchSpecialChars:

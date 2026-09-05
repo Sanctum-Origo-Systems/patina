@@ -127,13 +127,15 @@ def done(item_id: str) -> str:
         conn.close()
 
 
-def _sanitize_fts_query(query: str) -> str:
-    """Quote each term to escape FTS5 special syntax while allowing non-adjacent matching."""
+def _sanitize_fts_query(query: str, join: str = "AND") -> str:
+    """Quote each term and join with AND or OR to escape FTS5 special syntax."""
     terms = query.split()
     if not terms:
         return '""'
     safe_terms = ['"' + t.replace('"', '""') + '"' for t in terms]
-    return " ".join(safe_terms)
+    if len(safe_terms) == 1:
+        return safe_terms[0]
+    return f" {join} ".join(safe_terms)
 
 
 def store_search(query: str, limit: int = 20) -> str:
@@ -149,9 +151,7 @@ def store_search(query: str, limit: int = 20) -> str:
         seen_ids: set[str] = set()
         all_rows: list = []
 
-        safe_query = _sanitize_fts_query(query)
-        fts_rows = conn.execute(
-            """SELECT o.id, o.source, o.timestamp, o.text,
+        fts_sql = """SELECT o.id, o.source, o.timestamp, o.text,
                       e.name AS sender_name,
                       o.metadata
                FROM observations_fts f
@@ -159,9 +159,14 @@ def store_search(query: str, limit: int = 20) -> str:
                LEFT JOIN entities e ON o.sender_entity_id = e.id
                WHERE observations_fts MATCH ?
                ORDER BY rank
-               LIMIT ?""",
-            (safe_query, limit),
-        ).fetchall()
+               LIMIT ?"""
+
+        and_query = _sanitize_fts_query(query, join="AND")
+        fts_rows = conn.execute(fts_sql, (and_query, limit)).fetchall()
+
+        if not fts_rows:
+            or_query = _sanitize_fts_query(query, join="OR")
+            fts_rows = conn.execute(fts_sql, (or_query, limit)).fetchall()
 
         for row in fts_rows:
             seen_ids.add(row["id"])
