@@ -11,7 +11,9 @@ import pytest
 from eval.cognitive.update_changelog import (
     append_entry,
     clean_title,
+    daily,
     has_open_changelog_pr,
+    main,
     trim_changelog,
 )
 
@@ -405,3 +407,102 @@ class TestDailySkipsOnOpenPr:
             daily("owner/repo")
 
         assert "no new merged prs" in capsys.readouterr().out.lower()
+
+
+class TestUvLockSync:
+    """After bump_version(), both daily() and single must run `uv lock`."""
+
+    def test_daily_calls_uv_lock_and_stages_lockfile(self, tmp_path: Path) -> None:
+        changelog = tmp_path / "CHANGELOG.md"
+        archive = tmp_path / "changelog-archive.md"
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "patina"\nversion = "0.15.0"\n')
+
+        fake_pr = {
+            "number": 100,
+            "title": "feat: add widget",
+            "body": "- Cost: $1.00",
+        }
+
+        calls: list[list[str]] = []
+
+        def track_subprocess(cmd, **kwargs):
+            calls.append(list(cmd))
+            if cmd[:3] == ["git", "diff", "--cached"]:
+                return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with (
+            patch("eval.cognitive.update_changelog.has_open_changelog_pr", return_value=False),
+            patch("eval.cognitive.update_changelog.fetch_merged_prs", return_value=[fake_pr]),
+            patch("eval.cognitive.update_changelog.existing_pr_numbers", return_value=set()),
+            patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
+            patch("eval.cognitive.update_changelog.ARCHIVE_PATH", archive),
+            patch("eval.cognitive.update_changelog.PYPROJECT_PATH", pyproject),
+            patch("eval.cognitive.update_changelog.subprocess.run", side_effect=track_subprocess),
+        ):
+            daily("owner/repo")
+
+        uv_lock_calls = [c for c in calls if c[:2] == ["uv", "lock"]]
+        assert uv_lock_calls, "uv lock must be called after bump_version()"
+
+        git_add_calls = [c for c in calls if c[:2] == ["git", "add"]]
+        staged_files = [c[2] for c in git_add_calls]
+        assert "uv.lock" in staged_files, "uv.lock must be staged"
+
+    def test_daily_skips_uv_lock_when_no_bump(self, tmp_path: Path) -> None:
+        changelog = tmp_path / "CHANGELOG.md"
+        archive = tmp_path / "changelog-archive.md"
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "patina"\nversion = "0.15.0"\n')
+
+        fake_pr = {
+            "number": 100,
+            "title": "chore: update deps",
+            "body": "- Cost: $0.50",
+        }
+
+        calls: list[list[str]] = []
+
+        def track_subprocess(cmd, **kwargs):
+            calls.append(list(cmd))
+            if cmd[:3] == ["git", "diff", "--cached"]:
+                return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with (
+            patch("eval.cognitive.update_changelog.has_open_changelog_pr", return_value=False),
+            patch("eval.cognitive.update_changelog.fetch_merged_prs", return_value=[fake_pr]),
+            patch("eval.cognitive.update_changelog.existing_pr_numbers", return_value=set()),
+            patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
+            patch("eval.cognitive.update_changelog.ARCHIVE_PATH", archive),
+            patch("eval.cognitive.update_changelog.PYPROJECT_PATH", pyproject),
+            patch("eval.cognitive.update_changelog.subprocess.run", side_effect=track_subprocess),
+        ):
+            daily("owner/repo")
+
+        uv_lock_calls = [c for c in calls if c[:2] == ["uv", "lock"]]
+        assert not uv_lock_calls, "uv lock should not be called when no version bump"
+
+    def test_single_calls_uv_lock_on_version_bump(self, tmp_path: Path) -> None:
+        changelog = tmp_path / "CHANGELOG.md"
+        archive = tmp_path / "changelog-archive.md"
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "patina"\nversion = "0.15.0"\n')
+
+        calls: list[list[str]] = []
+
+        def track_subprocess(cmd, **kwargs):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with (
+            patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
+            patch("eval.cognitive.update_changelog.ARCHIVE_PATH", archive),
+            patch("eval.cognitive.update_changelog.PYPROJECT_PATH", pyproject),
+            patch("eval.cognitive.update_changelog.subprocess.run", side_effect=track_subprocess),
+        ):
+            main(["single", "--number", "100", "--title", "feat: add widget", "--cost", "1.0"])
+
+        uv_lock_calls = [c for c in calls if c[:2] == ["uv", "lock"]]
+        assert uv_lock_calls, "uv lock must be called after bump_version() in single path"
