@@ -294,10 +294,7 @@ class TestSanitizeFtsQuery:
         assert _sanitize_fts_query("cats AND dogs") == '"cats" AND "AND" AND "dogs"'
 
     def test_or_join(self):
-        assert (
-            _sanitize_fts_query("stalled security", join="OR")
-            == '"stalled" OR "security"'
-        )
+        assert _sanitize_fts_query("stalled security", join="OR") == '"stalled" OR "security"'
 
 
 class TestStoreSearchSpecialChars:
