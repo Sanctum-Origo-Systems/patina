@@ -1,3 +1,8 @@
+## v0.17.0 (2026-09-06)
+- #278: Feat: store_search AND-joins query terms — multi-word queries sile ($0.70)
+- #277: Feat: p0: daily changelog job bumps pyproject version but never sy ($1.20)
+Total: 2 PRs, $1.90
+
 ## v0.16.0 (2026-08-25)
 - #273: Feat: auto_resolve_draft_reply: add lower-similarity floor so unre ($1.31)
 - #271: Feat: Auto-resolve proposed draft_reply actions on owner-sent mess ($3.40)
@@ -13,9 +18,4 @@
 - #251: Feat: Fix reject/edit signal capture: record decisions rows for re ($0.62)
 - #250: Feat: Wire draft_reply → propose_action to populate action_queue + ($1.91)
 Total: 13 PRs, $21.88
-
-## v0.15.0 (2026-08-14)
-- #242: Feat: fix: rebuild journal_fts index for pre-existing entries ($0.82)
-- #240: Feat: fix: journal_search has same phrase-matching limitation as s ($0.72)
-Total: 2 PRs, $1.54
 
