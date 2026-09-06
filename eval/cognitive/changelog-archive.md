@@ -130,3 +130,8 @@ Total: 3 PRs, $5.60
 - #221: Feat: Remove conversations_list adapter methods and update adapter ($0.90)
 Total: 2 PRs, $3.06
 
+## v0.15.0 (2026-08-14)
+- #242: Feat: fix: rebuild journal_fts index for pre-existing entries ($0.82)
+- #240: Feat: fix: journal_search has same phrase-matching limitation as s ($0.72)
+Total: 2 PRs, $1.54
+
