@@ -96,3 +96,70 @@ def test_journal_search_colon_does_not_crash(db_path):
 
     result = journal_search("re:Invent")
     assert "re:Invent" in result
+
+
+def test_journal_search_or_fallback_partial_match(db_path):
+    journal_write("2026-08-01", "The quick brown fox jumped over the lazy dog")
+
+    result = journal_search("quick brown lazy cat")
+    assert "quick brown fox" in result
+    assert "2026-08-01" in result
+
+
+def test_journal_search_or_fallback_single_term_match(db_path):
+    journal_write("2026-08-02", "Reviewed the quarterly budget forecast")
+
+    result = journal_search("budget roadmap timeline")
+    assert "budget" in result
+    assert "2026-08-02" in result
+
+
+def test_journal_search_and_preferred_over_or(db_path):
+    journal_write("2026-08-03", "Alpha and beta testing completed")
+    journal_write("2026-08-04", "Only alpha was mentioned here")
+
+    result = journal_search("alpha beta")
+    assert "2026-08-03" in result
+
+
+def test_journal_search_recency_mode_empty_query(db_path):
+    journal_write("2026-08-10", "First entry about the project kickoff")
+    journal_write("2026-08-11", "Second entry about design review")
+    journal_write("2026-08-12", "Third entry about sprint planning")
+
+    result = journal_search("")
+    assert "2026-08-12" in result
+    assert "2026-08-11" in result
+    assert "2026-08-10" in result
+
+
+def test_journal_search_recency_mode_no_query_arg(db_path):
+    journal_write("2026-08-15", "Entry without explicit query arg")
+
+    result = journal_search()
+    assert "2026-08-15" in result
+
+
+def test_journal_search_recency_mode_respects_limit(db_path):
+    for i in range(5):
+        journal_write(f"2026-08-2{i}", f"Recency entry number {i}")
+
+    result = journal_search("", limit=3)
+    assert result.count("- [") == 3
+
+
+def test_journal_search_recency_mode_ordered_by_date_desc(db_path):
+    journal_write("2026-08-01", "Oldest entry for ordering test")
+    journal_write("2026-08-03", "Newest entry for ordering test")
+    journal_write("2026-08-02", "Middle entry for ordering test")
+
+    result = journal_search("", limit=3)
+    lines = result.strip().split("\n")
+    assert "2026-08-03" in lines[0]
+    assert "2026-08-02" in lines[1]
+    assert "2026-08-01" in lines[2]
+
+
+def test_journal_search_recency_mode_empty_db(db_path):
+    result = journal_search("")
+    assert result == "No journal entries yet."
