@@ -32,10 +32,16 @@
       "avg_cost_usd": 0.39,
       "human_edit_rate": 0.0
     },
+    "src/patina/autonomy/": {
+      "implementations": 1,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 0.62,
+      "human_edit_rate": 0.0
+    },
     "src/patina/mcp/": {
-      "implementations": 8,
-      "first_attempt_rate": 0.75,
-      "avg_cost_usd": 0.48,
+      "implementations": 7,
+      "first_attempt_rate": 0.71,
+      "avg_cost_usd": 0.46,
       "human_edit_rate": 0.0
     },
     "src/patina/priority/": {

@@ -12,11 +12,12 @@
 
 | Module | Success | Avg Cost | PRs | Auto-merge ready? |
 |--------|---------|----------|-----|--------------------|
-| other | 0% | $1.09 | 8 | No |
-| src/patina/ | 0% | $1.25 | 21 | No |
-| src/patina/adapters/ | 0% | $0.38 | 11 | No |
-| src/patina/mcp/ | 0% | $0.43 | 7 | No |
-| src/patina/priority/ | 0% | $1.91 | 1 | No |
+| other | 62% | $1.09 | 8 | No |
+| src/patina/ | 76% | $1.42 | 17 | No |
+| src/patina/adapters/ | 36% | $0.39 | 14 | No |
+| src/patina/autonomy/ | 100% | $0.62 | 1 | No |
+| src/patina/mcp/ | 71% | $0.46 | 7 | No |
+| src/patina/priority/ | 100% | $1.91 | 1 | No |
 
 ## Trend
 
@@ -49,10 +50,11 @@ xychart-beta
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
-pie title Per-Module Success Distribution
-    "other (0%, 8 PRs)" : 8
-    "src/patina/ (0%, 21 PRs)" : 21
-    "src/patina/adapters/ (0%, 11 PRs)" : 11
-    "src/patina/mcp/ (0%, 7 PRs)" : 7
-    "src/patina/priority/ (0%, 1 PRs)" : 1
+pie title PR Distribution by Module
+    "other (62%, 8 PRs)" : 8
+    "src/patina/ (76%, 17 PRs)" : 17
+    "src/patina/adapters/ (36%, 14 PRs)" : 14
+    "src/patina/autonomy/ (100%, 1 PRs)" : 1
+    "src/patina/mcp/ (71%, 7 PRs)" : 7
+    "src/patina/priority/ (100%, 1 PRs)" : 1
 ```
