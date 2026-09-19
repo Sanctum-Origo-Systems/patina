@@ -21,27 +21,27 @@
       "human_edit_rate": 0.38
     },
     "src/patina/": {
-      "implementations": 20,
-      "first_attempt_rate": 0.7,
-      "avg_cost_usd": 1.28,
+      "implementations": 17,
+      "first_attempt_rate": 0.76,
+      "avg_cost_usd": 1.42,
       "human_edit_rate": 0.0
     },
     "src/patina/adapters/": {
-      "implementations": 11,
+      "implementations": 14,
       "first_attempt_rate": 0.36,
-      "avg_cost_usd": 0.38,
-      "human_edit_rate": 0.0
-    },
-    "src/patina/autonomy/": {
-      "implementations": 1,
-      "first_attempt_rate": 1.0,
-      "avg_cost_usd": 1.91,
+      "avg_cost_usd": 0.39,
       "human_edit_rate": 0.0
     },
     "src/patina/mcp/": {
       "implementations": 8,
       "first_attempt_rate": 0.75,
-      "avg_cost_usd": 0.47,
+      "avg_cost_usd": 0.48,
+      "human_edit_rate": 0.0
+    },
+    "src/patina/priority/": {
+      "implementations": 1,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 1.91,
       "human_edit_rate": 0.0
     }
   }
