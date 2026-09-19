@@ -1,0 +1,20 @@
+{
+  "date": "2026-08-10",
+  "total_implementations": 2,
+  "first_attempt_rate": 1.0,
+  "avg_cost_usd": 0.77,
+  "avg_duration_seconds": 274,
+  "attempt_distribution": {
+    "1": 2
+  },
+  "human_edit_rate": 0.0,
+  "human_edit_count": 0,
+  "merged_pr_count": 2,
+  "closed_without_merge": 0,
+  "modules": {
+    "src/patina/": {
+      "implementations": 2,
+      "first_attempt_rate": 1.0
+    }
+  }
+}
