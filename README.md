@@ -96,6 +96,8 @@ The core operational pattern is a two-agent loop with human gates at both ends: 
 
 The observer maintains two belief graphs: beliefs about the world it watches, and beliefs about its own operational reliability — enabling self-correction over time.
 
+**[View live builder performance dashboard (EVAL.md)](EVAL.md)** — first-attempt success rate, cost trends, and per-module breakdown. Updated daily.
+
 ## What Makes This Different
 
 1. **Cognitive framework, not an assistant** — an architecture for systems that form, hold, and act on beliefs
