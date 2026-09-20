@@ -50,5 +50,6 @@ triage_labels = [
     "in-progress",
     "in-review",
     "needs-human",
+    "relay",
 ]
 timer_prefix = "patina"
