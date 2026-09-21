@@ -151,3 +151,8 @@ Total: 2 PRs, $1.54
 - #250: Feat: Wire draft_reply → propose_action to populate action_queue + ($1.91)
 Total: 13 PRs, $21.88
 
+## v0.17.0 (2026-09-06)
+- #278: Feat: store_search AND-joins query terms — multi-word queries sile ($0.70)
+- #277: Feat: p0: daily changelog job bumps pyproject version but never sy ($1.20)
+Total: 2 PRs, $1.90
+
