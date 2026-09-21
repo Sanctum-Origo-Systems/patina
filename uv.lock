@@ -390,7 +390,7 @@ wheels = [
 
 [[package]]
 name = "patina"
-version = "0.18.1"
+version = "0.18.2"
 source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },
