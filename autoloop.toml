@@ -52,4 +52,7 @@ triage_labels = [
     "needs-human",
     "relay",
 ]
+# Graduated autonomy — repo-level promotion (not enough per-module volume yet)
+auto_merge_promotion_level = "repo"
+
 timer_prefix = "patina"
