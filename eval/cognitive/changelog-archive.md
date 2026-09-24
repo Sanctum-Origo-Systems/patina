@@ -156,3 +156,7 @@ Total: 13 PRs, $21.88
 - #277: Feat: p0: daily changelog job bumps pyproject version but never sy ($1.20)
 Total: 2 PRs, $1.90
 
+## v0.18.0 (2026-09-09)
+- #281: Feat: journal_search AND-joins query terms and has no recency mode ($0.64)
+Total: 1 PRs, $0.64
+
