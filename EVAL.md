@@ -15,7 +15,8 @@
 | other | 62% | $1.09 | 8 | No |
 | src/patina/ | 75% | $1.46 | 16 | No |
 | src/patina/adapters/ | 36% | $0.39 | 14 | No |
-| src/patina/mcp/ | 78% | $0.51 | 9 | No |
+| src/patina/autonomy/ | 100% | $0.62 | 1 | No |
+| src/patina/mcp/ | 75% | $0.49 | 8 | No |
 | src/patina/priority/ | 100% | $1.91 | 1 | No |
 
 ## Trend
@@ -33,7 +34,7 @@
 | 2026-09-20 | 0 | 78% | $0.77 | 10% |
 | 2026-09-21 | 0 | 78% | $0.77 | 10% |
 | 2026-09-22 | 0 | 78% | $0.77 | 10% |
-| 2026-09-23 | 17 | 78% | $0.77 | 10% |
+| 2026-09-23 | 0 | 78% | $0.77 | 10% |
 | 2026-09-24 | 0 | 78% | $0.77 | 10% |
 
 ```mermaid
@@ -58,6 +59,7 @@ pie title Attempt Distribution by Module
     "other (62%, 8 impl)" : 8
     "src/patina/ (75%, 16 impl)" : 16
     "src/patina/adapters/ (36%, 14 impl)" : 14
-    "src/patina/mcp/ (78%, 9 impl)" : 9
+    "src/patina/autonomy/ (100%, 1 impl)" : 1
+    "src/patina/mcp/ (75%, 8 impl)" : 8
     "src/patina/priority/ (100%, 1 impl)" : 1
 ```
