@@ -1,20 +1,60 @@
 {
   "date": "2026-08-31",
-  "total_implementations": 2,
-  "first_attempt_rate": 1.0,
-  "avg_cost_usd": 0.95,
-  "avg_duration_seconds": 360,
+  "total_implementations": 58,
+  "first_attempt_rate": 0.78,
+  "avg_cost_usd": 0.8,
+  "avg_duration_seconds": 286,
   "attempt_distribution": {
-    "1": 2
+    "1": 46,
+    "2": 9,
+    "3+": 3
   },
-  "human_edit_rate": 0.0,
-  "human_edit_count": 0,
-  "merged_pr_count": 2,
+  "human_edit_rate": 0.1,
+  "human_edit_count": 5,
+  "merged_pr_count": 48,
   "closed_without_merge": 0,
   "modules": {
+    "other": {
+      "implementations": 8,
+      "first_attempt_rate": 0.62,
+      "avg_cost_usd": 0.94,
+      "human_edit_rate": 0.62,
+      "merged_clean_count": 3
+    },
     "src/patina/": {
-      "implementations": 2,
-      "first_attempt_rate": 1.0
+      "implementations": 17,
+      "first_attempt_rate": 0.76,
+      "avg_cost_usd": 1.42,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 17
+    },
+    "src/patina/adapters/": {
+      "implementations": 14,
+      "first_attempt_rate": 0.36,
+      "avg_cost_usd": 0.39,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 14
+    },
+    "src/patina/autonomy/": {
+      "implementations": 1,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 0.62,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 1
+    },
+    "src/patina/mcp/": {
+      "implementations": 7,
+      "first_attempt_rate": 0.71,
+      "avg_cost_usd": 0.27,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 7
+    },
+    "src/patina/priority/": {
+      "implementations": 1,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 1.91,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 1
     }
   }
 }
