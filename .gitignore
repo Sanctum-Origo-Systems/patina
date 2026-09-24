@@ -17,6 +17,7 @@ docs/features/*
 !docs/features/autoloop-extraction.md
 !docs/features/autoloop-extraction-runbook.md
 .mcp.json
+CLAUDE.local.md
 fixtures/**/*.zip
 
 .claude/scheduled_tasks.lock
