@@ -69,7 +69,9 @@ def test_demotion_records_anti_patterns(db_conn):
 
     evaluate_autonomy(db_conn)
     patterns = get_anti_patterns(db_conn)
-    assert isinstance(patterns, list)
+    assert len(patterns) >= 1
+    assert all(p["pattern_type"] == "high_error_rate" for p in patterns)
+    assert all(p["wrong_action"] == "deferred" for p in patterns)
 
 
 def test_only_one_level_change_per_call(db_conn):

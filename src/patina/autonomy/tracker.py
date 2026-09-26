@@ -63,25 +63,66 @@ def get_override_count(conn: sqlite3.Connection, *, since_days: int = 7) -> int:
     return row["c"]
 
 
-def check_demotion(conn: sqlite3.Connection, current: int) -> tuple[bool, str | None]:
+def check_demotion(
+    conn: sqlite3.Connection, current: int
+) -> tuple[bool, str | None, list[dict]]:
     if current <= 1:
-        return False, None
+        return False, None, []
 
     if current == 3:
         stats = get_accuracy_stats(conn, since_days=30)
         if stats["total"] >= 10 and stats["error_rate"] > 0.05:
-            return True, f"Error rate {stats['error_rate']:.1%} exceeds 5% threshold"
+            cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=30)).isoformat()
+            rows = conn.execute(
+                """SELECT d.id, d.action, o.text
+                   FROM decisions d
+                   LEFT JOIN observations o ON d.observation_id = o.id
+                   WHERE d.acted_at >= ?
+                   AND d.action NOT IN ('acted', 'dismissed')
+                   LIMIT 10""",
+                (cutoff,),
+            ).fetchall()
+            items = [
+                {
+                    "id": r["id"],
+                    "pattern_type": "high_error_rate",
+                    "text_keywords": (r["text"] or "").split()[:5],
+                    "wrong_action": r["action"],
+                    "correct_action": "acted",
+                }
+                for r in rows
+            ]
+            return True, f"Error rate {stats['error_rate']:.1%} exceeds 5% threshold", items
 
     if current == 4:
-        rate = get_draft_acceptance_rate(conn, since_days=30)
         cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=30)).isoformat()
-        total = conn.execute(
-            "SELECT COUNT(*) AS c FROM action_queue"
-            " WHERE action_type = 'draft' AND created_at >= ?",
+        row = conn.execute(
+            """SELECT
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS accepted
+               FROM action_queue WHERE action_type = 'draft' AND created_at >= ?""",
             (cutoff,),
-        ).fetchone()["c"]
+        ).fetchone()
+        total = row["total"]
+        accepted = row["accepted"] or 0
+        rate = accepted / total if total else 0.0
         if total >= 20 and rate < 0.80:
-            return True, f"Draft acceptance {rate:.0%} below 80%"
+            rows = conn.execute(
+                """SELECT id FROM action_queue
+                   WHERE action_type = 'draft' AND status = 'rejected' AND created_at >= ?
+                   LIMIT 10""",
+                (cutoff,),
+            ).fetchall()
+            items = [
+                {
+                    "id": r["id"],
+                    "pattern_type": "low_draft_acceptance",
+                    "wrong_action": "draft",
+                    "correct_action": "manual_compose",
+                }
+                for r in rows
+            ]
+            return True, f"Draft acceptance {rate:.0%} below 80%", items
 
     if current == 5:
         cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=30)).isoformat()
@@ -92,16 +133,26 @@ def check_demotion(conn: sqlite3.Connection, current: int) -> tuple[bool, str | 
             (cutoff,),
         ).fetchone()
         total = row["c"]
-        reopens = conn.execute(
-            """SELECT COUNT(*) AS c FROM action_queue
+        rows_rejected = conn.execute(
+            """SELECT id, action_type FROM action_queue
                WHERE status = 'rejected' AND action_type IN ('ack', 'schedule')
                AND created_at >= ?""",
             (cutoff,),
-        ).fetchone()["c"]
+        ).fetchall()
+        reopens = len(rows_rejected)
         if total >= 50 and reopens / max(total, 1) > 0.02:
-            return True, f"Reopen rate {reopens / total:.1%} exceeds 2%"
+            items = [
+                {
+                    "id": r["id"],
+                    "pattern_type": "high_reopen_rate",
+                    "wrong_action": r["action_type"],
+                    "correct_action": "manual_review",
+                }
+                for r in rows_rejected[:10]
+            ]
+            return True, f"Reopen rate {reopens / total:.1%} exceeds 2%", items
 
-    return False, None
+    return False, None, []
 
 
 def demote_level(

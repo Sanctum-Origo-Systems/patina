@@ -844,7 +844,7 @@ def autonomy_evaluate(
     try:
         if dry_run:
             level = current_level(conn)
-            should_demote, reason = check_demotion(conn, level)
+            should_demote, reason, _items = check_demotion(conn, level)
             if should_demote:
                 typer.echo(f"Would demote: level {level} → {level - 1} ({reason})")
                 return
