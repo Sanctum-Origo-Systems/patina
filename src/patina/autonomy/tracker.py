@@ -63,9 +63,7 @@ def get_override_count(conn: sqlite3.Connection, *, since_days: int = 7) -> int:
     return row["c"]
 
 
-def check_demotion(
-    conn: sqlite3.Connection, current: int
-) -> tuple[bool, str | None, list[dict]]:
+def check_demotion(conn: sqlite3.Connection, current: int) -> tuple[bool, str | None, list[dict]]:
     if current <= 1:
         return False, None, []
 
