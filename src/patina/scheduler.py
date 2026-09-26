@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from patina.autonomy.evaluate import evaluate_autonomy
 from patina.beliefs.decay import run_decay_pass
 from patina.ingest import ingest_all
 from patina.priority.escalation import detect_urgency_shifts
@@ -37,6 +38,14 @@ def heartbeat_once(*, home: Path | None = None) -> dict:
             results["tasks_run"].append("escalation_check")
         except Exception as e:
             results["errors"].append(f"escalation: {e}")
+
+        try:
+            autonomy_result = evaluate_autonomy(conn)
+            if autonomy_result:
+                results["autonomy"] = autonomy_result
+            results["tasks_run"].append("autonomy")
+        except Exception as e:
+            results["errors"].append(f"autonomy: {e}")
     finally:
         conn.close()
 
