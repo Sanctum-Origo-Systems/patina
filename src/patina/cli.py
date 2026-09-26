@@ -293,9 +293,11 @@ def ingest(
             )
             return
 
+    non_person = result.get("non_person_skipped", 0)
+    non_person_msg = f", {non_person} non-person senders skipped" if non_person else ""
     typer.echo(
         f"Done. Inserted {result['messages_inserted']} messages "
-        f"({result['messages_skipped']} skipped). "
+        f"({result['messages_skipped']} skipped{non_person_msg}). "
         f"{result['entities_created']} entities found. "
         f"Total: {result['total_observations']} observations, "
         f"{result['total_entities']} entities."
@@ -958,21 +960,38 @@ def entity_merge_cmd(
 
     conn = connect(db_path)
     try:
-        keep_row = conn.execute(
+        keep_rows = conn.execute(
             "SELECT id, name FROM entities WHERE id LIKE ?",
             (keep + "%",),
-        ).fetchone()
-        drop_row = conn.execute(
+        ).fetchall()
+        drop_rows = conn.execute(
             "SELECT id, name FROM entities WHERE id LIKE ?",
             (drop + "%",),
-        ).fetchone()
+        ).fetchall()
 
-        if not keep_row:
+        if not keep_rows:
             typer.echo(f"No entity found matching '{keep}'", err=True)
             raise typer.Exit(1)
-        if not drop_row:
+        if len(keep_rows) > 1:
+            matches = ", ".join(f"{r['id']} ({r['name']})" for r in keep_rows)
+            typer.echo(
+                f"Ambiguous keep ID '{keep}' matches {len(keep_rows)} entities: {matches}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if not drop_rows:
             typer.echo(f"No entity found matching '{drop}'", err=True)
             raise typer.Exit(1)
+        if len(drop_rows) > 1:
+            matches = ", ".join(f"{r['id']} ({r['name']})" for r in drop_rows)
+            typer.echo(
+                f"Ambiguous drop ID '{drop}' matches {len(drop_rows)} entities: {matches}",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        keep_row = keep_rows[0]
+        drop_row = drop_rows[0]
 
         if not dry_run:
             backup_path = backup_store(db_path)
@@ -1211,7 +1230,11 @@ def heartbeat_once_cmd(
     typer.echo(f"Heartbeat complete. Tasks run: {', '.join(result['tasks_run'])}")
     if result.get("ingest"):
         i = result["ingest"]
-        typer.echo(f"  Ingest: {i['messages_inserted']} new, {i['messages_skipped']} skipped")
+        np = i.get("non_person_skipped", 0)
+        np_msg = f", {np} non-person skipped" if np else ""
+        typer.echo(
+            f"  Ingest: {i['messages_inserted']} new, {i['messages_skipped']} skipped{np_msg}"
+        )
     if result.get("decay"):
         typer.echo(f"  Decay: {result['decay']['stale_count']} beliefs below threshold")
     if result.get("escalation"):

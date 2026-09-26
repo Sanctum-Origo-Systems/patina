@@ -57,6 +57,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
 
         inserted = 0
         skipped = 0
+        non_person_skipped = 0
         entity_ids_seen: set[str] = set()
 
         for msg in messages:
@@ -81,7 +82,9 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
             inserted += 1
 
             sender_name = users.get(msg.user_id, msg.user_name)
-            if not is_non_person_sender(msg.user_id, sender_name):
+            if is_non_person_sender(msg.user_id, sender_name):
+                non_person_skipped += 1
+            else:
                 sender = extract_sender_entity(msg.user_id, sender_name)
                 upsert_entity(conn, sender)
                 entity_ids_seen.add(sender.id)
@@ -116,6 +119,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
         return {
             "messages_inserted": inserted,
             "messages_skipped": skipped,
+            "non_person_skipped": non_person_skipped,
             "entities_created": len(entity_ids_seen),
             "styles_built": styles_built,
             "total_observations": count_observations(conn),
@@ -128,9 +132,14 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
         conn.close()
 
 
-def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[int, int, set[str]]:
+def _ingest_messages(
+    conn,
+    messages: list[ChatMessage],
+    source: str,
+) -> tuple[int, int, int, set[str]]:
     inserted = 0
     skipped = 0
+    non_person_skipped = 0
     entity_ids_seen: set[str] = set()
 
     for msg in messages:
@@ -155,7 +164,9 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
             continue
         inserted += 1
 
-        if not is_non_person_sender(msg.user_id, msg.user_name):
+        if is_non_person_sender(msg.user_id, msg.user_name):
+            non_person_skipped += 1
+        else:
             sender = extract_sender_entity(msg.user_id, msg.user_name)
             existing_id = resolve_entity_id(conn, sender.name, sender.aliases)
             if existing_id:
@@ -177,7 +188,7 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
             upsert_entity(conn, ent)
             entity_ids_seen.add(ent.id)
 
-    return inserted, skipped, entity_ids_seen
+    return inserted, skipped, non_person_skipped, entity_ids_seen
 
 
 def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
@@ -288,13 +299,14 @@ def ingest_live(
             messages.extend(_events_to_chat_messages(events))
 
         messages.sort(key=lambda m: m.timestamp)
-        inserted, skipped, entity_ids = _ingest_messages(conn, messages, source)
+        inserted, skipped, non_person_skipped, entity_ids = _ingest_messages(conn, messages, source)
 
         zero_streak = int(kv_get(conn, "discovery_zero_streak") or "0")
 
         return {
             "messages_inserted": inserted,
             "messages_skipped": skipped,
+            "non_person_skipped": non_person_skipped,
             "entities_created": len(entity_ids),
             "total_observations": count_observations(conn),
             "total_entities": count_entities(conn),
@@ -310,6 +322,7 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
     totals = {
         "messages_inserted": 0,
         "messages_skipped": 0,
+        "non_person_skipped": 0,
         "entities_created": 0,
         "total_observations": 0,
         "total_entities": 0,
@@ -327,6 +340,7 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
             )
             totals["messages_inserted"] += result["messages_inserted"]
             totals["messages_skipped"] += result["messages_skipped"]
+            totals["non_person_skipped"] += result.get("non_person_skipped", 0)
             totals["entities_created"] += result["entities_created"]
             totals["total_observations"] = result["total_observations"]
             totals["total_entities"] = result["total_entities"]

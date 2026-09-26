@@ -114,7 +114,8 @@ def rewire_entity_references(
     counts["relationships"] = r_subj + cur.rowcount
 
     conn.execute(
-        "DELETE FROM relationships WHERE subject_id = object_id",
+        "DELETE FROM relationships WHERE subject_id = ? AND object_id = ?",
+        (keep_id, keep_id),
     )
 
     cur = conn.execute(

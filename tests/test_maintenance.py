@@ -174,6 +174,20 @@ def test_rewire_removes_self_referencing_relationships(db_conn):
     assert row["c"] == 0
 
 
+def test_rewire_does_not_delete_unrelated_self_refs(db_conn):
+    """Regression: DELETE should only remove self-refs for keep_id, not all."""
+    upsert_entity(db_conn, _entity("e1", "Alice Tran"))
+    upsert_entity(db_conn, _entity("e2", "alice.tran"))
+    upsert_entity(db_conn, _entity("e3", "Bob Marsh"))
+    upsert_relationship(db_conn, _rel("r1", "e1", "e2"))
+    upsert_relationship(db_conn, _rel("r_self", "e3", "e3"))
+
+    rewire_entity_references(db_conn, "e1", "e2")
+
+    row = db_conn.execute("SELECT COUNT(*) AS c FROM relationships WHERE id = 'r_self'").fetchone()
+    assert row["c"] == 1, "Unrelated self-referencing relationship should not be deleted"
+
+
 # ── merge_entities ───────────────────────────────────────────
 
 
@@ -452,6 +466,26 @@ def test_cli_entity_merge_dry_run(db_path):
     )
     assert result.exit_code == 0
     assert "Would merge" in result.output
+
+
+def test_cli_entity_merge_ambiguous_prefix(db_path):
+    """Regression: ambiguous prefix should error, not silently pick one."""
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    upsert_entity(conn, _entity("e1aabbcc", "Alice Tran"))
+    upsert_entity(conn, _entity("e1aabbdd", "Alice Chen"))
+    upsert_entity(conn, _entity("e2ddeeff", "Bob Marsh"))
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "merge", "e1aa", "e2ddeeff", "--home", str(home)])
+    assert result.exit_code == 1
+    assert "Ambiguous" in result.output
 
 
 def test_cli_entity_dedup(db_path):
