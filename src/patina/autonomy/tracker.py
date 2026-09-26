@@ -40,12 +40,14 @@ def get_accuracy_stats(conn: sqlite3.Connection, *, since_days: int = 30) -> dic
     }
 
 
-def get_draft_acceptance_rate(conn: sqlite3.Connection) -> float:
+def get_draft_acceptance_rate(conn: sqlite3.Connection, *, since_days: int = 30) -> float:
+    cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=since_days)).isoformat()
     row = conn.execute(
         """SELECT
                COUNT(*) AS total,
                SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS accepted
-           FROM action_queue WHERE action_type = 'draft'"""
+           FROM action_queue WHERE action_type = 'draft' AND created_at >= ?""",
+        (cutoff,),
     ).fetchone()
     if row["total"] == 0:
         return 0.0
@@ -71,22 +73,30 @@ def check_demotion(conn: sqlite3.Connection, current: int) -> tuple[bool, str | 
             return True, f"Error rate {stats['error_rate']:.1%} exceeds 5% threshold"
 
     if current == 4:
-        rate = get_draft_acceptance_rate(conn)
+        rate = get_draft_acceptance_rate(conn, since_days=30)
+        cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=30)).isoformat()
         total = conn.execute(
-            "SELECT COUNT(*) AS c FROM action_queue WHERE action_type = 'draft'"
+            "SELECT COUNT(*) AS c FROM action_queue"
+            " WHERE action_type = 'draft' AND created_at >= ?",
+            (cutoff,),
         ).fetchone()["c"]
         if total >= 20 and rate < 0.80:
             return True, f"Draft acceptance {rate:.0%} below 80%"
 
     if current == 5:
+        cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=30)).isoformat()
         row = conn.execute(
             """SELECT COUNT(*) AS c FROM action_queue
-               WHERE status = 'executed' AND action_type IN ('ack', 'schedule')"""
+               WHERE status = 'executed' AND action_type IN ('ack', 'schedule')
+               AND created_at >= ?""",
+            (cutoff,),
         ).fetchone()
         total = row["c"]
         reopens = conn.execute(
             """SELECT COUNT(*) AS c FROM action_queue
-               WHERE status = 'rejected' AND action_type IN ('ack', 'schedule')"""
+               WHERE status = 'rejected' AND action_type IN ('ack', 'schedule')
+               AND created_at >= ?""",
+            (cutoff,),
         ).fetchone()["c"]
         if total >= 50 and reopens / max(total, 1) > 0.02:
             return True, f"Reopen rate {reopens / total:.1%} exceeds 2%"
