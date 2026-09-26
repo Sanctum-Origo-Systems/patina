@@ -9,6 +9,7 @@ from patina.autonomy.actions import (
     list_pending,
     reject_action,
 )
+from patina.autonomy.evaluate import evaluate_autonomy
 from patina.autonomy.levels import (
     can_advance,
     current_level,
@@ -17,6 +18,7 @@ from patina.autonomy.levels import (
     set_level,
 )
 from patina.autonomy.tracker import (
+    check_demotion,
     clear_anti_pattern,
     get_accuracy_stats,
     get_anti_patterns,
@@ -827,6 +829,44 @@ def autonomy_clear_pattern(
         conn.close()
 
 
+@autonomy_app.command("evaluate")
+def autonomy_evaluate(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without changing state"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Evaluate one step of the autonomy ladder."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if dry_run:
+            level = current_level(conn)
+            should_demote, reason, _items = check_demotion(conn, level)
+            if should_demote:
+                typer.echo(f"Would demote: level {level} → {level - 1} ({reason})")
+                return
+            can, reason = can_advance(conn, level)
+            if can:
+                typer.echo(f"Would advance: level {level} → {level + 1} ({reason})")
+                return
+            typer.echo(f"No change (level {level}): {reason}")
+        else:
+            result = evaluate_autonomy(conn)
+            if result:
+                typer.echo(
+                    f"Level {result['from']} → {result['to']} "
+                    f"({result['direction']}): {result['reason']}"
+                )
+            else:
+                level = current_level(conn)
+                typer.echo(f"No change (level {level})")
+    finally:
+        conn.close()
+
+
 @app.command("approve")
 def approve_cmd(
     action_id: str = typer.Argument(..., help="Action ID to approve"),
@@ -989,6 +1029,9 @@ def heartbeat_once_cmd(
         typer.echo(f"  Decay: {result['decay']['stale_count']} beliefs below threshold")
     if result.get("escalation"):
         typer.echo(f"  Escalation: {result['escalation']['shifts']} urgency shifts detected")
+    if result.get("autonomy"):
+        a = result["autonomy"]
+        typer.echo(f"  Autonomy: level {a['from']} → {a['to']} ({a['direction']}): {a['reason']}")
     if result["errors"]:
         for err in result["errors"]:
             typer.echo(f"  Error: {err}", err=True)
