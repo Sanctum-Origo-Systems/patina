@@ -260,6 +260,46 @@ class TestUpsertEntityMerge:
         assert count_entities(db_conn) == 1
 
 
+class TestResolveEntityIdPrefixNormalization:
+    def test_prefixed_query_finds_unprefixed_alias(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Rivera",
+                aliases=["U000OWNER"],
+            ),
+        )
+        assert resolve_entity_id(db_conn, "slack:U000OWNER") == "e1"
+
+    def test_prefixed_and_unprefixed_resolve_same(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Rivera",
+                aliases=["U000OWNER"],
+            ),
+        )
+        assert resolve_entity_id(db_conn, "slack:U000OWNER") == resolve_entity_id(
+            db_conn, "U000OWNER"
+        )
+
+    def test_unprefixed_query_finds_prefixed_alias(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Rivera",
+                aliases=["slack:U000OWNER"],
+            ),
+        )
+        assert resolve_entity_id(db_conn, "U000OWNER") == "e1"
+
+
 class TestResolveEntityIdCrossMatch:
     def test_prefixed_alias_matches_name(self, db_conn):
         """Entity 'dchen' has alias 'display_name:Dana Chen'.

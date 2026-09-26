@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 from patina.models import Claim, Entity, Observation, Relationship
+from patina.owner import normalize_alias
 
 
 def normalize_name(name: str) -> str:
@@ -32,6 +33,8 @@ def resolve_entity_id(
     if row:
         return row["id"]
 
+    name = normalize_alias(name)
+
     row = conn.execute(
         "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
         (f"%{name}%",),
@@ -47,7 +50,7 @@ def resolve_entity_id(
                 return r["id"]
         for r in rows:
             for alias in json.loads(r["aliases"] or "[]"):
-                clean = alias.split(":")[-1] if ":" in alias else alias
+                clean = normalize_alias(alias)
                 if normalize_name(clean) == normalized:
                     return r["id"]
         row = conn.execute(
@@ -61,13 +64,14 @@ def resolve_entity_id(
         for alias in aliases:
             if not alias:
                 continue
+            stripped = normalize_alias(alias)
             row = conn.execute(
                 "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
-                (f"%{alias}%",),
+                (f"%{stripped}%",),
             ).fetchone()
             if row:
                 return row["id"]
-            norm_alias = normalize_name(alias)
+            norm_alias = normalize_name(stripped)
             if norm_alias and len(norm_alias) > 2:
                 row = conn.execute(
                     "SELECT id FROM entities WHERE name = ? AND is_owner = 0 LIMIT 1",

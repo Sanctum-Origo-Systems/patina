@@ -12,6 +12,34 @@ from pathlib import Path
 from patina.store import DEFAULT_HOME
 
 
+def normalize_alias(alias: str) -> str:
+    """Strip platform prefix (e.g. 'slack:', 'display_name:') from an alias."""
+    if ":" in alias:
+        return alias.split(":", 1)[1]
+    return alias
+
+
+def get_owner_identifiers(home: Path | None = None) -> set[str]:
+    config_path = (home or DEFAULT_HOME) / "config.yaml"
+    if not config_path.exists():
+        return set()
+
+    import yaml
+
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+
+    owner = config.get("owner", {})
+    identifiers: set[str] = set()
+
+    for key in ("user_ids", "handles", "display_names", "emails"):
+        values = owner.get(key, [])
+        if values:
+            identifiers.update(str(v) for v in values)
+
+    return identifiers
+
+
 def get_owner_user_ids(home: Path | None = None) -> list[str]:
     config_path = (home or DEFAULT_HOME) / "config.yaml"
     if not config_path.exists():

@@ -7,10 +7,66 @@ from patina.graph import insert_observation, upsert_entity
 from patina.models import Entity, Observation
 from patina.owner import (
     get_owner_entity_id,
+    get_owner_identifiers,
     get_owner_user_ids,
     is_owner_entity,
     mark_entity_as_owner,
+    normalize_alias,
 )
+
+
+class TestNormalizeAlias:
+    def test_strips_slack_prefix(self):
+        assert normalize_alias("slack:U000OWNER") == "U000OWNER"
+
+    def test_no_prefix_unchanged(self):
+        assert normalize_alias("U000OWNER") == "U000OWNER"
+
+    def test_equal_after_normalize(self):
+        assert normalize_alias("slack:U000OWNER") == normalize_alias("U000OWNER")
+
+    def test_strips_display_name_prefix(self):
+        assert normalize_alias("display_name:Dana Chen") == "Dana Chen"
+
+    def test_strips_outlook_prefix(self):
+        assert normalize_alias("outlook:Smith, Bob") == "Smith, Bob"
+
+    def test_plain_handle(self):
+        assert normalize_alias("srivera") == "srivera"
+
+
+def test_get_owner_identifiers_all_keys(tmp_path):
+    import yaml
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "owner": {
+                    "user_ids": ["U001"],
+                    "handles": ["jdoe"],
+                    "display_names": ["Jane Doe"],
+                    "emails": ["jdoe@example.com"],
+                }
+            }
+        )
+    )
+    result = get_owner_identifiers(tmp_path)
+    assert result == {"U001", "jdoe", "Jane Doe", "jdoe@example.com"}
+
+
+def test_get_owner_identifiers_only_user_ids(tmp_path):
+    import yaml
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"owner": {"user_ids": ["U001", "U002"]}}))
+    result = get_owner_identifiers(tmp_path)
+    assert result == {"U001", "U002"}
+
+
+def test_get_owner_identifiers_empty(tmp_path):
+    result = get_owner_identifiers(tmp_path)
+    assert result == set()
 
 
 def test_get_owner_user_ids_empty(tmp_path):
