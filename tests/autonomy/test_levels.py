@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from patina.autonomy.levels import (
+    DOMAINS,
     advance_level,
     can_advance,
     current_level,
@@ -84,3 +85,69 @@ def test_level_descriptions_all_defined():
         desc = level_description(level)
         assert len(desc) > 0
         assert "Unknown" not in desc
+
+
+def test_domain_keyed_current_level(db_conn):
+    for domain in DOMAINS:
+        assert current_level(db_conn, domain) == 0
+
+
+def test_domain_keyed_set_level(db_conn):
+    set_level(db_conn, 3, domain="triage")
+    set_level(db_conn, 5, domain="draft")
+    set_level(db_conn, 1, domain="send")
+
+    assert current_level(db_conn, "triage") == 3
+    assert current_level(db_conn, "draft") == 5
+    assert current_level(db_conn, "send") == 1
+
+
+def test_domain_keyed_advance_level(db_conn):
+    obs = Observation(
+        id="o1",
+        source="slack",
+        channel_id="C1",
+        thread_id=None,
+        timestamp=1.0,
+        sender_entity_id=None,
+        text="hello",
+    )
+    insert_observation(db_conn, obs)
+
+    new = advance_level(db_conn, domain="draft")
+    assert new == 1
+    assert current_level(db_conn, "draft") == 1
+    assert current_level(db_conn, "triage") == 0
+
+
+def test_freeze_one_domain_does_not_affect_others(db_conn):
+    obs = Observation(
+        id="o1",
+        source="slack",
+        channel_id="C1",
+        thread_id=None,
+        timestamp=1.0,
+        sender_entity_id=None,
+        text="hello",
+    )
+    insert_observation(db_conn, obs)
+
+    freeze_advancement(db_conn, domain="draft")
+
+    assert is_frozen(db_conn, "draft") is True
+    assert is_frozen(db_conn, "triage") is False
+    assert is_frozen(db_conn, "send") is False
+
+    can_triage, _ = can_advance(db_conn, 0, domain="triage")
+    assert can_triage is True
+
+    can_draft, reason = can_advance(db_conn, 0, domain="draft")
+    assert can_draft is False
+    assert "frozen" in reason.lower()
+
+
+def test_autonomy_state_table_schema(db_conn):
+    cols = {r[1]: r[2] for r in db_conn.execute("PRAGMA table_info(autonomy_state)").fetchall()}
+    assert "domain" in cols
+    assert cols["domain"] == "TEXT"
+    assert "id" not in cols
