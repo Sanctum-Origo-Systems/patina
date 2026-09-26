@@ -6,7 +6,11 @@ from pathlib import Path
 
 from patina.decisions import auto_resolve_draft_reply
 from patina.export_parser import parse_slack_export
-from patina.extraction import extract_entities_from_text, extract_sender_entity
+from patina.extraction import (
+    extract_entities_from_text,
+    extract_sender_entity,
+    is_non_person_sender,
+)
 from patina.graph import (
     count_entities,
     count_observations,
@@ -77,18 +81,19 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
             inserted += 1
 
             sender_name = users.get(msg.user_id, msg.user_name)
-            sender = extract_sender_entity(msg.user_id, sender_name)
-            upsert_entity(conn, sender)
-            entity_ids_seen.add(sender.id)
+            if not is_non_person_sender(msg.user_id, sender_name):
+                sender = extract_sender_entity(msg.user_id, sender_name)
+                upsert_entity(conn, sender)
+                entity_ids_seen.add(sender.id)
 
-            if msg.user_id in owner_ids:
-                mark_entity_as_owner(conn, sender.id)
+                if msg.user_id in owner_ids:
+                    mark_entity_as_owner(conn, sender.id)
 
-            conn.execute(
-                "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
-                (sender.id, obs_id),
-            )
-            conn.commit()
+                conn.execute(
+                    "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
+                    (sender.id, obs_id),
+                )
+                conn.commit()
 
             text_entities = extract_entities_from_text(msg.text)
             for ent in text_entities:
@@ -150,21 +155,22 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
             continue
         inserted += 1
 
-        sender = extract_sender_entity(msg.user_id, msg.user_name)
-        existing_id = resolve_entity_id(conn, sender.name, sender.aliases)
-        if existing_id:
-            sender.id = existing_id
-        upsert_entity(conn, sender)
-        entity_ids_seen.add(sender.id)
+        if not is_non_person_sender(msg.user_id, msg.user_name):
+            sender = extract_sender_entity(msg.user_id, msg.user_name)
+            existing_id = resolve_entity_id(conn, sender.name, sender.aliases)
+            if existing_id:
+                sender.id = existing_id
+            upsert_entity(conn, sender)
+            entity_ids_seen.add(sender.id)
 
-        conn.execute(
-            "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
-            (sender.id, obs_id),
-        )
-        conn.commit()
+            conn.execute(
+                "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
+                (sender.id, obs_id),
+            )
+            conn.commit()
 
-        if is_owner_entity(conn, sender.id):
-            auto_resolve_draft_reply(conn, msg.channel_id, msg.text)
+            if is_owner_entity(conn, sender.id):
+                auto_resolve_draft_reply(conn, msg.channel_id, msg.text)
 
         text_entities = extract_entities_from_text(msg.text)
         for ent in text_entities:
