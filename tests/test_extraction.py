@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from patina.extraction import extract_entities_from_text, extract_sender_entity
+from patina.owner import normalize_alias
 
 
 def test_single_mention():
@@ -75,3 +76,16 @@ def test_sender_entity_includes_display_name_as_alias():
 def test_sender_entity_no_duplicate_aliases():
     e = extract_sender_entity("U001", "Alice")
     assert len(e.aliases) == len(set(e.aliases))
+
+
+def test_sender_entity_normalize_matches_prefixed():
+    e = extract_sender_entity("U000OWNER", "srivera")
+    normalized_aliases = {normalize_alias(a) for a in e.aliases}
+    assert normalize_alias("slack:U000OWNER") in normalized_aliases
+    assert "srivera" in normalized_aliases
+
+
+def test_sender_entity_includes_slack_prefix_alias():
+    e = extract_sender_entity("U000OWNER", "srivera")
+    assert "slack:U000OWNER" in e.aliases
+    assert "U000OWNER" in e.aliases

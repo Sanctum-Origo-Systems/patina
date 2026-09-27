@@ -54,7 +54,7 @@ def extract_entities_from_text(text: str) -> list[Entity]:
 
 
 def extract_sender_entity(user_id: str, user_name: str | None = None) -> Entity:
-    aliases = [user_id]
+    aliases = [user_id, f"slack:{user_id}"]
     canonical_name = user_name or user_id
 
     if user_name and "," in user_name:
