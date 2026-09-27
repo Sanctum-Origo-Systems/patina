@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+DOMAINS = ("triage", "draft", "send")
+
 _DESCRIPTIONS = {
     0: "Observe only",
     1: "Classify + surface",
@@ -14,24 +16,24 @@ _DESCRIPTIONS = {
 }
 
 
-def _ensure_state(conn: sqlite3.Connection) -> None:
+def _ensure_state(conn: sqlite3.Connection, domain: str = "triage") -> None:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS autonomy_state (
-               id INTEGER PRIMARY KEY CHECK (id = 1),
+               domain TEXT PRIMARY KEY,
                level INTEGER NOT NULL DEFAULT 0,
                frozen_until TEXT,
                last_advanced TEXT
            )"""
     )
-    row = conn.execute("SELECT level FROM autonomy_state WHERE id = 1").fetchone()
+    row = conn.execute("SELECT level FROM autonomy_state WHERE domain = ?", (domain,)).fetchone()
     if row is None:
-        conn.execute("INSERT INTO autonomy_state (id, level) VALUES (1, 0)")
+        conn.execute("INSERT INTO autonomy_state (domain, level) VALUES (?, 0)", (domain,))
     conn.commit()
 
 
-def current_level(conn: sqlite3.Connection) -> int:
-    _ensure_state(conn)
-    row = conn.execute("SELECT level FROM autonomy_state WHERE id = 1").fetchone()
+def current_level(conn: sqlite3.Connection, domain: str = "triage") -> int:
+    _ensure_state(conn, domain)
+    row = conn.execute("SELECT level FROM autonomy_state WHERE domain = ?", (domain,)).fetchone()
     return row["level"]
 
 
@@ -39,8 +41,8 @@ def level_description(level: int) -> str:
     return _DESCRIPTIONS.get(level, f"Unknown level {level}")
 
 
-def can_advance(conn: sqlite3.Connection, current: int) -> tuple[bool, str]:
-    if is_frozen(conn):
+def can_advance(conn: sqlite3.Connection, current: int, domain: str = "triage") -> tuple[bool, str]:
+    if is_frozen(conn, domain):
         return False, "Advancement frozen due to recent override"
 
     if current == 0:
@@ -88,7 +90,9 @@ def can_advance(conn: sqlite3.Connection, current: int) -> tuple[bool, str]:
         return False, f"{row['c']}/50 auto-sent needed"
 
     if current == 5:
-        state = conn.execute("SELECT last_advanced FROM autonomy_state WHERE id = 1").fetchone()
+        state = conn.execute(
+            "SELECT last_advanced FROM autonomy_state WHERE domain = ?", (domain,)
+        ).fetchone()
         if state["last_advanced"]:
             advanced_dt = datetime.fromisoformat(state["last_advanced"])
             days = (datetime.now(UTC) - advanced_dt).days
@@ -100,46 +104,48 @@ def can_advance(conn: sqlite3.Connection, current: int) -> tuple[bool, str]:
     return False, "Already at maximum level"
 
 
-def advance_level(conn: sqlite3.Connection) -> int:
-    _ensure_state(conn)
-    level = current_level(conn)
-    can, _ = can_advance(conn, level)
+def advance_level(conn: sqlite3.Connection, domain: str = "triage") -> int:
+    _ensure_state(conn, domain)
+    level = current_level(conn, domain)
+    can, _ = can_advance(conn, level, domain)
     if not can:
         return level
 
     new_level = level + 1
     now = datetime.now(UTC).isoformat()
     conn.execute(
-        "UPDATE autonomy_state SET level = ?, last_advanced = ? WHERE id = 1",
-        (new_level, now),
+        "UPDATE autonomy_state SET level = ?, last_advanced = ? WHERE domain = ?",
+        (new_level, now, domain),
     )
     conn.commit()
     return new_level
 
 
-def set_level(conn: sqlite3.Connection, level: int) -> None:
-    _ensure_state(conn)
+def set_level(conn: sqlite3.Connection, level: int, domain: str = "triage") -> None:
+    _ensure_state(conn, domain)
     now = datetime.now(UTC).isoformat()
     conn.execute(
-        "UPDATE autonomy_state SET level = ?, last_advanced = ? WHERE id = 1",
-        (level, now),
+        "UPDATE autonomy_state SET level = ?, last_advanced = ? WHERE domain = ?",
+        (level, now, domain),
     )
     conn.commit()
 
 
-def freeze_advancement(conn: sqlite3.Connection, days: int = 7) -> None:
-    _ensure_state(conn)
+def freeze_advancement(conn: sqlite3.Connection, days: int = 7, domain: str = "triage") -> None:
+    _ensure_state(conn, domain)
     until = (datetime.now(UTC) + timedelta(days=days)).isoformat()
     conn.execute(
-        "UPDATE autonomy_state SET frozen_until = ? WHERE id = 1",
-        (until,),
+        "UPDATE autonomy_state SET frozen_until = ? WHERE domain = ?",
+        (until, domain),
     )
     conn.commit()
 
 
-def is_frozen(conn: sqlite3.Connection) -> bool:
-    _ensure_state(conn)
-    row = conn.execute("SELECT frozen_until FROM autonomy_state WHERE id = 1").fetchone()
+def is_frozen(conn: sqlite3.Connection, domain: str = "triage") -> bool:
+    _ensure_state(conn, domain)
+    row = conn.execute(
+        "SELECT frozen_until FROM autonomy_state WHERE domain = ?", (domain,)
+    ).fetchone()
     if not row["frozen_until"]:
         return False
     frozen_until = datetime.fromisoformat(row["frozen_until"])

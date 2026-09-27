@@ -6,7 +6,11 @@ from pathlib import Path
 
 from patina.decisions import auto_resolve_draft_reply
 from patina.export_parser import parse_slack_export
-from patina.extraction import extract_entities_from_text, extract_sender_entity
+from patina.extraction import (
+    extract_entities_from_text,
+    extract_sender_entity,
+    is_non_person_sender,
+)
 from patina.graph import (
     count_entities,
     count_observations,
@@ -17,6 +21,7 @@ from patina.graph import (
 from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation
 from patina.owner import (
     get_owner_entity_id,
+    get_owner_identifiers,
     get_owner_user_ids,
     is_owner_entity,
     mark_entity_as_owner,
@@ -53,6 +58,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
 
         inserted = 0
         skipped = 0
+        non_person_skipped = 0
         entity_ids_seen: set[str] = set()
 
         for msg in messages:
@@ -77,18 +83,21 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
             inserted += 1
 
             sender_name = users.get(msg.user_id, msg.user_name)
-            sender = extract_sender_entity(msg.user_id, sender_name)
-            upsert_entity(conn, sender)
-            entity_ids_seen.add(sender.id)
+            if is_non_person_sender(msg.user_id, sender_name):
+                non_person_skipped += 1
+            else:
+                sender = extract_sender_entity(msg.user_id, sender_name)
+                upsert_entity(conn, sender)
+                entity_ids_seen.add(sender.id)
 
-            if msg.user_id in owner_ids:
-                mark_entity_as_owner(conn, sender.id)
+                if msg.user_id in owner_ids:
+                    mark_entity_as_owner(conn, sender.id)
 
-            conn.execute(
-                "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
-                (sender.id, obs_id),
-            )
-            conn.commit()
+                conn.execute(
+                    "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
+                    (sender.id, obs_id),
+                )
+                conn.commit()
 
             text_entities = extract_entities_from_text(msg.text)
             for ent in text_entities:
@@ -111,6 +120,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
         return {
             "messages_inserted": inserted,
             "messages_skipped": skipped,
+            "non_person_skipped": non_person_skipped,
             "entities_created": len(entity_ids_seen),
             "styles_built": styles_built,
             "total_observations": count_observations(conn),
@@ -123,10 +133,20 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
         conn.close()
 
 
-def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[int, int, set[str]]:
+def _ingest_messages(
+    conn,
+    messages: list[ChatMessage],
+    source: str,
+    *,
+    home: Path | None = None,
+) -> tuple[int, int, int, set[str]]:
     inserted = 0
     skipped = 0
+    non_person_skipped = 0
     entity_ids_seen: set[str] = set()
+
+    owner_identifiers = get_owner_identifiers(home)
+    owner_entity_id = get_owner_entity_id(conn)
 
     for msg in messages:
         obs_id = _obs_id(source, msg.channel_id, msg.thread_id, msg.timestamp)
@@ -150,20 +170,37 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
             continue
         inserted += 1
 
-        sender = extract_sender_entity(msg.user_id, msg.user_name)
-        existing_id = resolve_entity_id(conn, sender.name, sender.aliases)
-        if existing_id:
-            sender.id = existing_id
-        upsert_entity(conn, sender)
-        entity_ids_seen.add(sender.id)
+        if is_non_person_sender(msg.user_id, msg.user_name):
+            non_person_skipped += 1
+
+        sender_tokens = {msg.user_id}
+        if msg.user_name:
+            sender_tokens.add(msg.user_name)
+        is_owner_match = bool(owner_identifiers & sender_tokens)
+
+        if is_owner_match and owner_entity_id:
+            sender_id = owner_entity_id
+        else:
+            sender = extract_sender_entity(msg.user_id, msg.user_name)
+            existing_id = resolve_entity_id(conn, sender.name, sender.aliases)
+            if existing_id:
+                sender.id = existing_id
+            upsert_entity(conn, sender)
+            sender_id = sender.id
+
+            if is_owner_match:
+                mark_entity_as_owner(conn, sender_id)
+                owner_entity_id = sender_id
+
+        entity_ids_seen.add(sender_id)
 
         conn.execute(
             "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
-            (sender.id, obs_id),
+            (sender_id, obs_id),
         )
         conn.commit()
 
-        if is_owner_entity(conn, sender.id):
+        if is_owner_entity(conn, sender_id):
             auto_resolve_draft_reply(conn, msg.channel_id, msg.text)
 
         text_entities = extract_entities_from_text(msg.text)
@@ -171,7 +208,7 @@ def _ingest_messages(conn, messages: list[ChatMessage], source: str) -> tuple[in
             upsert_entity(conn, ent)
             entity_ids_seen.add(ent.id)
 
-    return inserted, skipped, entity_ids_seen
+    return inserted, skipped, non_person_skipped, entity_ids_seen
 
 
 def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
@@ -282,13 +319,16 @@ def ingest_live(
             messages.extend(_events_to_chat_messages(events))
 
         messages.sort(key=lambda m: m.timestamp)
-        inserted, skipped, entity_ids = _ingest_messages(conn, messages, source)
+        inserted, skipped, non_person_skipped, entity_ids = _ingest_messages(
+            conn, messages, source, home=home
+        )
 
         zero_streak = int(kv_get(conn, "discovery_zero_streak") or "0")
 
         return {
             "messages_inserted": inserted,
             "messages_skipped": skipped,
+            "non_person_skipped": non_person_skipped,
             "entities_created": len(entity_ids),
             "total_observations": count_observations(conn),
             "total_entities": count_entities(conn),
@@ -304,6 +344,7 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
     totals = {
         "messages_inserted": 0,
         "messages_skipped": 0,
+        "non_person_skipped": 0,
         "entities_created": 0,
         "total_observations": 0,
         "total_entities": 0,
@@ -321,6 +362,7 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
             )
             totals["messages_inserted"] += result["messages_inserted"]
             totals["messages_skipped"] += result["messages_skipped"]
+            totals["non_person_skipped"] += result.get("non_person_skipped", 0)
             totals["entities_created"] += result["entities_created"]
             totals["total_observations"] = result["total_observations"]
             totals["total_entities"] = result["total_entities"]

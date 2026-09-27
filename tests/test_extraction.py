@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from patina.extraction import extract_entities_from_text, extract_sender_entity
+from patina.extraction import (
+    extract_entities_from_text,
+    extract_sender_entity,
+    is_non_person_sender,
+)
 from patina.owner import normalize_alias
 
 
@@ -89,3 +93,19 @@ def test_sender_entity_includes_slack_prefix_alias():
     e = extract_sender_entity("U000OWNER", "srivera")
     assert "slack:U000OWNER" in e.aliases
     assert "U000OWNER" in e.aliases
+
+
+def test_is_non_person_sender_bot():
+    assert is_non_person_sender("U001", "Build Bot") is True
+
+
+def test_is_non_person_sender_normal():
+    assert is_non_person_sender("U001", "Alice Chen") is False
+
+
+def test_is_non_person_sender_noreply_id():
+    assert is_non_person_sender("noreply@example.com") is True
+
+
+def test_is_non_person_sender_none_name():
+    assert is_non_person_sender("U001", None) is False
