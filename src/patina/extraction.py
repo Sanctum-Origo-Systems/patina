@@ -53,8 +53,18 @@ def extract_entities_from_text(text: str) -> list[Entity]:
     return entities
 
 
+def is_non_person_sender(user_id: str, user_name: str | None = None) -> bool:
+    from patina.maintenance import is_non_person
+
+    if user_name and is_non_person(user_name):
+        return True
+    if is_non_person(user_id):
+        return True
+    return False
+
+
 def extract_sender_entity(user_id: str, user_name: str | None = None) -> Entity:
-    aliases = [user_id]
+    aliases = [user_id, f"slack:{user_id}"]
     canonical_name = user_name or user_id
 
     if user_name and "," in user_name:

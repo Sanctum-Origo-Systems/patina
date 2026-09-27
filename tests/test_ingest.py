@@ -245,7 +245,7 @@ def test_ingest_live_cross_source_dedup(tmp_path):
             user_name="Jasper",
         ),
     ]
-    inserted, _, _ = _ingest_messages(conn, export_msgs, "slack_export")
+    inserted, _, _, _ = _ingest_messages(conn, export_msgs, "slack_export")
     assert inserted == 1
     conn.close()
 
@@ -409,7 +409,7 @@ def test_dedup_when_channel_id_differs(tmp_path):
             user_name="Fern",
         ),
     ]
-    inserted1, _, _ = _ingest_messages(conn, msg_empty_channel, "slack_mcp")
+    inserted1, _, _, _ = _ingest_messages(conn, msg_empty_channel, "slack_mcp")
     assert inserted1 == 1
 
     msg_populated_channel = [
@@ -421,7 +421,7 @@ def test_dedup_when_channel_id_differs(tmp_path):
             user_name="Fern",
         ),
     ]
-    inserted2, skipped2, _ = _ingest_messages(conn, msg_populated_channel, "slack_mcp")
+    inserted2, skipped2, _, _ = _ingest_messages(conn, msg_populated_channel, "slack_mcp")
     assert inserted2 == 0
     assert skipped2 == 1
 
@@ -451,10 +451,10 @@ def test_dedup_across_slack_sources(tmp_path):
             user_name="Fern",
         ),
     ]
-    inserted1, _, _ = _ingest_messages(conn, msg, "slack_export")
+    inserted1, _, _, _ = _ingest_messages(conn, msg, "slack_export")
     assert inserted1 == 1
 
-    inserted2, skipped2, _ = _ingest_messages(conn, msg, "slack_mcp")
+    inserted2, skipped2, _, _ = _ingest_messages(conn, msg, "slack_mcp")
     assert inserted2 == 0
     assert skipped2 == 1
 
@@ -544,6 +544,39 @@ def test_channel_id_not_overwritten_when_already_set(tmp_path):
 
     row = conn.execute("SELECT channel_id FROM observations").fetchone()
     assert row["channel_id"] == "D_ORIGINAL"
+    conn.close()
+
+
+def test_non_person_skipped_counted(tmp_path):
+    """Non-person senders are counted and returned in the result dict."""
+    from patina.ingest import _ingest_messages
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    home = tmp_path / "np_home"
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    messages = [
+        ChatMessage(
+            user_id="UBOT",
+            text="Build passed",
+            timestamp=1700000100.0,
+            channel_id="C001",
+            user_name="Build Bot",
+        ),
+        ChatMessage(
+            user_id="U001",
+            text="Thanks!",
+            timestamp=1700000200.0,
+            channel_id="C001",
+            user_name="Jasper",
+        ),
+    ]
+    inserted, _, non_person_skipped, _ = _ingest_messages(conn, messages, "slack_mcp")
+    assert inserted == 2
+    assert non_person_skipped == 1
     conn.close()
 
 
