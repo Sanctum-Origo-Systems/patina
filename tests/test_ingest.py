@@ -6,7 +6,13 @@ import zipfile
 
 import pytest
 
-from patina.ingest import _source_family, ingest_all, ingest_from_export, ingest_live
+from patina.ingest import (
+    _ingest_messages,
+    _source_family,
+    ingest_all,
+    ingest_from_export,
+    ingest_live,
+)
 from patina.models import ChatMessage, DmChannel
 
 
@@ -1217,4 +1223,194 @@ def test_auto_resolve_act_on_rate(tmp_path):
     conn = connect(db_path)
     rate = get_act_on_rate(conn)
     assert rate == 1.0
+    conn.close()
+
+
+def _setup_owner_config(home, *, user_ids=None, handles=None, display_names=None):
+    """Write config.yaml with owner identifiers."""
+    import yaml
+
+    home.mkdir(parents=True, exist_ok=True)
+    owner = {}
+    if user_ids is not None:
+        owner["user_ids"] = user_ids
+    if handles is not None:
+        owner["handles"] = handles
+    if display_names is not None:
+        owner["display_names"] = display_names
+    (home / "config.yaml").write_text(yaml.dump({"owner": owner}))
+
+
+def _init_db_with_owner(home, owner_user_id="U_OWNER", owner_name="Jasper"):
+    """Init db and create owner entity, return (conn, owner_entity_id)."""
+    from patina.extraction import extract_sender_entity
+    from patina.graph import upsert_entity
+    from patina.owner import mark_entity_as_owner
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    owner = extract_sender_entity(owner_user_id, owner_name)
+    upsert_entity(conn, owner)
+    mark_entity_as_owner(conn, owner.id)
+    return conn, owner.id
+
+
+def test_ingest_messages_owner_resolved_by_user_id(tmp_path):
+    """AC1: sender user_id matching owner.user_ids resolves to owner entity."""
+    home = tmp_path / "home"
+    _setup_owner_config(home, user_ids=["U_OWNER"])
+    conn, owner_id = _init_db_with_owner(home)
+
+    msgs = [
+        ChatMessage(
+            user_id="U_OWNER",
+            text="Hello from the owner",
+            timestamp=_FIXED_TS,
+            channel_id="D001",
+            user_name="Jasper",
+        ),
+    ]
+    inserted, _, _, _ = _ingest_messages(conn, msgs, "mock", home=home)
+    assert inserted == 1
+
+    from patina.owner import get_owner_entity_id
+
+    row = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = 'Hello from the owner'"
+    ).fetchone()
+    assert row["sender_entity_id"] == get_owner_entity_id(conn)
+    conn.close()
+
+
+def test_ingest_messages_owner_resolved_by_handle(tmp_path):
+    """AC2: sender handle matching owner.handles resolves to owner entity, no new entity."""
+    home = tmp_path / "home"
+    _setup_owner_config(home, handles=["Jasper"])
+    conn, owner_id = _init_db_with_owner(home)
+
+    entity_count_before = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+
+    msgs = [
+        ChatMessage(
+            user_id="U_NEW_ID",
+            text="Message from handle match",
+            timestamp=_FIXED_TS,
+            channel_id="D001",
+            user_name="Jasper",
+        ),
+    ]
+    _ingest_messages(conn, msgs, "mock", home=home)
+
+    row = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = 'Message from handle match'"
+    ).fetchone()
+    assert row["sender_entity_id"] == owner_id
+
+    entity_count_after = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+    assert entity_count_after == entity_count_before
+    conn.close()
+
+
+def test_ingest_messages_owner_resolved_by_display_name(tmp_path):
+    """AC3: sender display_name matching owner.display_names resolves to owner entity."""
+    home = tmp_path / "home"
+    _setup_owner_config(home, display_names=["Jasper"])
+    conn, owner_id = _init_db_with_owner(home)
+
+    entity_count_before = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+
+    msgs = [
+        ChatMessage(
+            user_id="U_DIFFERENT",
+            text="Message from display name match",
+            timestamp=_FIXED_TS,
+            channel_id="D001",
+            user_name="Jasper",
+        ),
+    ]
+    _ingest_messages(conn, msgs, "mock", home=home)
+
+    row = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = 'Message from display name match'"
+    ).fetchone()
+    assert row["sender_entity_id"] == owner_id
+
+    entity_count_after = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+    assert entity_count_after == entity_count_before
+    conn.close()
+
+
+def test_ingest_messages_owner_user_ids_only_config(tmp_path):
+    """AC4: config with only owner.user_ids (no handles/display_names) works without error."""
+    home = tmp_path / "home"
+    _setup_owner_config(home, user_ids=["U_OWNER"])
+    conn, owner_id = _init_db_with_owner(home)
+
+    msgs = [
+        ChatMessage(
+            user_id="U_OWNER",
+            text="Owner with minimal config",
+            timestamp=_FIXED_TS,
+            channel_id="D001",
+            user_name="Jasper",
+        ),
+    ]
+    inserted, _, _, _ = _ingest_messages(conn, msgs, "mock", home=home)
+    assert inserted == 1
+
+    row = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = 'Owner with minimal config'"
+    ).fetchone()
+    assert row["sender_entity_id"] == owner_id
+    conn.close()
+
+
+def test_ingest_messages_single_owner_entity(tmp_path):
+    """AC5: after owner ingest, exactly one is_owner=1 entity and no duplicate owner entities."""
+    home = tmp_path / "home"
+    _setup_owner_config(home, user_ids=["U_OWNER"], handles=["Jasper"])
+    conn, owner_id = _init_db_with_owner(home)
+
+    msgs = [
+        ChatMessage(
+            user_id="U_OWNER",
+            text="First owner message",
+            timestamp=_FIXED_TS,
+            channel_id="D001",
+            user_name="Jasper",
+        ),
+        ChatMessage(
+            user_id="U_OWNER",
+            text="Second owner message",
+            timestamp=_FIXED_TS + 10,
+            channel_id="D001",
+            user_name="Jasper",
+        ),
+        ChatMessage(
+            user_id="U_CONTACT",
+            text="Non-owner message",
+            timestamp=_FIXED_TS + 20,
+            channel_id="D001",
+            user_name="Wren",
+        ),
+    ]
+    _ingest_messages(conn, msgs, "mock", home=home)
+
+    owner_count = conn.execute(
+        "SELECT COUNT(*) as cnt FROM entities WHERE is_owner = 1"
+    ).fetchone()["cnt"]
+    assert owner_count == 1
+
+    owner_row = conn.execute("SELECT id FROM entities WHERE is_owner = 1").fetchone()
+    assert owner_row["id"] == owner_id
+
+    duplicate_check = conn.execute(
+        "SELECT COUNT(*) as cnt FROM entities"
+        " WHERE is_owner = 0 AND (name = 'Jasper' OR aliases LIKE '%U_OWNER%')"
+    ).fetchone()["cnt"]
+    assert duplicate_check == 0
     conn.close()

@@ -21,6 +21,7 @@ from patina.graph import (
 from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation
 from patina.owner import (
     get_owner_entity_id,
+    get_owner_identifiers,
     get_owner_user_ids,
     is_owner_entity,
     mark_entity_as_owner,
@@ -136,11 +137,16 @@ def _ingest_messages(
     conn,
     messages: list[ChatMessage],
     source: str,
+    *,
+    home: Path | None = None,
 ) -> tuple[int, int, int, set[str]]:
     inserted = 0
     skipped = 0
     non_person_skipped = 0
     entity_ids_seen: set[str] = set()
+
+    owner_identifiers = get_owner_identifiers(home)
+    owner_entity_id = get_owner_entity_id(conn)
 
     for msg in messages:
         obs_id = _obs_id(source, msg.channel_id, msg.thread_id, msg.timestamp)
@@ -166,22 +172,36 @@ def _ingest_messages(
 
         if is_non_person_sender(msg.user_id, msg.user_name):
             non_person_skipped += 1
+
+        sender_tokens = {msg.user_id}
+        if msg.user_name:
+            sender_tokens.add(msg.user_name)
+        is_owner_match = bool(owner_identifiers & sender_tokens)
+
+        if is_owner_match and owner_entity_id:
+            sender_id = owner_entity_id
         else:
             sender = extract_sender_entity(msg.user_id, msg.user_name)
             existing_id = resolve_entity_id(conn, sender.name, sender.aliases)
             if existing_id:
                 sender.id = existing_id
             upsert_entity(conn, sender)
-            entity_ids_seen.add(sender.id)
+            sender_id = sender.id
 
-            conn.execute(
-                "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
-                (sender.id, obs_id),
-            )
-            conn.commit()
+            if is_owner_match:
+                mark_entity_as_owner(conn, sender_id)
+                owner_entity_id = sender_id
 
-            if is_owner_entity(conn, sender.id):
-                auto_resolve_draft_reply(conn, msg.channel_id, msg.text)
+        entity_ids_seen.add(sender_id)
+
+        conn.execute(
+            "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
+            (sender_id, obs_id),
+        )
+        conn.commit()
+
+        if is_owner_entity(conn, sender_id):
+            auto_resolve_draft_reply(conn, msg.channel_id, msg.text)
 
         text_entities = extract_entities_from_text(msg.text)
         for ent in text_entities:
@@ -299,7 +319,9 @@ def ingest_live(
             messages.extend(_events_to_chat_messages(events))
 
         messages.sort(key=lambda m: m.timestamp)
-        inserted, skipped, non_person_skipped, entity_ids = _ingest_messages(conn, messages, source)
+        inserted, skipped, non_person_skipped, entity_ids = _ingest_messages(
+            conn, messages, source, home=home
+        )
 
         zero_streak = int(kv_get(conn, "discovery_zero_streak") or "0")
 
