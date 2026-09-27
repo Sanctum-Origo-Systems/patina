@@ -28,6 +28,27 @@ def test_autonomy_status_returns_string(db_path, tmp_path):
     assert "Level" in result
 
 
+def test_autonomy_status_per_domain_table(db_path, tmp_path):
+    from patina.autonomy.levels import freeze_advancement, set_level
+    from patina.store import connect
+
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        set_level(conn, 3, domain="triage")
+        set_level(conn, 2, domain="draft")
+        freeze_advancement(conn, domain="draft")
+    finally:
+        conn.close()
+
+    result = autonomy_status()
+    assert "triage" in result
+    assert "draft" in result
+    assert "| 3 |" in result
+    assert "| 2 |" in result
+    assert "yes" in result
+
+
 def test_reject_action_records_decision(db_conn):
     _make_obs(db_conn, "obs1")
     aid = propose_action(

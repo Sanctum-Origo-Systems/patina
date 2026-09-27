@@ -573,3 +573,26 @@ def test_owner_merge_deduplicates_relationships(tmp_path):
         assert rels[0]["subject_id"] == "owner-001"
     finally:
         conn.close()
+
+
+def test_autonomy_status_per_domain_output(tmp_path):
+    from patina.autonomy.levels import freeze_advancement, set_level
+
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        set_level(conn, 3, domain="triage")
+        set_level(conn, 2, domain="draft")
+        freeze_advancement(conn, domain="draft")
+    finally:
+        conn.close()
+
+    result = runner.invoke(app, ["autonomy", "status", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "triage" in result.output
+    assert "draft" in result.output
+    assert "3" in result.output
+    assert "2" in result.output
+    assert "yes" in result.output
+    assert "no" in result.output
