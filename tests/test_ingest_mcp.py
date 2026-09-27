@@ -496,3 +496,40 @@ def test_ingest_dm_obs_id_cross_path_equivalence(tmp_path):
 
     assert result["messages_skipped"] >= 1
     conn.close()
+
+
+def test_mcp_ingest_resolves_owner_entity(tmp_path):
+    """AC6: MCP ingest path resolves owner when sender matches configured identifier."""
+    import yaml
+
+    from patina.extraction import extract_sender_entity
+    from patina.graph import upsert_entity
+    from patina.owner import get_owner_entity_id, mark_entity_as_owner
+    from patina.store import connect as db_connect
+    from patina.store import get_db_path, init_db, run_pending_migrations
+
+    home = tmp_path / "patina_home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(yaml.dump({"owner": {"user_ids": ["U00000ALICE"]}}))
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = db_connect(db_path)
+    run_pending_migrations(conn)
+    owner = extract_sender_entity("U00000ALICE", "Alice")
+    upsert_entity(conn, owner)
+    mark_entity_as_owner(conn, owner.id)
+    owner_id = owner.id
+    conn.close()
+
+    port = MockSlackMcpPort()
+    ingest_live(port=port, source="slack_mcp", home=home)
+
+    conn = db_connect(get_db_path(home))
+    row = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = 'Hey, can you review the proposal?'"
+    ).fetchone()
+    assert row is not None
+    assert row["sender_entity_id"] == owner_id
+    assert row["sender_entity_id"] == get_owner_entity_id(conn)
+    conn.close()
