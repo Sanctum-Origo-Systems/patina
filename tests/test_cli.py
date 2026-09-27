@@ -300,3 +300,276 @@ def test_ingest_discovery_threshold_from_config(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "Warning" in result.output
     assert "5 consecutive runs" in result.output
+
+
+# ── owner merge tests ──────────────────────────────────────────────
+
+
+def _setup_owner_merge(tmp_path, owner_ids=None):
+    """Set up a database with a canonical owner and duplicate entities."""
+    init_db(get_db_path(tmp_path))
+
+    config = {"owner": {"user_ids": owner_ids or ["U_OWNER"], "name": "Taro Tanaka"}}
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    conn = connect(get_db_path(tmp_path))
+    now = "2026-01-01T00:00:00+00:00"
+
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 1)",
+        ("owner-001", "Taro Tanaka", json.dumps(["U_OWNER", "slack:U_OWNER"]), now, now),
+    )
+
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0)",
+        ("dup-001", "U_OWNER", json.dumps(["U_OWNER"]), now, now),
+    )
+
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0)",
+        ("other-001", "Yuki Mori", json.dumps(["U_OTHER"]), now, now),
+    )
+
+    conn.commit()
+    return conn
+
+
+def test_owner_merge_reassigns_observations(tmp_path):
+    conn = _setup_owner_merge(tmp_path)
+    now = "2026-01-01T00:00:00+00:00"
+
+    conn.execute(
+        "INSERT INTO observations (id, source, timestamp, sender_entity_id, text, ingested_at)"
+        " VALUES (?, 'test', 1000.0, ?, 'hello from dup', ?)",
+        ("obs-dup-1", "dup-001", now),
+    )
+    conn.execute(
+        "INSERT INTO observations (id, source, timestamp, sender_entity_id, text, ingested_at)"
+        " VALUES (?, 'test', 1001.0, ?, 'hello from other', ?)",
+        ("obs-other-1", "other-001", now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Merged 1 duplicate" in result.output
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        row = conn.execute(
+            "SELECT sender_entity_id FROM observations WHERE id = 'obs-dup-1'"
+        ).fetchone()
+        assert row["sender_entity_id"] == "owner-001"
+
+        row = conn.execute(
+            "SELECT sender_entity_id FROM observations WHERE id = 'obs-other-1'"
+        ).fetchone()
+        assert row["sender_entity_id"] == "other-001"
+    finally:
+        conn.close()
+
+
+def test_owner_merge_deduplicates_claims(tmp_path):
+    conn = _setup_owner_merge(tmp_path)
+    now = "2026-01-01T00:00:00+00:00"
+
+    conn.execute(
+        "INSERT INTO claims (id, subject_id, predicate, object,"
+        " confidence, first_asserted, last_confirmed)"
+        " VALUES (?, ?, 'likes', 'tea', 0.8, ?, ?)",
+        ("claim-owner-1", "owner-001", now, now),
+    )
+    conn.execute(
+        "INSERT INTO claims (id, subject_id, predicate, object,"
+        " confidence, first_asserted, last_confirmed)"
+        " VALUES (?, ?, 'likes', 'tea', 0.6, ?, ?)",
+        ("claim-dup-1", "dup-001", now, now),
+    )
+    conn.execute(
+        "INSERT INTO claims (id, subject_id, predicate, object,"
+        " confidence, first_asserted, last_confirmed)"
+        " VALUES (?, ?, 'speaks', 'english', 0.9, ?, ?)",
+        ("claim-dup-2", "dup-001", now, now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        owner_claims = conn.execute(
+            "SELECT * FROM claims WHERE subject_id = 'owner-001'"
+        ).fetchall()
+        predicates = {(c["predicate"], c["object"]) for c in owner_claims}
+        assert ("likes", "tea") in predicates
+        assert ("speaks", "english") in predicates
+        assert len(owner_claims) == 2
+
+        dup_claims = conn.execute("SELECT * FROM claims WHERE subject_id = 'dup-001'").fetchall()
+        assert len(dup_claims) == 0
+    finally:
+        conn.close()
+
+
+def test_owner_merge_reattributes_relationships(tmp_path):
+    conn = _setup_owner_merge(tmp_path)
+    now = "2026-01-01T00:00:00+00:00"
+
+    conn.execute(
+        "INSERT INTO relationships (id, subject_id, predicate,"
+        " object_id, confidence, first_seen, last_confirmed)"
+        " VALUES (?, ?, 'collaborates_with', ?, 0.7, ?, ?)",
+        ("rel-dup-1", "dup-001", "other-001", now, now),
+    )
+    conn.execute(
+        "INSERT INTO relationships (id, subject_id, predicate,"
+        " object_id, confidence, first_seen, last_confirmed)"
+        " VALUES (?, ?, 'reports_to', ?, 0.5, ?, ?)",
+        ("rel-dup-2", "other-001", "dup-001", now, now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        rels = conn.execute(
+            "SELECT * FROM relationships WHERE subject_id = 'dup-001' OR object_id = 'dup-001'"
+        ).fetchall()
+        assert len(rels) == 0
+
+        rel1 = conn.execute(
+            "SELECT * FROM relationships WHERE predicate = 'collaborates_with'"
+        ).fetchone()
+        assert rel1["subject_id"] == "owner-001"
+        assert rel1["object_id"] == "other-001"
+
+        rel2 = conn.execute("SELECT * FROM relationships WHERE predicate = 'reports_to'").fetchone()
+        assert rel2["subject_id"] == "other-001"
+        assert rel2["object_id"] == "owner-001"
+    finally:
+        conn.close()
+
+
+def test_owner_merge_deletes_duplicate_entities(tmp_path):
+    conn = _setup_owner_merge(tmp_path)
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        row = conn.execute("SELECT * FROM entities WHERE id = 'dup-001'").fetchone()
+        assert row is None
+
+        owner = conn.execute("SELECT * FROM entities WHERE id = 'owner-001'").fetchone()
+        assert owner is not None
+        assert owner["is_owner"] == 1
+
+        other = conn.execute("SELECT * FROM entities WHERE id = 'other-001'").fetchone()
+        assert other is not None
+    finally:
+        conn.close()
+
+
+def test_owner_merge_noop_when_no_duplicates(tmp_path):
+    init_db(get_db_path(tmp_path))
+    config = {"owner": {"user_ids": ["U_OWNER"], "name": "Taro Tanaka"}}
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    conn = connect(get_db_path(tmp_path))
+    now = "2026-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 1)",
+        ("owner-001", "Taro Tanaka", json.dumps(["U_OWNER"]), now, now),
+    )
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0)",
+        ("other-001", "Yuki Mori", json.dumps(["U_OTHER"]), now, now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "No duplicate" in result.output
+
+
+def test_owner_merge_uses_get_owner_identifiers(tmp_path):
+    init_db(get_db_path(tmp_path))
+    config = {
+        "owner": {
+            "user_ids": ["U_OWNER"],
+            "handles": ["taro.tanaka"],
+            "display_names": ["Taro Tanaka"],
+        }
+    }
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    conn = connect(get_db_path(tmp_path))
+    now = "2026-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 1)",
+        ("owner-001", "Taro Tanaka", json.dumps(["U_OWNER"]), now, now),
+    )
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0)",
+        ("dup-handle", "taro.tanaka", json.dumps(["display_name:taro.tanaka"]), now, now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Merged 1 duplicate" in result.output
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        row = conn.execute("SELECT * FROM entities WHERE id = 'dup-handle'").fetchone()
+        assert row is None
+    finally:
+        conn.close()
+
+
+def test_owner_merge_deduplicates_relationships(tmp_path):
+    conn = _setup_owner_merge(tmp_path)
+    now = "2026-01-01T00:00:00+00:00"
+
+    conn.execute(
+        "INSERT INTO relationships (id, subject_id, predicate,"
+        " object_id, confidence, first_seen, last_confirmed)"
+        " VALUES (?, ?, 'works_with', ?, 0.8, ?, ?)",
+        ("rel-owner-1", "owner-001", "other-001", now, now),
+    )
+    conn.execute(
+        "INSERT INTO relationships (id, subject_id, predicate,"
+        " object_id, confidence, first_seen, last_confirmed)"
+        " VALUES (?, ?, 'works_with', ?, 0.5, ?, ?)",
+        ("rel-dup-1", "dup-001", "other-001", now, now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        rels = conn.execute("SELECT * FROM relationships WHERE predicate = 'works_with'").fetchall()
+        assert len(rels) == 1
+        assert rels[0]["subject_id"] == "owner-001"
+    finally:
+        conn.close()

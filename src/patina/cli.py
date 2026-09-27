@@ -52,6 +52,8 @@ entity_app = typer.Typer(help="Entity maintenance.")
 app.add_typer(entity_app, name="entity")
 heartbeat_app = typer.Typer(help="Background heartbeat tasks.")
 app.add_typer(heartbeat_app, name="heartbeat")
+owner_app = typer.Typer(help="Owner entity management.")
+app.add_typer(owner_app, name="owner")
 
 
 def _bootstrap_home(home_dir: Path) -> None:
@@ -1257,6 +1259,133 @@ def heartbeat_start_cmd(
 
     typer.echo(f"Starting heartbeat (every {interval}m). Press Ctrl+C to stop.")
     heartbeat_start(interval_minutes=interval, home=home)
+
+
+@owner_app.command("merge")
+def owner_merge(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Fold duplicate self-entities into the canonical owner entity."""
+    import json
+
+    from patina.owner import get_owner_entity_id, get_owner_identifiers, normalize_alias
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    identifiers = get_owner_identifiers(home)
+    if not identifiers:
+        typer.echo("No owner identifiers configured. Nothing to merge.")
+        return
+
+    conn = connect(db_path)
+    try:
+        owner_id = get_owner_entity_id(conn)
+        if not owner_id:
+            typer.echo("No canonical owner entity found (is_owner=1). Nothing to merge.")
+            return
+
+        normalized_ids = set()
+        for ident in identifiers:
+            normalized_ids.add(ident.lower())
+            stripped = normalize_alias(ident)
+            if stripped != ident:
+                normalized_ids.add(stripped.lower())
+
+        all_entities = conn.execute(
+            "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+        ).fetchall()
+
+        duplicate_ids = []
+        for ent in all_entities:
+            if ent["id"] == owner_id:
+                continue
+            if ent["name"].lower() in normalized_ids:
+                duplicate_ids.append(ent["id"])
+                continue
+            stripped_name = normalize_alias(ent["name"])
+            if stripped_name.lower() in normalized_ids:
+                duplicate_ids.append(ent["id"])
+                continue
+            aliases = json.loads(ent["aliases"] or "[]")
+            for alias in aliases:
+                if alias.lower() in normalized_ids:
+                    duplicate_ids.append(ent["id"])
+                    break
+                stripped_alias = normalize_alias(alias)
+                if stripped_alias.lower() in normalized_ids:
+                    duplicate_ids.append(ent["id"])
+                    break
+
+        if not duplicate_ids:
+            typer.echo("No duplicate owner entities found. Nothing to merge.")
+            return
+
+        observations_moved = 0
+        claims_moved = 0
+        relationships_moved = 0
+
+        for dup_id in duplicate_ids:
+            cursor = conn.execute(
+                "UPDATE observations SET sender_entity_id = ? WHERE sender_entity_id = ?",
+                (owner_id, dup_id),
+            )
+            observations_moved += cursor.rowcount
+
+            dup_claims = conn.execute(
+                "SELECT id, predicate, object FROM claims WHERE subject_id = ?",
+                (dup_id,),
+            ).fetchall()
+            for claim in dup_claims:
+                existing = conn.execute(
+                    "SELECT id FROM claims WHERE subject_id = ? AND predicate = ? AND object = ?",
+                    (owner_id, claim["predicate"], claim["object"]),
+                ).fetchone()
+                if existing:
+                    conn.execute("DELETE FROM claims WHERE id = ?", (claim["id"],))
+                else:
+                    conn.execute(
+                        "UPDATE claims SET subject_id = ? WHERE id = ?",
+                        (owner_id, claim["id"]),
+                    )
+                claims_moved += 1
+
+            dup_rels = conn.execute(
+                "SELECT id, subject_id, predicate, object_id FROM relationships "
+                "WHERE subject_id = ? OR object_id = ?",
+                (dup_id, dup_id),
+            ).fetchall()
+            for rel in dup_rels:
+                new_subject = owner_id if rel["subject_id"] == dup_id else rel["subject_id"]
+                new_object = owner_id if rel["object_id"] == dup_id else rel["object_id"]
+                existing = conn.execute(
+                    "SELECT id FROM relationships "
+                    "WHERE subject_id = ? AND predicate = ? AND object_id = ?",
+                    (new_subject, rel["predicate"], new_object),
+                ).fetchone()
+                if existing:
+                    conn.execute("DELETE FROM relationships WHERE id = ?", (rel["id"],))
+                else:
+                    conn.execute(
+                        "UPDATE relationships SET subject_id = ?, object_id = ? WHERE id = ?",
+                        (new_subject, new_object, rel["id"]),
+                    )
+                relationships_moved += 1
+
+            conn.execute("DELETE FROM entities WHERE id = ?", (dup_id,))
+
+        conn.commit()
+
+        typer.echo(
+            f"Merged {len(duplicate_ids)} duplicate(s) into owner entity. "
+            f"Observations: {observations_moved}, "
+            f"claims: {claims_moved}, "
+            f"relationships: {relationships_moved}."
+        )
+    finally:
+        conn.close()
 
 
 @app.command("chat")
