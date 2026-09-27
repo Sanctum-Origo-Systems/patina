@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_HOME = Path.home() / ".patina"
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 _TABLES = """
 CREATE TABLE IF NOT EXISTS entities (
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS anti_patterns (
 );
 
 CREATE TABLE IF NOT EXISTS autonomy_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+    domain TEXT PRIMARY KEY,
     level INTEGER NOT NULL DEFAULT 0,
     frozen_until TEXT,
     last_advanced TEXT
@@ -746,6 +746,42 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
                 f"Migration rekey_observations_v3: re-keyed {rekeyed} observations, "
                 f"removed {deleted} duplicates"
             )
+
+    row = conn.execute(
+        "SELECT 1 FROM migrations WHERE name = 'domain_keyed_autonomy_state_v1'"
+    ).fetchone()
+    if not row:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(autonomy_state)").fetchall()]
+        if "id" in cols and "domain" not in cols:
+            old_row = conn.execute(
+                "SELECT level, frozen_until, last_advanced FROM autonomy_state WHERE id = 1"
+            ).fetchone()
+            old_level = old_row["level"] if old_row else 0
+            old_frozen = old_row["frozen_until"] if old_row else None
+            old_advanced = old_row["last_advanced"] if old_row else None
+
+            conn.execute("ALTER TABLE autonomy_state RENAME TO _autonomy_state_old")
+            conn.execute(
+                """CREATE TABLE autonomy_state (
+                       domain TEXT PRIMARY KEY,
+                       level INTEGER NOT NULL DEFAULT 0,
+                       frozen_until TEXT,
+                       last_advanced TEXT
+                   )"""
+            )
+            for domain in ("triage", "draft", "send"):
+                conn.execute(
+                    "INSERT INTO autonomy_state (domain, level, frozen_until, last_advanced) "
+                    "VALUES (?, ?, ?, ?)",
+                    (domain, old_level, old_frozen, old_advanced),
+                )
+            conn.execute("DROP TABLE _autonomy_state_old")
+
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('domain_keyed_autonomy_state_v1', datetime('now'))"
+        )
+        conn.commit()
 
 
 def get_open_draft_reply_for_channel(
