@@ -48,6 +48,8 @@ style_app = typer.Typer(help="Style profiles.")
 app.add_typer(style_app, name="style")
 autonomy_app = typer.Typer(help="Autonomy system.")
 app.add_typer(autonomy_app, name="autonomy")
+entity_app = typer.Typer(help="Entity maintenance.")
+app.add_typer(entity_app, name="entity")
 heartbeat_app = typer.Typer(help="Background heartbeat tasks.")
 app.add_typer(heartbeat_app, name="heartbeat")
 
@@ -188,9 +190,37 @@ def extract_cmd(
     limit: int = typer.Option(500, "--limit", help="Max observations to process"),
     model: str = typer.Option("sonnet", "--model", help="Claude model to use"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Count without calling LLM"),
+    reprocess: bool = typer.Option(
+        False, "--reprocess", help="Reset processed flag before extracting"
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="Reprocess observations since DATE (ISO)"
+    ),
+    source: str | None = typer.Option(
+        None, "--source", help="Reprocess observations from this source"
+    ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Extract beliefs from unprocessed observations via LLM."""
+    if reprocess:
+        from patina.maintenance import reprocess_observations
+
+        db_path = get_db_path(home)
+        if not db_path.exists():
+            typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+            raise typer.Exit(1)
+
+        conn = connect(db_path)
+        try:
+            result = reprocess_observations(conn, since=since, source=source, dry_run=dry_run)
+            mode = "Would reset" if dry_run else "Reset"
+            typer.echo(f"{mode} {result['reset_count']} observations for reprocessing.")
+        finally:
+            conn.close()
+
+        if dry_run:
+            return
+
     from patina.beliefs.extractor import extract_beliefs
 
     extract_beliefs(
@@ -263,9 +293,11 @@ def ingest(
             )
             return
 
+    non_person = result.get("non_person_skipped", 0)
+    non_person_msg = f", {non_person} non-person senders skipped" if non_person else ""
     typer.echo(
         f"Done. Inserted {result['messages_inserted']} messages "
-        f"({result['messages_skipped']} skipped). "
+        f"({result['messages_skipped']} skipped{non_person_msg}). "
         f"{result['entities_created']} entities found. "
         f"Total: {result['total_observations']} observations, "
         f"{result['total_entities']} entities."
@@ -911,6 +943,180 @@ def reject_cmd(
         conn.close()
 
 
+@entity_app.command("merge")
+def entity_merge_cmd(
+    keep: str = typer.Argument(..., help="Entity ID to keep"),
+    drop: str = typer.Argument(..., help="Entity ID to merge into keep and delete"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without writing"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Merge entity DROP into KEEP, rewiring all references."""
+    from patina.maintenance import backup_store, merge_entities
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        keep_rows = conn.execute(
+            "SELECT id, name FROM entities WHERE id LIKE ?",
+            (keep + "%",),
+        ).fetchall()
+        drop_rows = conn.execute(
+            "SELECT id, name FROM entities WHERE id LIKE ?",
+            (drop + "%",),
+        ).fetchall()
+
+        if not keep_rows:
+            typer.echo(f"No entity found matching '{keep}'", err=True)
+            raise typer.Exit(1)
+        if len(keep_rows) > 1:
+            matches = ", ".join(f"{r['id']} ({r['name']})" for r in keep_rows)
+            typer.echo(
+                f"Ambiguous keep ID '{keep}' matches {len(keep_rows)} entities: {matches}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if not drop_rows:
+            typer.echo(f"No entity found matching '{drop}'", err=True)
+            raise typer.Exit(1)
+        if len(drop_rows) > 1:
+            matches = ", ".join(f"{r['id']} ({r['name']})" for r in drop_rows)
+            typer.echo(
+                f"Ambiguous drop ID '{drop}' matches {len(drop_rows)} entities: {matches}",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        keep_row = keep_rows[0]
+        drop_row = drop_rows[0]
+
+        if not dry_run:
+            backup_path = backup_store(db_path)
+            typer.echo(f"Backup: {backup_path}")
+
+        result = merge_entities(conn, keep_row["id"], drop_row["id"], dry_run=dry_run)
+
+        mode = "Would merge" if dry_run else "Merged"
+        typer.echo(f"{mode} '{result['drop_name']}' into '{result['keep_name']}'")
+        typer.echo(f"  Observations: {result['observations_moved']}")
+        typer.echo(f"  Claims: {result['claims_moved']}")
+        typer.echo(f"  Relationships: {result['relationships_moved']}")
+    except ValueError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    finally:
+        conn.close()
+
+
+@entity_app.command("dedup")
+def entity_dedup_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without writing"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Deduplicate entities by normalized name."""
+    from patina.maintenance import backup_store, dedup_entities
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if not dry_run:
+            backup_path = backup_store(db_path)
+            typer.echo(f"Backup: {backup_path}")
+
+        result = dedup_entities(conn, dry_run=dry_run)
+
+        if result["groups"] == 0:
+            typer.echo("No duplicate entities found.")
+            return
+
+        mode = "Dry run" if dry_run else "Dedup"
+        typer.echo(f"{mode}: {result['groups']} group(s), {result['entities_merged']} merge(s)")
+        for merge in result["merges"]:
+            typer.echo(f"  '{merge['drop_name']}' -> '{merge['keep_name']}'")
+    finally:
+        conn.close()
+
+
+@entity_app.command("prune")
+def entity_prune_cmd(
+    non_person: bool = typer.Option(False, "--non-person", help="Remove non-person entities"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without writing"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Prune entities matching filter criteria."""
+    from patina.maintenance import backup_store, prune_non_person_entities
+
+    if not non_person:
+        typer.echo("Specify a filter: --non-person", err=True)
+        raise typer.Exit(1)
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if not dry_run:
+            backup_path = backup_store(db_path)
+            typer.echo(f"Backup: {backup_path}")
+
+        result = prune_non_person_entities(conn, dry_run=dry_run)
+
+        if result["pruned"] == 0:
+            typer.echo("No non-person entities found.")
+            return
+
+        mode = "Would prune" if dry_run else "Pruned"
+        typer.echo(f"{mode} {result['pruned']} non-person entity(ies):")
+        for ent in result["entities"]:
+            typer.echo(f"  {ent['name']}")
+    finally:
+        conn.close()
+
+
+@entity_app.command("list")
+def entity_list_cmd(
+    entity_type: str = typer.Option(
+        "all", "--type", help="Filter: person, topic, reference, or all"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """List all entities."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if entity_type == "all":
+            rows = conn.execute(
+                "SELECT id, type, name FROM entities ORDER BY type, name"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, type, name FROM entities WHERE type = ? ORDER BY name",
+                (entity_type,),
+            ).fetchall()
+
+        if not rows:
+            typer.echo("No entities found.")
+            return
+
+        for r in rows:
+            typer.echo(f"  [{r['type']}] {r['id'][:8]} {r['name']}")
+    finally:
+        conn.close()
+
+
 @app.command("backfill-decisions")
 def backfill_decisions_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview count without writing"),
@@ -1024,7 +1230,11 @@ def heartbeat_once_cmd(
     typer.echo(f"Heartbeat complete. Tasks run: {', '.join(result['tasks_run'])}")
     if result.get("ingest"):
         i = result["ingest"]
-        typer.echo(f"  Ingest: {i['messages_inserted']} new, {i['messages_skipped']} skipped")
+        np = i.get("non_person_skipped", 0)
+        np_msg = f", {np} non-person skipped" if np else ""
+        typer.echo(
+            f"  Ingest: {i['messages_inserted']} new, {i['messages_skipped']} skipped{np_msg}"
+        )
     if result.get("decay"):
         typer.echo(f"  Decay: {result['decay']['stale_count']} beliefs below threshold")
     if result.get("escalation"):
