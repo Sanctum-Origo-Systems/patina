@@ -56,3 +56,8 @@ triage_labels = [
 auto_merge_promotion_level = "repo"
 
 timer_prefix = "patina"
+
+# Jev decision model (experimental)
+# Enabled in shadow mode — collects comparison data, acts on nothing
+[jev]
+mode = "shadow"
