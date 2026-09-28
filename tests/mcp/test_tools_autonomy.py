@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from patina.autonomy.actions import edit_action, propose_action, reject_action
+from datetime import UTC, datetime
+
+from patina.autonomy.actions import (
+    ACTION_TYPE_TO_DOMAIN,
+    edit_action,
+    propose_action,
+    reject_action,
+)
+from patina.autonomy.levels import current_level, set_level
+from patina.autonomy.tracker import check_demotion, demote_level
 from patina.decisions import get_act_on_rate, record_decision
 from patina.graph import insert_observation
 from patina.mcp.tools_autonomy import autonomy_status
@@ -73,3 +82,98 @@ def test_act_on_rate_with_mixed_outcomes(db_conn):
 
     rate = get_act_on_rate(db_conn)
     assert abs(rate - 2 / 4) < 0.01
+
+
+def test_check_demotion_triage_evaluates_error_rate(db_conn):
+    set_level(db_conn, 3, domain="triage")
+    for i in range(8):
+        _make_obs(db_conn, f"dt{i}")
+        record_decision(db_conn, f"dt{i}", "acted")
+    for i in range(8, 11):
+        _make_obs(db_conn, f"dt{i}")
+        record_decision(db_conn, f"dt{i}", "deferred")
+
+    should, reason, items = check_demotion(db_conn, current=3, domain="triage")
+    assert should is True
+    assert "error rate" in reason.lower()
+
+
+def _insert_action(conn, aid, action_type, status, level, ts):
+    conn.execute(
+        """INSERT INTO action_queue
+               (id, action_type, status, confidence, autonomy_level, created_at)
+           VALUES (?, ?, ?, 0.9, ?, ?)""",
+        (aid, action_type, status, level, ts),
+    )
+
+
+def test_check_demotion_draft_evaluates_acceptance(db_conn):
+    set_level(db_conn, 4, domain="draft")
+    now = datetime.now(UTC).isoformat()
+    for i in range(15):
+        _insert_action(db_conn, f"drf{i}", "draft", "rejected", 4, now)
+    for i in range(5):
+        _insert_action(db_conn, f"drfa{i}", "draft", "approved", 4, now)
+    db_conn.commit()
+
+    should, reason, items = check_demotion(db_conn, current=4, domain="draft")
+    assert should is True
+    assert "draft acceptance" in reason.lower()
+
+
+def test_check_demotion_send_evaluates_reopen_rate(db_conn):
+    set_level(db_conn, 5, domain="send")
+    now = datetime.now(UTC).isoformat()
+    for i in range(50):
+        _insert_action(db_conn, f"snd{i}", "ack", "executed", 5, now)
+    for i in range(5):
+        _insert_action(db_conn, f"sndr{i}", "ack", "rejected", 5, now)
+    db_conn.commit()
+
+    should, reason, items = check_demotion(db_conn, current=5, domain="send")
+    assert should is True
+    assert "reopen rate" in reason.lower()
+
+
+def test_demote_level_only_affects_target_domain(db_conn):
+    set_level(db_conn, 4, domain="triage")
+    set_level(db_conn, 4, domain="draft")
+    set_level(db_conn, 4, domain="send")
+
+    demote_level(db_conn, reason="test demotion", domain="triage")
+
+    assert current_level(db_conn, domain="triage") == 3
+    assert current_level(db_conn, domain="draft") == 4
+    assert current_level(db_conn, domain="send") == 4
+
+
+def test_reject_draft_freezes_only_draft_domain(db_conn):
+    set_level(db_conn, 4, domain="triage")
+    set_level(db_conn, 4, domain="draft")
+
+    aid = propose_action(
+        db_conn,
+        action_type="draft",
+        confidence=0.9,
+        autonomy_level=4,
+    )
+    reject_action(db_conn, aid)
+
+    draft_row = db_conn.execute(
+        "SELECT frozen_until FROM autonomy_state WHERE domain = 'draft'"
+    ).fetchone()
+    triage_row = db_conn.execute(
+        "SELECT frozen_until FROM autonomy_state WHERE domain = 'triage'"
+    ).fetchone()
+
+    assert draft_row["frozen_until"] is not None
+    assert triage_row["frozen_until"] is None
+
+
+def test_action_type_to_domain_covers_all_known_types():
+    expected = {"dismiss", "draft", "ack", "schedule"}
+    assert set(ACTION_TYPE_TO_DOMAIN.keys()) == expected
+    assert ACTION_TYPE_TO_DOMAIN["dismiss"] == "triage"
+    assert ACTION_TYPE_TO_DOMAIN["draft"] == "draft"
+    assert ACTION_TYPE_TO_DOMAIN["ack"] == "send"
+    assert ACTION_TYPE_TO_DOMAIN["schedule"] == "send"

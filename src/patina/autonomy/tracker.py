@@ -63,11 +63,13 @@ def get_override_count(conn: sqlite3.Connection, *, since_days: int = 7) -> int:
     return row["c"]
 
 
-def check_demotion(conn: sqlite3.Connection, current: int) -> tuple[bool, str | None, list[dict]]:
+def check_demotion(
+    conn: sqlite3.Connection, current: int, domain: str = "triage"
+) -> tuple[bool, str | None, list[dict]]:
     if current <= 1:
         return False, None, []
 
-    if current == 3:
+    if domain == "triage":
         stats = get_accuracy_stats(conn, since_days=30)
         if stats["total"] >= 10 and stats["error_rate"] > 0.05:
             cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=30)).isoformat()
@@ -92,7 +94,7 @@ def check_demotion(conn: sqlite3.Connection, current: int) -> tuple[bool, str | 
             ]
             return True, f"Error rate {stats['error_rate']:.1%} exceeds 5% threshold", items
 
-    if current == 4:
+    if domain == "draft":
         cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=30)).isoformat()
         row = conn.execute(
             """SELECT
@@ -122,7 +124,7 @@ def check_demotion(conn: sqlite3.Connection, current: int) -> tuple[bool, str | 
             ]
             return True, f"Draft acceptance {rate:.0%} below 80%", items
 
-    if current == 5:
+    if domain == "send":
         cutoff = (datetime.now(UTC) - __import__("datetime").timedelta(days=30)).isoformat()
         row = conn.execute(
             """SELECT COUNT(*) AS c FROM action_queue
@@ -158,10 +160,11 @@ def demote_level(
     *,
     reason: str,
     items: list[dict] | None = None,
+    domain: str = "triage",
 ) -> int:
-    level = current_level(conn)
+    level = current_level(conn, domain)
     new_level = max(level - 1, 0)
-    set_level(conn, new_level)
+    set_level(conn, new_level, domain)
 
     now = datetime.now(UTC).isoformat()
     for item in items or []:

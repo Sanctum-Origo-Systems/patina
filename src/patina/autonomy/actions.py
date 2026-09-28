@@ -8,6 +8,13 @@ from datetime import UTC, datetime
 from patina.autonomy.levels import freeze_advancement
 from patina.decisions import record_decision
 
+ACTION_TYPE_TO_DOMAIN: dict[str, str] = {
+    "dismiss": "triage",
+    "draft": "draft",
+    "ack": "send",
+    "schedule": "send",
+}
+
 
 def propose_action(
     conn: sqlite3.Connection,
@@ -98,13 +105,14 @@ def reject_action(conn: sqlite3.Connection, action_id: str) -> bool:
         return False
 
     row = conn.execute(
-        "SELECT target_observation_id FROM action_queue WHERE id = ?",
+        "SELECT target_observation_id, action_type FROM action_queue WHERE id = ?",
         (action_id,),
     ).fetchone()
     if row and row["target_observation_id"]:
         record_decision(conn, row["target_observation_id"], "rejected")
 
-    freeze_advancement(conn)
+    domain = ACTION_TYPE_TO_DOMAIN.get(row["action_type"], "triage") if row else "triage"
+    freeze_advancement(conn, domain=domain)
     return True
 
 
