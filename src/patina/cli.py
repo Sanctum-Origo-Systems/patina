@@ -11,6 +11,7 @@ from patina.autonomy.actions import (
 )
 from patina.autonomy.evaluate import evaluate_autonomy
 from patina.autonomy.levels import (
+    DOMAINS,
     can_advance,
     current_level,
     is_frozen,
@@ -20,7 +21,6 @@ from patina.autonomy.levels import (
 from patina.autonomy.tracker import (
     check_demotion,
     clear_anti_pattern,
-    get_accuracy_stats,
     get_anti_patterns,
 )
 from patina.beliefs.contradictions import find_contradictions_tier1
@@ -736,7 +736,7 @@ def relationships_cmd(
 def autonomy_status(
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
-    """Show autonomy level and stats."""
+    """Show autonomy level and stats per domain."""
     db_path = get_db_path(home)
     if not db_path.exists():
         typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
@@ -744,23 +744,17 @@ def autonomy_status(
 
     conn = connect(db_path)
     try:
-        level = current_level(conn)
-        desc = level_description(level)
-        frozen = is_frozen(conn)
-        stats = get_accuracy_stats(conn)
-        patterns = get_anti_patterns(conn)
-        can, reason = can_advance(conn, level)
-
-        typer.echo(f"Level: {level} — {desc}")
-        typer.echo(f"Frozen: {'yes' if frozen else 'no'}")
-        typer.echo(
-            f"Accuracy: {stats['accuracy_rate']:.0%} ({stats['correct']}/{stats['total']} correct)"
-        )
-        typer.echo(f"Anti-patterns: {len(patterns)}")
-        if can:
-            typer.echo(f"Ready to advance: {reason}")
-        else:
-            typer.echo(f"Next advancement: {reason}")
+        typer.echo(f"{'Domain':<10} {'Level':<8} {'Description':<40} {'Frozen':<8} {'Advance'}")
+        typer.echo("─" * 90)
+        for domain in DOMAINS:
+            level = current_level(conn, domain)
+            desc = level_description(level)
+            frozen = is_frozen(conn, domain)
+            can, reason = can_advance(conn, level, domain)
+            advance = f"Ready: {reason}" if can else reason
+            typer.echo(
+                f"  {domain:<8} {level:<8} {desc:<40} {'yes' if frozen else 'no':<8} {advance}"
+            )
     finally:
         conn.close()
 
