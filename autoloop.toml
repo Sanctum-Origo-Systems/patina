@@ -57,7 +57,7 @@ auto_merge_promotion_level = "repo"
 
 timer_prefix = "patina"
 
-# Jev decision model (experimental)
-# Enabled in shadow mode — collects comparison data, acts on nothing
+# Jev decision model (experimental, off by default)
+# Override with env var JEV_MODE=shadow to enable
 [jev]
-mode = "shadow"
+mode = "off"
