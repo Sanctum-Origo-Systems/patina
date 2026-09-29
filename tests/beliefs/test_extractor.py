@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 from patina.beliefs.extractor import (
@@ -11,6 +12,7 @@ from patina.beliefs.extractor import (
 )
 from patina.graph import insert_observation, upsert_entity
 from patina.models import Entity, Observation
+from patina.owner import mark_entity_as_owner
 
 
 def test_parse_extraction_valid_json():
@@ -51,10 +53,10 @@ def test_resolve_entity_id_found(db_conn):
     assert result == "e1"
 
 
-def test_resolve_entity_id_partial(db_conn):
+def test_resolve_entity_id_no_substring_match(db_conn):
     upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice Smith"))
     result = _resolve_entity_id(db_conn, "Alice")
-    assert result == "e1"
+    assert result is None
 
 
 def test_resolve_entity_id_not_found(db_conn):
@@ -239,3 +241,192 @@ def test_extract_behavioral_claims(db_conn, db_path, tmp_path):
     assert row is not None
     assert row["predicate"] == "behavioral:response_pattern"
     conn.close()
+
+
+def _make_owner(db_conn, entity_id="owner1", name="Sam Rivera", aliases=None):
+    upsert_entity(
+        db_conn,
+        Entity(id=entity_id, type="person", name=name, aliases=aliases or []),
+    )
+    mark_entity_as_owner(db_conn, entity_id)
+    return entity_id
+
+
+class TestResolveEntityIdOwner:
+    def test_owner_identifier_exact_match(self, db_conn):
+        owner_id = _make_owner(db_conn, name="Sam Rivera")
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Sam Rivera via securemail.example"),
+        )
+        result = _resolve_entity_id(
+            db_conn,
+            "Sam Rivera",
+            owner_entity_id=owner_id,
+            owner_match_names={"sam rivera", "srivera"},
+        )
+        assert result == owner_id
+
+    def test_owner_identifier_case_insensitive(self, db_conn):
+        owner_id = _make_owner(db_conn, name="Sam Rivera")
+        result = _resolve_entity_id(
+            db_conn,
+            "sam rivera",
+            owner_entity_id=owner_id,
+            owner_match_names={"sam rivera"},
+        )
+        assert result == owner_id
+
+    def test_partial_name_does_not_match_wrong_entity(self, db_conn):
+        _make_owner(db_conn, name="Sam Rivera")
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Sam Rivera via securemail.example"),
+        )
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Lee, Sam"))
+        result = _resolve_entity_id(
+            db_conn,
+            "Sam",
+            owner_entity_id="owner1",
+            owner_match_names={"sam rivera", "srivera"},
+        )
+        assert result is None
+
+    def test_different_person_does_not_attach_to_owner(self, db_conn):
+        _make_owner(db_conn, name="Sam Rivera")
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Jordan Blake"))
+        result = _resolve_entity_id(
+            db_conn,
+            "Jordan Blake",
+            owner_entity_id="owner1",
+            owner_match_names={"sam rivera", "srivera"},
+        )
+        assert result == "e2"
+
+    def test_normalized_name_matches_owner(self, db_conn):
+        owner_id = _make_owner(db_conn, name="Sam Rivera")
+        result = _resolve_entity_id(
+            db_conn,
+            "Rivera, Sam",
+            owner_entity_id=owner_id,
+            owner_match_names={"sam rivera"},
+        )
+        assert result == owner_id
+
+    def test_no_owner_falls_through_to_graph(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice Smith"))
+        result = _resolve_entity_id(db_conn, "Alice Smith")
+        assert result == "e1"
+
+    def test_relationship_uses_same_resolver(self, db_conn):
+        owner_id = _make_owner(db_conn, name="Sam Rivera")
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Jordan Blake"))
+        subj = _resolve_entity_id(
+            db_conn,
+            "Sam Rivera",
+            owner_entity_id=owner_id,
+            owner_match_names={"sam rivera"},
+        )
+        obj = _resolve_entity_id(
+            db_conn,
+            "Jordan Blake",
+            owner_entity_id=owner_id,
+            owner_match_names={"sam rivera"},
+        )
+        assert subj == owner_id
+        assert obj == "e2"
+
+
+class TestExtractBeliefsOwnerResolution:
+    def test_claim_attaches_to_owner(self, db_conn, db_path, tmp_path):
+        import yaml
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.dump(
+                {
+                    "owner": {
+                        "display_names": ["Sam Rivera"],
+                        "handles": ["srivera"],
+                    }
+                }
+            )
+        )
+        _make_owner(db_conn, name="Sam Rivera")
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Sam Rivera via securemail.example"),
+        )
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id="e1",
+            text="Sam Rivera is based in Springfield",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [],
+                "claims": [
+                    {
+                        "subject": "Sam Rivera",
+                        "predicate": "location",
+                        "object": "Springfield",
+                        "confidence": 0.9,
+                    }
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 1
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        row = conn.execute("SELECT subject_id FROM claims WHERE predicate = 'location'").fetchone()
+        assert row is not None
+        assert row["subject_id"] == "owner1"
+        conn.close()
+
+    def test_skipped_unresolved_counted(self, db_conn, db_path, tmp_path):
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id=None,
+            text="Nobody said something",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [],
+                "claims": [
+                    {
+                        "subject": "UNKNOWN",
+                        "predicate": "role",
+                        "object": "CEO",
+                        "confidence": 0.9,
+                    }
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["skipped_unresolved"] >= 1
+        assert stats["claims_extracted"] == 0
