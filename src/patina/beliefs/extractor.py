@@ -111,18 +111,24 @@ def _parse_extraction(response: str) -> dict:
     return {"claims": [], "relationships": []}
 
 
-def _resolve_entity_id(conn, name: str, *, exclude_owner: bool = False) -> str | None:
-    if exclude_owner:
-        row = conn.execute(
-            "SELECT id FROM entities WHERE (name = ? OR name LIKE ?) AND is_owner = 0 LIMIT 1",
-            (name, f"%{name}%"),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT id FROM entities WHERE name = ? OR name LIKE ? LIMIT 1",
-            (name, f"%{name}%"),
-        ).fetchone()
-    return row["id"] if row else None
+def _resolve_entity_id(
+    conn,
+    name: str,
+    *,
+    owner_entity_id: str | None = None,
+    owner_match_names: set[str] | None = None,
+) -> str | None:
+    from patina.graph import normalize_name, resolve_entity_id
+
+    if not name or not name.strip():
+        return None
+    name = name.strip()
+
+    if owner_entity_id and owner_match_names:
+        if name.lower() in owner_match_names or normalize_name(name) in owner_match_names:
+            return owner_entity_id
+
+    return resolve_entity_id(conn, name)
 
 
 def _is_plausible_person_name(name: str) -> bool:
@@ -190,9 +196,38 @@ def extract_beliefs(
         "relationships_extracted": 0,
         "batches_sent": 0,
         "errors": 0,
+        "skipped_unresolved": 0,
     }
 
     try:
+        from patina.graph import normalize_name as _normalize_name
+        from patina.owner import get_owner_entity_id, get_owner_identifiers, normalize_alias
+
+        owner_entity_id = get_owner_entity_id(conn)
+        owner_match_names: set[str] = set()
+        if owner_entity_id:
+            for ident in get_owner_identifiers(home):
+                owner_match_names.add(ident.lower())
+                normalized = _normalize_name(ident)
+                if normalized:
+                    owner_match_names.add(normalized)
+            row = conn.execute(
+                "SELECT name, aliases FROM entities WHERE id = ?",
+                (owner_entity_id,),
+            ).fetchone()
+            if row:
+                owner_match_names.add(row["name"].lower())
+                normalized = _normalize_name(row["name"])
+                if normalized:
+                    owner_match_names.add(normalized)
+                for alias in json.loads(row["aliases"] or "[]"):
+                    clean = normalize_alias(alias)
+                    owner_match_names.add(clean.lower())
+                    normalized = _normalize_name(clean)
+                    if normalized:
+                        owner_match_names.add(normalized)
+            owner_match_names.discard("")
+
         rows = conn.execute(
             """SELECT o.id, o.text, o.sender_entity_id, o.source, o.timestamp,
                       e.name AS sender_name
@@ -265,8 +300,14 @@ def extract_beliefs(
 
             for claim in claims:
                 subject_name = claim.get("subject", "")
-                subject_id = _resolve_entity_id(conn, subject_name, exclude_owner=True)
+                subject_id = _resolve_entity_id(
+                    conn,
+                    subject_name,
+                    owner_entity_id=owner_entity_id,
+                    owner_match_names=owner_match_names,
+                )
                 if not subject_id:
+                    stats["skipped_unresolved"] += 1
                     continue
                 claim_id = _id(
                     "claim",
@@ -295,9 +336,20 @@ def extract_beliefs(
                     print(f"\n    [WARN] Failed to insert claim: {e}")
 
             for rel in relationships:
-                subject_id = _resolve_entity_id(conn, rel.get("subject", ""))
-                object_id = _resolve_entity_id(conn, rel.get("object", ""))
+                subject_id = _resolve_entity_id(
+                    conn,
+                    rel.get("subject", ""),
+                    owner_entity_id=owner_entity_id,
+                    owner_match_names=owner_match_names,
+                )
+                object_id = _resolve_entity_id(
+                    conn,
+                    rel.get("object", ""),
+                    owner_entity_id=owner_entity_id,
+                    owner_match_names=owner_match_names,
+                )
                 if not subject_id or not object_id:
+                    stats["skipped_unresolved"] += 1
                     continue
                 rel_id = _id(
                     "rel",
@@ -326,8 +378,14 @@ def extract_beliefs(
 
             for beh in behavioral:
                 subject_name = beh.get("subject", "")
-                subject_id = _resolve_entity_id(conn, subject_name, exclude_owner=True)
+                subject_id = _resolve_entity_id(
+                    conn,
+                    subject_name,
+                    owner_entity_id=owner_entity_id,
+                    owner_match_names=owner_match_names,
+                )
                 if not subject_id:
+                    stats["skipped_unresolved"] += 1
                     continue
                 predicate = f"behavioral:{beh.get('predicate', 'pattern')}"
                 claim_id = _id(
@@ -375,6 +433,8 @@ def extract_beliefs(
         print(f"  Claims extracted:       {stats['claims_extracted']}")
         print(f"  Relationships found:    {stats['relationships_extracted']}")
         print(f"  Batches sent to LLM:    {stats['batches_sent']}")
+        if stats["skipped_unresolved"]:
+            print(f"  Skipped (unresolved):   {stats['skipped_unresolved']}")
         if stats["errors"]:
             print(f"  Errors:                 {stats['errors']}")
 
