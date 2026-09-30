@@ -1,3 +1,7 @@
+## v0.19.2 (2026-09-30)
+- #326: Fix: replace substring LIKE fallback with owner-aware entity resolution ($0.00)
+Total: 1 PRs, $0.00
+
 ## v0.19.0 (2026-09-28)
 - #320: Feat: Update autonomy status CLI and MCP tool to display per-domai ($1.18)
 - #319: Feat: Scope tracker demotion/freeze to domain and map action types ($1.32)
