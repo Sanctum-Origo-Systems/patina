@@ -46,11 +46,20 @@ patina stale                       # decayed beliefs below confidence threshold
 patina contradictions              # conflicting claims
 patina relationships --top 20      # trust level + activity map
 
-# Graduated autonomy
-patina autonomy status             # current level, accuracy, anti-patterns
+# Graduated autonomy (per-domain)
+patina autonomy status             # per-domain level, accuracy, anti-patterns
+patina autonomy evaluate           # evaluate one ladder step
+patina autonomy anti-patterns      # list stored anti-patterns
+patina autonomy set-level <N>      # manual override (0-6)
 patina approve <id>                # approve a proposed action
 patina reject <id>                 # reject (freezes advancement, stores anti-pattern)
-patina autonomy set-level <N>      # manual override (0-6)
+
+# Entity & data maintenance
+patina entity list                 # list all entities
+patina entity merge <drop> <keep>  # merge entities, rewire references
+patina entity dedup                # deduplicate by normalized name
+patina entity prune                # prune non-person entities
+patina owner merge                 # fold duplicate self-entities into canonical owner
 
 # Live adapters
 patina connect slack --token "xoxb-..."
@@ -102,7 +111,7 @@ The observer maintains two belief graphs: beliefs about the world it watches, an
 
 1. **Cognitive framework, not an assistant** — an architecture for systems that form, hold, and act on beliefs
 2. **Persistent belief model with decay** — not a message archive, a living world model
-3. **Graduated autonomy earned by accuracy** — not configured, proven
+3. **Graduated autonomy earned by accuracy** — per-domain, not configured, proven
 4. **Cognitive layer, not standalone agent** — plugs into any MCP host, provides memory and judgment
 5. **Local-first, model-agnostic** — runs offline, no vendor lock-in
 6. **Deterministic core** — the intelligence is math and graphs, not LLM calls
@@ -110,7 +119,7 @@ The observer maintains two belief graphs: beliefs about the world it watches, an
 
 ## MCP Server — Cognitive Layer, Not Standalone Agent
 
-Patina is not a standalone agent competing with autonomous agent projects. It is a cognitive layer — 31 MCP tools — that plugs into any host agent (Claude Code, Kiro, Cursor, or any MCP host). The host agent provides the interface; Patina provides the memory, epistemics, and judgment. Tools include `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
+Patina is not a standalone agent competing with autonomous agent projects. It is a cognitive layer — 40 MCP tools — that plugs into any host agent (Claude Code, Kiro, Cursor, or any MCP host). The host agent provides the interface; Patina provides the memory, epistemics, and judgment. Tools include `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
 
 ```json
 {
