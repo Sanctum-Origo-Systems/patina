@@ -326,12 +326,30 @@ def prune_non_person_entities(
         if is_non_person(r["name"]):
             to_prune.append({"id": r["id"], "name": r["name"]})
 
+    if dry_run and to_prune:
+        eids = [ent["id"] for ent in to_prune]
+        ph = ",".join("?" for _ in eids)
+        claims_count = conn.execute(
+            f"SELECT COUNT(*) AS c FROM claims WHERE subject_id IN ({ph})", eids
+        ).fetchone()["c"]
+        rels_count = conn.execute(
+            f"SELECT COUNT(*) AS c FROM relationships "
+            f"WHERE subject_id IN ({ph}) OR object_id IN ({ph})",
+            eids + eids,
+        ).fetchone()["c"]
+        return {
+            "pruned": len(to_prune),
+            "entities": to_prune,
+            "claims_removed": claims_count,
+            "relationships_removed": rels_count,
+        }
+
     result = {
         "pruned": len(to_prune),
         "entities": to_prune,
     }
 
-    if dry_run or not to_prune:
+    if not to_prune:
         return result
 
     for ent in to_prune:

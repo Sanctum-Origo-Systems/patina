@@ -37,7 +37,13 @@ from patina.priority.objectives import (
     list_objectives,
     remove_objective,
 )
-from patina.store import connect, get_db_path, init_db
+from patina.store import (
+    connect,
+    delete_dangling_references,
+    find_dangling_references,
+    get_db_path,
+    init_db,
+)
 from patina.style.consolidator import build_all_profiles
 from patina.style.draft import generate_draft, load_style_profile
 
@@ -341,6 +347,32 @@ def status(
         total = count_entities(conn)
         typer.echo(f"Observations: {obs}")
         typer.echo(f"Entities: {total} ({people} people, {topics} topics, {refs} references)")
+    finally:
+        conn.close()
+
+
+@app.command("doctor")
+def doctor_cmd(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Check database integrity."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        dangling = find_dangling_references(conn)
+        if dangling.get("claims"):
+            typer.echo(
+                f"WARN dangling claims: {dangling['claims']} claim(s) reference missing entities"
+            )
+        if dangling.get("relationships"):
+            typer.echo(
+                f"WARN dangling relationships: {dangling['relationships']} "
+                f"relationship(s) reference missing entities"
+            )
     finally:
         conn.close()
 
@@ -1109,6 +1141,31 @@ def entity_list_cmd(
 
         for r in rows:
             typer.echo(f"  [{r['type']}] {r['id'][:8]} {r['name']}")
+    finally:
+        conn.close()
+
+
+@entity_app.command("cleanup")
+def entity_cleanup_cmd(
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Remove claims and relationships referencing deleted entities."""
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        result = delete_dangling_references(conn)
+        total = result["claims"] + result["relationships"]
+        if total == 0:
+            typer.echo("No dangling references found.")
+        else:
+            typer.echo(
+                f"Removed {result['claims']} dangling claim(s) "
+                f"and {result['relationships']} dangling relationship(s)."
+            )
     finally:
         conn.close()
 

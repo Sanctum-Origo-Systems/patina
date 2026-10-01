@@ -802,6 +802,37 @@ def get_open_draft_reply_for_channel(
     return dict(row) if row else None
 
 
+def find_dangling_references(conn: sqlite3.Connection) -> dict[str, int]:
+    claims = conn.execute(
+        "SELECT COUNT(*) AS c FROM claims WHERE subject_id NOT IN (SELECT id FROM entities)"
+    ).fetchone()["c"]
+    relationships = conn.execute(
+        "SELECT COUNT(*) AS c FROM relationships "
+        "WHERE subject_id NOT IN (SELECT id FROM entities) "
+        "OR object_id NOT IN (SELECT id FROM entities)"
+    ).fetchone()["c"]
+    result = {}
+    if claims:
+        result["claims"] = claims
+    if relationships:
+        result["relationships"] = relationships
+    return result
+
+
+def delete_dangling_references(conn: sqlite3.Connection) -> dict[str, int]:
+    claims_cur = conn.execute(
+        "DELETE FROM claims WHERE subject_id NOT IN (SELECT id FROM entities)"
+    )
+    rels_cur = conn.execute(
+        "DELETE FROM relationships "
+        "WHERE subject_id NOT IN (SELECT id FROM entities) "
+        "OR object_id NOT IN (SELECT id FROM entities)"
+    )
+    result = {"claims": claims_cur.rowcount, "relationships": rels_cur.rowcount}
+    conn.commit()
+    return result
+
+
 def kv_get(conn: sqlite3.Connection, key: str) -> str | None:
     row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None
