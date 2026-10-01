@@ -1483,9 +1483,14 @@ def test_owner_resolution_does_not_pollute_partial_name_match_aliases(tmp_path):
 
 
 def test_mention_path_resolves_owner_no_duplicate(tmp_path):
-    """Mention of owner user_id in message text does not create a duplicate entity."""
+    """Mention of a secondary owner user_id in message text does not create a duplicate entity.
+
+    Uses a different user_id for the mention than the one that created the owner
+    entity, so the mention generates a distinct entity ID. Without the fix, this
+    would insert a new non-owner entity.
+    """
     home = tmp_path / "home"
-    _setup_owner_config(home, user_ids=["U_OWNER"])
+    _setup_owner_config(home, user_ids=["U_OWNER", "U_OWNER_ALT"])
     conn, owner_id = _init_db_with_owner(home)
 
     entity_count_before = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
@@ -1493,7 +1498,7 @@ def test_mention_path_resolves_owner_no_duplicate(tmp_path):
     msgs = [
         ChatMessage(
             user_id="U_CONTACT",
-            text="Hey <@U_OWNER> can you review this?",
+            text="Hey <@U_OWNER_ALT> can you review this?",
             timestamp=_FIXED_TS,
             channel_id="D001",
             user_name="Wren",
@@ -1507,7 +1512,7 @@ def test_mention_path_resolves_owner_no_duplicate(tmp_path):
 
     duplicate_check = conn.execute(
         "SELECT COUNT(*) as cnt FROM entities"
-        " WHERE is_owner = 0 AND (name = 'U_OWNER' OR aliases LIKE '%U_OWNER%')"
+        " WHERE is_owner = 0 AND (name = 'U_OWNER_ALT' OR aliases LIKE '%U_OWNER_ALT%')"
     ).fetchone()["cnt"]
-    assert duplicate_check == 0, "no non-owner entity for U_OWNER should exist"
+    assert duplicate_check == 0, "no non-owner entity for U_OWNER_ALT should exist"
     conn.close()
