@@ -575,6 +575,131 @@ def test_owner_merge_deduplicates_relationships(tmp_path):
         conn.close()
 
 
+def test_owner_merge_dry_run(tmp_path):
+    conn = _setup_owner_merge(tmp_path)
+    now = "2026-01-01T00:00:00+00:00"
+
+    conn.execute(
+        "INSERT INTO observations (id, source, timestamp, sender_entity_id, text, ingested_at)"
+        " VALUES (?, 'test', 1000.0, ?, 'hello from dup', ?)",
+        ("obs-dup-1", "dup-001", now),
+    )
+    conn.execute(
+        "INSERT INTO claims (id, subject_id, predicate, object,"
+        " confidence, first_asserted, last_confirmed)"
+        " VALUES (?, ?, 'likes', 'tea', 0.8, ?, ?)",
+        ("claim-dup-1", "dup-001", now, now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--dry-run", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "CANDIDATE" in result.output
+    assert "dup-001" in result.output
+    assert "observations:" in result.output
+    assert "claims:" in result.output
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        ent = conn.execute("SELECT * FROM entities WHERE id = 'dup-001'").fetchone()
+        assert ent is not None
+        obs = conn.execute(
+            "SELECT sender_entity_id FROM observations WHERE id = 'obs-dup-1'"
+        ).fetchone()
+        assert obs["sender_entity_id"] == "dup-001"
+    finally:
+        conn.close()
+
+
+def test_owner_merge_skips_non_owner_with_observations(tmp_path):
+    """A candidate matched by alias whose name is not an owner id and has sent
+    observations should be skipped with a warning."""
+    init_db(get_db_path(tmp_path))
+
+    config = {"owner": {"user_ids": ["U_OWNER"], "handles": ["shared-alias"]}}
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    conn = connect(get_db_path(tmp_path))
+    now = "2026-01-01T00:00:00+00:00"
+
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 1)",
+        ("owner-001", "Taro Tanaka", json.dumps(["U_OWNER"]), now, now),
+    )
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0)",
+        ("colleague-001", "Yuki Mori", json.dumps(["shared-alias"]), now, now),
+    )
+    conn.execute(
+        "INSERT INTO observations (id, source, timestamp, sender_entity_id, text, ingested_at)"
+        " VALUES (?, 'test', 1000.0, ?, 'message from colleague', ?)",
+        ("obs-col-1", "colleague-001", now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "SKIP" in result.output
+    assert "colleague-001" in result.output
+    assert "non-owner identity" in result.output
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        ent = conn.execute("SELECT * FROM entities WHERE id = 'colleague-001'").fetchone()
+        assert ent is not None
+        obs = conn.execute(
+            "SELECT sender_entity_id FROM observations WHERE id = 'obs-col-1'"
+        ).fetchone()
+        assert obs["sender_entity_id"] == "colleague-001"
+    finally:
+        conn.close()
+
+
+def test_owner_merge_safety_allows_name_match_with_observations(tmp_path):
+    """A candidate whose name matches an owner id should merge even with observations."""
+    init_db(get_db_path(tmp_path))
+
+    config = {"owner": {"user_ids": ["U_OWNER"]}}
+    (tmp_path / "config.yaml").write_text(yaml.dump(config))
+
+    conn = connect(get_db_path(tmp_path))
+    now = "2026-01-01T00:00:00+00:00"
+
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 1)",
+        ("owner-001", "Taro Tanaka", json.dumps(["U_OWNER"]), now, now),
+    )
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0)",
+        ("dup-name", "U_OWNER", json.dumps([]), now, now),
+    )
+    conn.execute(
+        "INSERT INTO observations (id, source, timestamp, sender_entity_id, text, ingested_at)"
+        " VALUES (?, 'test', 1000.0, ?, 'hello', ?)",
+        ("obs-dup-name", "dup-name", now),
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["owner", "merge", "--home", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Merged 1 duplicate" in result.output
+    assert "SKIP" not in result.output
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        ent = conn.execute("SELECT * FROM entities WHERE id = 'dup-name'").fetchone()
+        assert ent is None
+    finally:
+        conn.close()
+
+
 def test_autonomy_status_per_domain_output(tmp_path):
     from patina.autonomy.levels import freeze_advancement, set_level
 
