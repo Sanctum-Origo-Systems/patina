@@ -1414,3 +1414,69 @@ def test_ingest_messages_single_owner_entity(tmp_path):
     ).fetchone()["cnt"]
     assert duplicate_check == 0
     conn.close()
+
+
+def test_owner_resolution_does_not_pollute_partial_name_match_aliases(tmp_path):
+    """Regression: resolving the owner never writes owner identifiers into
+    another entity's aliases, even when that entity's name partially matches
+    the owner's (e.g. shared first name)."""
+    home = tmp_path / "home"
+    _setup_owner_config(home, user_ids=["U_OWNER"], handles=["Jasper"])
+    conn, owner_id = _init_db_with_owner(
+        home, owner_user_id="U_OWNER", owner_name="Jasper Thornfield"
+    )
+
+    from patina.extraction import extract_sender_entity
+    from patina.graph import upsert_entity
+
+    colleague = extract_sender_entity("U_COLLEAGUE", "Jasper Chen")
+    upsert_entity(conn, colleague)
+    colleague_id = colleague.id
+
+    msgs = [
+        ChatMessage(
+            user_id="U_OWNER",
+            text="Owner message after colleague exists",
+            timestamp=_FIXED_TS,
+            channel_id="D001",
+            user_name="Jasper Thornfield",
+        ),
+        ChatMessage(
+            user_id="U_COLLEAGUE",
+            text="Colleague reply",
+            timestamp=_FIXED_TS + 10,
+            channel_id="D001",
+            user_name="Jasper Chen",
+        ),
+    ]
+    _ingest_messages(conn, msgs, "mock", home=home)
+
+    colleague_after = conn.execute(
+        "SELECT aliases FROM entities WHERE id = ?", (colleague_id,)
+    ).fetchone()
+    aliases_after = json.loads(colleague_after["aliases"])
+
+    owner_identifiers = {
+        "U_OWNER",
+        "slack:U_OWNER",
+        "Jasper Thornfield",
+        "display_name:Jasper Thornfield",
+    }
+    for alias in aliases_after:
+        assert alias not in owner_identifiers, (
+            f"Owner identifier {alias!r} leaked into colleague aliases"
+        )
+
+    owner_msg = "Owner message after colleague exists"
+    obs_row = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = ?",
+        (owner_msg,),
+    ).fetchone()
+    assert obs_row["sender_entity_id"] == owner_id
+
+    obs_row2 = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = 'Colleague reply'"
+    ).fetchone()
+    assert obs_row2["sender_entity_id"] == colleague_id
+
+    conn.close()
