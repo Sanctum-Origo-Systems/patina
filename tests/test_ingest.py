@@ -1480,3 +1480,34 @@ def test_owner_resolution_does_not_pollute_partial_name_match_aliases(tmp_path):
     assert obs_row2["sender_entity_id"] == colleague_id
 
     conn.close()
+
+
+def test_mention_path_resolves_owner_no_duplicate(tmp_path):
+    """Mention of owner user_id in message text does not create a duplicate entity."""
+    home = tmp_path / "home"
+    _setup_owner_config(home, user_ids=["U_OWNER"])
+    conn, owner_id = _init_db_with_owner(home)
+
+    entity_count_before = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+
+    msgs = [
+        ChatMessage(
+            user_id="U_CONTACT",
+            text="Hey <@U_OWNER> can you review this?",
+            timestamp=_FIXED_TS,
+            channel_id="D001",
+            user_name="Wren",
+        ),
+    ]
+    _ingest_messages(conn, msgs, "mock", home=home)
+
+    entity_count_after = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+    contact_count = entity_count_after - entity_count_before
+    assert contact_count == 1, "only the sender (Wren) should be created, not the owner mention"
+
+    duplicate_check = conn.execute(
+        "SELECT COUNT(*) as cnt FROM entities"
+        " WHERE is_owner = 0 AND (name = 'U_OWNER' OR aliases LIKE '%U_OWNER%')"
+    ).fetchone()["cnt"]
+    assert duplicate_check == 0, "no non-owner entity for U_OWNER should exist"
+    conn.close()
