@@ -361,6 +361,38 @@ def prune_non_person_entities(
     return result
 
 
+def prune_slack_link_entities(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    rows = conn.execute("SELECT id, name FROM entities WHERE type = 'reference'").fetchall()
+
+    pipe_re = re.compile(r"\|")
+    to_prune = [{"id": r["id"], "name": r["name"]} for r in rows if pipe_re.search(r["name"])]
+
+    result = {
+        "pruned": len(to_prune),
+        "entities": to_prune,
+    }
+
+    if dry_run or not to_prune:
+        return result
+
+    for ent in to_prune:
+        eid = ent["id"]
+        conn.execute("DELETE FROM claims WHERE subject_id = ?", (eid,))
+        conn.execute(
+            "DELETE FROM relationships WHERE subject_id = ? OR object_id = ?",
+            (eid, eid),
+        )
+        conn.execute("DELETE FROM predictions WHERE entity_id = ?", (eid,))
+        conn.execute("DELETE FROM entities WHERE id = ?", (eid,))
+
+    conn.commit()
+    return result
+
+
 def reprocess_observations(
     conn: sqlite3.Connection,
     *,

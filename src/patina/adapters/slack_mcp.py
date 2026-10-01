@@ -224,9 +224,16 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
         channel_name = channel_raw.get("name", channel_id)
         is_dm = channel_raw.get("is_im", False)
     else:
-        channel_id = channel_raw or raw.get("channel_id", "")
+        channel_id = channel_raw or raw.get("channel_id", "") or raw.get("channelId", "")
         channel_name = raw.get("channel_name", channel_id)
         is_dm = raw.get("is_dm", raw.get("isDm", False))
+
+    if not channel_id:
+        permalink = raw.get("permalink", "")
+        if permalink:
+            m = re.search(r"/archives/([A-Z0-9]+)/", permalink)
+            if m:
+                channel_id = m.group(1)
 
     user_raw = raw.get("user", raw.get("userId", ""))
     if isinstance(user_raw, dict):

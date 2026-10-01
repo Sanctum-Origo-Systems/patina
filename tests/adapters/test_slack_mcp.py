@@ -8,6 +8,7 @@ from patina.adapters.slack_mcp import (
     DmChannel,
     SlackMcpAdapter,
     _extract_display_name,
+    _msg_from_raw,
     _parse_activity_ts,
 )
 from patina.ports.chat import ChatPort
@@ -947,6 +948,48 @@ class TestListDms:
         assert not hasattr(adapter, "list_mpim_channels")
         assert not hasattr(adapter, "list_participant_channels")
         assert not hasattr(adapter, "list_group_dms")
+
+
+class TestChannelIdFallback:
+    def test_channel_id_from_permalink(self):
+        raw = {
+            "user": "U00000ALICE",
+            "text": "Test message",
+            "ts": "1781900000.111111",
+            "permalink": "https://workspace.slack.com/archives/C00000CH099/p1781900000111111",
+        }
+        msg = _msg_from_raw(raw)
+        assert msg.channel_id == "C00000CH099"
+
+    def test_channel_id_from_camel_case(self):
+        raw = {
+            "user": "U00000ALICE",
+            "text": "Test message",
+            "ts": "1781900000.111111",
+            "channelId": "C00000CH088",
+        }
+        msg = _msg_from_raw(raw)
+        assert msg.channel_id == "C00000CH088"
+
+    def test_channel_id_empty_when_no_source(self):
+        raw = {
+            "user": "U00000ALICE",
+            "text": "Test message",
+            "ts": "1781900000.111111",
+        }
+        msg = _msg_from_raw(raw)
+        assert msg.channel_id == ""
+
+    def test_dict_channel_takes_precedence(self):
+        raw = {
+            "user": "U00000ALICE",
+            "text": "Test message",
+            "ts": "1781900000.111111",
+            "channel": {"id": "C00000CH001", "name": "general"},
+            "permalink": "https://workspace.slack.com/archives/C00000CH099/p1781900000111111",
+        }
+        msg = _msg_from_raw(raw)
+        assert msg.channel_id == "C00000CH001"
 
 
 class TestParseActivityTs:
