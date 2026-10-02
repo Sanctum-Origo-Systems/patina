@@ -696,15 +696,16 @@ class TestAliasCollisionFiltering:
     into non-owner entities during extraction."""
 
     def test_colliding_alias_rejected_end_to_end(self, db_conn, db_path, tmp_path):
-        """Entity A has alias 'jdoe'. LLM suggests 'jdoe' as alias for entity B.
-        The alias must be rejected and collision counted."""
+        """Entity A has alias 'Doe, John'. LLM suggests 'Doe, John' as alias
+        for entity B. The multi-token alias passes the single-token filter
+        but must be rejected by the collision checker."""
         upsert_entity(
             db_conn,
             Entity(
                 id="e1",
                 type="person",
                 name="John Doe",
-                aliases=["jdoe"],
+                aliases=["Doe, John"],
             ),
         )
         upsert_entity(
@@ -728,7 +729,7 @@ class TestAliasCollisionFiltering:
                 "entities": [
                     {
                         "name": "Rivera, Sam",
-                        "aliases": ["jdoe", "Sam Rivera"],
+                        "aliases": ["Doe, John", "Sam Rivera"],
                         "type": "person",
                     },
                 ],
@@ -748,7 +749,7 @@ class TestAliasCollisionFiltering:
         row = conn.execute("SELECT aliases FROM entities WHERE id = 'e2'").fetchone()
         assert row is not None
         aliases = json.loads(row["aliases"] or "[]")
-        assert "jdoe" not in aliases
+        assert "Doe, John" not in aliases
         conn.close()
 
     def test_single_token_alias_rejected(self, db_conn):
@@ -777,24 +778,59 @@ class TestAliasCollisionFiltering:
         assert "Smith, Alice" in aliases
 
     def test_cross_entity_handle_collision(self, db_conn):
-        """Alias 'dkim' belongs to entity 'Dana Kim'. It must not be merged
-        into a different entity 'Lee, Dana'."""
+        """Alias 'Kim, Dana' belongs to entity 'Dana Kim'. It must not be
+        merged into a different entity 'Lee, Dana'. This is multi-token so
+        it passes the single-token filter and exercises the collision checker."""
         upsert_entity(
             db_conn,
             Entity(
                 id="e1",
                 type="person",
                 name="Dana Kim",
-                aliases=["dkim"],
+                aliases=["Kim, Dana"],
             ),
         )
         upsert_entity(
             db_conn,
             Entity(id="e2", type="person", name="Lee, Dana"),
         )
-        _, collisions = _upsert_entity(db_conn, "Lee, Dana", ["dkim", "Lee Dana"])
+        _, collisions = _upsert_entity(db_conn, "Lee, Dana", ["Kim, Dana", "Lee Dana"])
         assert collisions >= 1
 
         row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e2'").fetchone()
         aliases = json.loads(row["aliases"] or "[]")
-        assert "dkim" not in aliases
+        assert "Kim, Dana" not in aliases
+
+    def test_handle_alias_accepted_when_no_collision(self, db_conn):
+        """A handle like '@srivera' bypasses the single-token filter and is
+        accepted when it doesn't collide with another entity."""
+        entity_id, collisions = _upsert_entity(db_conn, "Rivera, Sam", ["@srivera"])
+        assert entity_id != ""
+        assert collisions == 0
+
+        row = db_conn.execute("SELECT aliases FROM entities WHERE id = ?", (entity_id,)).fetchone()
+        aliases = json.loads(row["aliases"] or "[]")
+        assert "@srivera" in aliases
+
+    def test_handle_alias_rejected_on_collision(self, db_conn):
+        """A handle like '@dkim' that collides with another entity's alias
+        must be rejected even though it's a valid handle format."""
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Kim",
+                aliases=["@dkim"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Lee, Dana"),
+        )
+        _, collisions = _upsert_entity(db_conn, "Lee, Dana", ["@dkim"])
+        assert collisions == 1
+
+        row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e2'").fetchone()
+        aliases = json.loads(row["aliases"] or "[]")
+        assert "@dkim" not in aliases

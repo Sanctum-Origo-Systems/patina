@@ -281,13 +281,19 @@ def _filter_aliases(
         alias = alias.strip()
         if not alias:
             continue
+        if _is_handle_or_email(alias):
+            if _alias_collides_with_other_entity(conn, alias, entity_id):
+                collisions += 1
+            else:
+                accepted.append(alias)
+            continue
         if " " not in alias and "-" not in alias and "," not in alias:
             collisions += 1
             continue
         if _alias_collides_with_other_entity(conn, alias, entity_id):
             collisions += 1
             continue
-        if _is_normalized_name_variant(alias, entity_name) or _is_handle_or_email(alias):
+        if _is_normalized_name_variant(alias, entity_name):
             accepted.append(alias)
         else:
             collisions += 1
