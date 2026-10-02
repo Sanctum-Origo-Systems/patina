@@ -1480,3 +1480,42 @@ def test_owner_resolution_does_not_pollute_partial_name_match_aliases(tmp_path):
     assert obs_row2["sender_entity_id"] == colleague_id
 
     conn.close()
+
+
+def test_mention_path_resolves_owner_no_duplicate(tmp_path):
+    """Mention of a secondary owner user_id in message text does not create a duplicate entity.
+
+    Uses a different user_id for the mention than the one that created the owner
+    entity, so the mention generates a distinct entity ID. Without the fix, this
+    would insert a new non-owner entity.
+
+    User IDs must match the Slack mention regex [UW][A-Z0-9]+ (no underscores)
+    so that extract_entities_from_text actually parses the <@UID> mention.
+    """
+    home = tmp_path / "home"
+    _setup_owner_config(home, user_ids=["U0OWNER1", "U0OWNER2"])
+    conn, owner_id = _init_db_with_owner(home, owner_user_id="U0OWNER1")
+
+    entity_count_before = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+
+    msgs = [
+        ChatMessage(
+            user_id="U0CONTACT",
+            text="Hey <@U0OWNER2> can you review this?",
+            timestamp=_FIXED_TS,
+            channel_id="D001",
+            user_name="Wren",
+        ),
+    ]
+    _ingest_messages(conn, msgs, "mock", home=home)
+
+    entity_count_after = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+    contact_count = entity_count_after - entity_count_before
+    assert contact_count == 1, "only the sender (Wren) should be created, not the owner mention"
+
+    duplicate_check = conn.execute(
+        "SELECT COUNT(*) as cnt FROM entities"
+        " WHERE is_owner = 0 AND (name = 'U0OWNER2' OR aliases LIKE '%U0OWNER2%')"
+    ).fetchone()["cnt"]
+    assert duplicate_check == 0, "no non-owner entity for U0OWNER2 should exist"
+    conn.close()

@@ -100,7 +100,13 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
                 conn.commit()
 
             text_entities = extract_entities_from_text(msg.text)
+            owner_entity_id_export = get_owner_entity_id(conn)
             for ent in text_entities:
+                if ent.type == "person" and owner_entity_id_export:
+                    mention_tokens = {ent.name} | set(ent.aliases or [])
+                    if owner_ids & mention_tokens:
+                        entity_ids_seen.add(owner_entity_id_export)
+                        continue
                 if ent.type == "person" and ent.name in users:
                     ent.name = users[ent.name]
                 elif ent.type == "person":
@@ -205,6 +211,11 @@ def _ingest_messages(
 
         text_entities = extract_entities_from_text(msg.text)
         for ent in text_entities:
+            if ent.type == "person" and owner_entity_id:
+                mention_tokens = {ent.name} | set(ent.aliases or [])
+                if owner_identifiers & mention_tokens:
+                    entity_ids_seen.add(owner_entity_id)
+                    continue
             upsert_entity(conn, ent)
             entity_ids_seen.add(ent.id)
 
