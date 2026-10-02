@@ -4,6 +4,7 @@ from patina.extraction import (
     extract_entities_from_text,
     extract_sender_entity,
     is_non_person_sender,
+    strip_slack_link_markup,
 )
 from patina.owner import normalize_alias
 
@@ -109,3 +110,50 @@ def test_is_non_person_sender_noreply_id():
 
 def test_is_non_person_sender_none_name():
     assert is_non_person_sender("U001", None) is False
+
+
+def test_slack_link_markup_stripped():
+    text = "Check <https://github.com/org/repo/compare/a...b|compare diff> for details"
+    entities = extract_entities_from_text(text)
+    refs = [e for e in entities if e.type == "reference"]
+    assert len(refs) == 0
+
+
+def test_slack_link_markup_no_label():
+    text = "See <https://example.com/path|>"
+    entities = extract_entities_from_text(text)
+    refs = [e for e in entities if e.type == "reference"]
+    assert len(refs) == 0
+
+
+def test_slack_link_markup_preserves_plain_urls():
+    text = "Visit https://example.com/page for more"
+    entities = extract_entities_from_text(text)
+    refs = [e for e in entities if e.type == "reference"]
+    assert len(refs) == 1
+    assert "example.com" in refs[0].name
+
+
+def test_slack_link_markup_mixed_content():
+    text = (
+        "<@U001> shared <https://github.com/org/repo|repo link> "
+        "and https://docs.example.com in <#C001|general>"
+    )
+    entities = extract_entities_from_text(text)
+    people = [e for e in entities if e.type == "person"]
+    topics = [e for e in entities if e.type == "topic"]
+    refs = [e for e in entities if e.type == "reference"]
+    assert len(people) == 1
+    assert len(topics) == 1
+    assert len(refs) == 1
+    assert "docs.example.com" in refs[0].name
+
+
+def test_strip_slack_link_markup():
+    text = "Link: <https://example.com/path|click here> end"
+    assert strip_slack_link_markup(text) == "Link:  end"
+
+
+def test_strip_slack_link_markup_multiple():
+    text = "<https://a.com|A> and <https://b.com|B>"
+    assert strip_slack_link_markup(text) == " and "

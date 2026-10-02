@@ -15,6 +15,7 @@ from patina.maintenance import (
     is_non_person,
     merge_entities,
     prune_non_person_entities,
+    prune_slack_link_entities,
     reprocess_observations,
     rewire_entity_references,
 )
@@ -368,6 +369,50 @@ def test_prune_no_matches(db_conn):
 
     result = prune_non_person_entities(db_conn)
     assert result["pruned"] == 0
+
+
+# ── prune_slack_link_entities ──────────────────────────────────
+
+
+def test_prune_slack_link_entities_removes_junk(db_conn):
+    junk = Entity(
+        id="junk1",
+        type="reference",
+        name="https://github.com/org/repo/compare/a...b|compare",
+        aliases=[],
+    )
+    clean = Entity(
+        id="clean1",
+        type="reference",
+        name="https://example.com/page",
+        aliases=[],
+    )
+    upsert_entity(db_conn, junk)
+    upsert_entity(db_conn, clean)
+
+    result = prune_slack_link_entities(db_conn)
+    assert result["pruned"] == 1
+    assert result["entities"][0]["id"] == "junk1"
+
+    remaining = db_conn.execute("SELECT id FROM entities WHERE type = 'reference'").fetchall()
+    assert len(remaining) == 1
+    assert remaining[0]["id"] == "clean1"
+
+
+def test_prune_slack_link_entities_dry_run(db_conn):
+    junk = Entity(
+        id="junk1",
+        type="reference",
+        name="https://github.com/org/repo|repo link",
+        aliases=[],
+    )
+    upsert_entity(db_conn, junk)
+
+    result = prune_slack_link_entities(db_conn, dry_run=True)
+    assert result["pruned"] == 1
+
+    remaining = db_conn.execute("SELECT id FROM entities WHERE type = 'reference'").fetchall()
+    assert len(remaining) == 1
 
 
 # ── reprocess_observations ───────────────────────────────────
