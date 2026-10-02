@@ -456,7 +456,7 @@ class TestExtractionAliasesPollution:
         _make_owner(db_conn, name="Sam Lee", aliases=["slee"])
         upsert_entity(
             db_conn,
-            Entity(id="colleague1", type="person", name="Rivera, Sam"),
+            Entity(id="colleague1", type="person", name="Rivera, Sam", aliases=["Sam"]),
         )
         obs = Observation(
             id="o1",
