@@ -1315,6 +1315,7 @@ def heartbeat_start_cmd(
 @owner_app.command("merge")
 def owner_merge(
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show candidates without modifying"),
 ) -> None:
     """Fold duplicate self-entities into the canonical owner entity."""
     import json
@@ -1349,36 +1350,90 @@ def owner_merge(
             "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
         ).fetchall()
 
-        duplicate_ids = []
+        candidates: list[tuple[str, str, str]] = []  # (entity_id, name, match_reason)
         for ent in all_entities:
             if ent["id"] == owner_id:
                 continue
-            if ent["name"].lower() in normalized_ids:
-                duplicate_ids.append(ent["id"])
+            name = ent["name"]
+            if name.lower() in normalized_ids:
+                reason = f"name '{name}' matches owner id"
+                candidates.append((ent["id"], name, reason))
                 continue
-            stripped_name = normalize_alias(ent["name"])
+            stripped_name = normalize_alias(name)
             if stripped_name.lower() in normalized_ids:
-                duplicate_ids.append(ent["id"])
+                reason = f"name '{name}' matches owner id (stripped)"
+                candidates.append((ent["id"], name, reason))
                 continue
             aliases = json.loads(ent["aliases"] or "[]")
             for alias in aliases:
                 if alias.lower() in normalized_ids:
-                    duplicate_ids.append(ent["id"])
+                    reason = f"alias '{alias}' matches owner id"
+                    candidates.append((ent["id"], name, reason))
                     break
                 stripped_alias = normalize_alias(alias)
                 if stripped_alias.lower() in normalized_ids:
-                    duplicate_ids.append(ent["id"])
+                    reason = f"alias '{alias}' matches owner id (stripped)"
+                    candidates.append((ent["id"], name, reason))
                     break
 
-        if not duplicate_ids:
+        if not candidates:
             typer.echo("No duplicate owner entities found. Nothing to merge.")
+            return
+
+        name_matches_owner = set()
+        for ident in identifiers:
+            name_matches_owner.add(ident.lower())
+            s = normalize_alias(ident)
+            if s != ident:
+                name_matches_owner.add(s.lower())
+
+        merge_ids = []
+        for ent_id, ent_name, match_reason in candidates:
+            obs_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM observations WHERE sender_entity_id = ?",
+                (ent_id,),
+            ).fetchone()["c"]
+            claim_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM claims WHERE subject_id = ?",
+                (ent_id,),
+            ).fetchone()["c"]
+            rel_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM relationships WHERE subject_id = ? OR object_id = ?",
+                (ent_id, ent_id),
+            ).fetchone()["c"]
+
+            ent_name_norm = normalize_alias(ent_name).lower()
+            name_is_owner = (
+                ent_name.lower() in name_matches_owner or ent_name_norm in name_matches_owner
+            )
+            if not name_is_owner and obs_count > 0:
+                typer.echo(
+                    f"SKIP {ent_id} ({ent_name}): matched by {match_reason} "
+                    f"but has {obs_count} sent observation(s) under non-owner identity"
+                )
+                continue
+
+            if dry_run:
+                typer.echo(
+                    f"CANDIDATE {ent_id} ({ent_name}): {match_reason} — "
+                    f"observations: {obs_count}, claims: {claim_count}, "
+                    f"relationships: {rel_count}"
+                )
+            else:
+                merge_ids.append(ent_id)
+
+        if dry_run:
+            return
+
+        if not merge_ids:
+            typer.echo("No safe candidates to merge after safety checks.")
             return
 
         observations_moved = 0
         claims_moved = 0
         relationships_moved = 0
 
-        for dup_id in duplicate_ids:
+        for dup_id in merge_ids:
             cursor = conn.execute(
                 "UPDATE observations SET sender_entity_id = ? WHERE sender_entity_id = ?",
                 (owner_id, dup_id),
@@ -1430,7 +1485,7 @@ def owner_merge(
         conn.commit()
 
         typer.echo(
-            f"Merged {len(duplicate_ids)} duplicate(s) into owner entity. "
+            f"Merged {len(merge_ids)} duplicate(s) into owner entity. "
             f"Observations: {observations_moved}, "
             f"claims: {claims_moved}, "
             f"relationships: {relationships_moved}."
