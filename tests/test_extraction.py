@@ -123,7 +123,8 @@ def test_slack_link_markup_no_label():
     text = "See <https://example.com/path|>"
     entities = extract_entities_from_text(text)
     refs = [e for e in entities if e.type == "reference"]
-    assert len(refs) == 0
+    assert len(refs) == 1
+    assert "example.com" in refs[0].name
 
 
 def test_slack_link_markup_preserves_plain_urls():
@@ -151,9 +152,19 @@ def test_slack_link_markup_mixed_content():
 
 def test_strip_slack_link_markup():
     text = "Link: <https://example.com/path|click here> end"
-    assert strip_slack_link_markup(text) == "Link:  end"
+    assert strip_slack_link_markup(text) == "Link: click here end"
 
 
 def test_strip_slack_link_markup_multiple():
     text = "<https://a.com|A> and <https://b.com|B>"
-    assert strip_slack_link_markup(text) == " and "
+    assert strip_slack_link_markup(text) == "A and B"
+
+
+def test_strip_slack_link_markup_no_label():
+    text = "See <https://example.com>"
+    assert strip_slack_link_markup(text) == "See https://example.com"
+
+
+def test_strip_slack_link_markup_mixed():
+    text = "Check <https://github.com/org/repo|this PR> and <https://example.com>"
+    assert strip_slack_link_markup(text) == "Check this PR and https://example.com"
