@@ -131,6 +131,85 @@ def _resolve_entity_id(
     return resolve_entity_id(conn, name)
 
 
+_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "for",
+        "nor",
+        "so",
+        "yet",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "by",
+        "with",
+        "from",
+        "into",
+        "about",
+        "through",
+        "during",
+        "before",
+        "after",
+        "between",
+        "under",
+        "over",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "has",
+        "have",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "not",
+        "no",
+        "that",
+        "this",
+        "who",
+        "whom",
+        "which",
+        "what",
+        "offered",
+        "said",
+        "mentioned",
+        "asked",
+        "told",
+        "suggested",
+        "office",
+        "team",
+        "project",
+        "employee",
+        "integration",
+        "support",
+        "meeting",
+        "review",
+        "feedback",
+        "department",
+        "group",
+    }
+)
+
+
 def _is_plausible_person_name(name: str) -> bool:
     if not name or len(name) < 3 or len(name) > 50:
         return False
@@ -138,7 +217,13 @@ def _is_plausible_person_name(name: str) -> bool:
         return False
     if name.isupper():
         return False
-    if sum(1 for w in name.split() if w[0].isupper()) < 1:
+    words = name.split()
+    if len(words) > 4:
+        return False
+    if sum(1 for w in words if w[0].isupper()) < 1:
+        return False
+    lower_words = {w.lower().rstrip(".,;!?") for w in words}
+    if lower_words & _STOP_WORDS:
         return False
     return True
 
@@ -313,7 +398,7 @@ def extract_beliefs(
 
             for ent in entities:
                 name = ent.get("name", "").strip()
-                if name and len(name) > 1:
+                if name and len(name) > 1 and ent.get("type") == "person":
                     _upsert_entity(
                         conn,
                         name,
@@ -321,17 +406,6 @@ def extract_beliefs(
                         owner_entity_id=owner_entity_id,
                         owner_match_names=owner_match_names,
                     )
-
-            for item in claims + relationships + behavioral:
-                for key in ("subject", "object"):
-                    name = item.get(key, "").strip()
-                    if name and len(name) > 1 and not name[0].islower():
-                        _upsert_entity(
-                            conn,
-                            name,
-                            owner_entity_id=owner_entity_id,
-                            owner_match_names=owner_match_names,
-                        )
 
             for claim in claims:
                 subject_name = claim.get("subject", "")
