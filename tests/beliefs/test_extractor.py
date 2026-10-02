@@ -148,6 +148,8 @@ def test_upsert_entity_accepts_real_names(db_conn):
     assert _upsert_entity(db_conn, "Alice Smith") != ""
     assert _upsert_entity(db_conn, "Jean-Pierre") != ""
     assert _upsert_entity(db_conn, "Carol Davis-Jones") != ""
+    assert _upsert_entity(db_conn, "Will Smith") != ""
+    assert _upsert_entity(db_conn, "May Chen") != ""
 
 
 class TestIsPlausiblePersonName:
@@ -454,6 +456,11 @@ class TestNonPersonPhrasesRejected:
         assert _is_plausible_person_name("Alice Smith")
         assert _is_plausible_person_name("Jean-Pierre")
         assert _is_plausible_person_name("Bob")
+
+    def test_is_plausible_accepts_names_colliding_with_verbs(self):
+        assert _is_plausible_person_name("Will Smith")
+        assert _is_plausible_person_name("May Chen")
+        assert _is_plausible_person_name("Can Yilmaz")
 
     def test_claim_subject_resolve_only(self, db_conn, db_path, tmp_path):
         """Claim subjects that don't match an existing entity are skipped, not created."""

@@ -131,7 +131,7 @@ def _resolve_entity_id(
     return resolve_entity_id(conn, name)
 
 
-_STOP_WORDS = frozenset(
+_GRAMMAR_WORDS = frozenset(
     {
         "a",
         "an",
@@ -173,14 +173,10 @@ _STOP_WORDS = frozenset(
         "do",
         "does",
         "did",
-        "will",
         "would",
         "could",
         "should",
-        "may",
         "might",
-        "shall",
-        "can",
         "not",
         "no",
         "that",
@@ -195,6 +191,11 @@ _STOP_WORDS = frozenset(
         "asked",
         "told",
         "suggested",
+    }
+)
+
+_NON_NAME_NOUNS = frozenset(
+    {
         "office",
         "team",
         "project",
@@ -223,7 +224,9 @@ def _is_plausible_person_name(name: str) -> bool:
     if sum(1 for w in words if w[0].isupper()) < 1:
         return False
     lower_words = {w.lower().rstrip(".,;!?") for w in words}
-    if lower_words & _STOP_WORDS:
+    if lower_words & _GRAMMAR_WORDS:
+        return False
+    if lower_words & _NON_NAME_NOUNS:
         return False
     return True
 
