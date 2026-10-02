@@ -7,7 +7,8 @@ from patina.models import Entity
 
 _MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)>")
 _CHANNEL_RE = re.compile(r"<#(C[A-Z0-9]+)\|([^>]+)>")
-_SLACK_LINK_RE = re.compile(r"<(https?://[^|>]+)\|[^>]*>")
+_SLACK_LINK_RE = re.compile(r"<(https?://[^|>]+)(?:\|([^>]*))?>")
+
 _URL_RE = re.compile(r"https?://[^\s>]+")
 
 
@@ -16,7 +17,7 @@ def _make_id(entity_type: str, key: str) -> str:
 
 
 def strip_slack_link_markup(text: str) -> str:
-    return _SLACK_LINK_RE.sub("", text)
+    return _SLACK_LINK_RE.sub(lambda m: m.group(2) if m.group(2) else m.group(1), text)
 
 
 def extract_entities_from_text(text: str) -> list[Entity]:
