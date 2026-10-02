@@ -430,3 +430,86 @@ class TestExtractBeliefsOwnerResolution:
 
         assert stats["skipped_unresolved"] >= 1
         assert stats["claims_extracted"] == 0
+
+
+class TestExtractionAliasesPollution:
+    """Regression tests for #340: owner aliases must never leak into
+    non-owner entities via partial-match resolution."""
+
+    def test_owner_aliases_not_merged_into_colleague(self, db_conn, db_path, tmp_path):
+        """Owner is 'Sam Lee' (handle 'slee'), colleague is 'Rivera, Sam'.
+        LLM returns {"name": "Sam", "aliases": ["Sam Lee", "slee"]}.
+        Owner identifiers must not end up in the colleague's aliases."""
+        import yaml
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.dump(
+                {
+                    "owner": {
+                        "display_names": ["Sam Lee"],
+                        "handles": ["slee"],
+                    }
+                }
+            )
+        )
+        _make_owner(db_conn, name="Sam Lee", aliases=["slee"])
+        upsert_entity(
+            db_conn,
+            Entity(id="colleague1", type="person", name="Rivera, Sam", aliases=["Sam"]),
+        )
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id="colleague1",
+            text="Sam mentioned the project deadline",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {
+                        "name": "Sam",
+                        "aliases": ["Sam Lee", "slee"],
+                        "type": "person",
+                    },
+                    {
+                        "name": "Rivera, Sam",
+                        "aliases": [],
+                        "type": "person",
+                    },
+                ],
+                "claims": [
+                    {
+                        "subject": "Sam Lee",
+                        "predicate": "role",
+                        "object": "Team Lead",
+                        "confidence": 0.9,
+                    },
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            extract_beliefs(home=tmp_path, batch_size=5)
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+
+        colleague = conn.execute("SELECT aliases FROM entities WHERE id = 'colleague1'").fetchone()
+        assert colleague is not None
+        colleague_aliases = json.loads(colleague["aliases"] or "[]")
+        assert "Sam Lee" not in colleague_aliases
+        assert "slee" not in colleague_aliases
+
+        claim = conn.execute("SELECT subject_id FROM claims WHERE predicate = 'role'").fetchone()
+        assert claim is not None
+        assert claim["subject_id"] == "owner1"
+        conn.close()

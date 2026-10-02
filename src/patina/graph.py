@@ -34,51 +34,40 @@ def resolve_entity_id(
         return row["id"]
 
     name = normalize_alias(name)
-
-    row = conn.execute(
-        "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
-        (f"%{name}%",),
-    ).fetchone()
-    if row:
-        return row["id"]
-
     normalized = normalize_name(name)
+    non_owner_rows = None
+
     if normalized and len(normalized) > 2:
-        rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
-        for r in rows:
+        non_owner_rows = conn.execute(
+            "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+        ).fetchall()
+        for r in non_owner_rows:
             if normalize_name(r["name"]) == normalized:
                 return r["id"]
-        for r in rows:
+        for r in non_owner_rows:
             for alias in json.loads(r["aliases"] or "[]"):
                 clean = normalize_alias(alias)
                 if normalize_name(clean) == normalized:
                     return r["id"]
-        row = conn.execute(
-            "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
-            (f"%{normalized}%",),
-        ).fetchone()
-        if row:
-            return row["id"]
 
     if aliases:
+        if non_owner_rows is None:
+            non_owner_rows = conn.execute(
+                "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+            ).fetchall()
         for alias in aliases:
             if not alias:
                 continue
             stripped = normalize_alias(alias)
-            row = conn.execute(
-                "SELECT id FROM entities WHERE aliases LIKE ? AND is_owner = 0 LIMIT 1",
-                (f"%{stripped}%",),
-            ).fetchone()
-            if row:
-                return row["id"]
+            for r in non_owner_rows:
+                for stored_alias in json.loads(r["aliases"] or "[]"):
+                    if normalize_alias(stored_alias) == stripped:
+                        return r["id"]
             norm_alias = normalize_name(stripped)
             if norm_alias and len(norm_alias) > 2:
-                row = conn.execute(
-                    "SELECT id FROM entities WHERE name = ? AND is_owner = 0 LIMIT 1",
-                    (norm_alias,),
-                ).fetchone()
-                if row:
-                    return row["id"]
+                for r in non_owner_rows:
+                    if normalize_name(r["name"]) == norm_alias:
+                        return r["id"]
 
     return None
 

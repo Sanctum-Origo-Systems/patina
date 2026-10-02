@@ -143,12 +143,36 @@ def _is_plausible_person_name(name: str) -> bool:
     return True
 
 
-def _upsert_entity(conn, name: str, aliases: list[str] | None = None) -> str:
-    from patina.graph import resolve_entity_id
+def _upsert_entity(
+    conn,
+    name: str,
+    aliases: list[str] | None = None,
+    *,
+    owner_entity_id: str | None = None,
+    owner_match_names: set[str] | None = None,
+) -> str:
+    from patina.graph import normalize_name, resolve_entity_id
 
     name = name.strip()
     if not _is_plausible_person_name(name):
         return ""
+
+    if owner_entity_id and owner_match_names:
+        incoming = {name.lower(), normalize_name(name)}
+        if aliases:
+            for a in aliases:
+                incoming.add(a.lower())
+                incoming.add(normalize_name(a))
+        incoming.discard("")
+        if incoming & owner_match_names:
+            return owner_entity_id
+
+    if aliases and owner_match_names:
+        aliases = [
+            a
+            for a in aliases
+            if a.lower() not in owner_match_names and normalize_name(a) not in owner_match_names
+        ]
 
     existing_id = resolve_entity_id(conn, name, aliases)
     if existing_id:
@@ -290,13 +314,24 @@ def extract_beliefs(
             for ent in entities:
                 name = ent.get("name", "").strip()
                 if name and len(name) > 1:
-                    _upsert_entity(conn, name, ent.get("aliases", []))
+                    _upsert_entity(
+                        conn,
+                        name,
+                        ent.get("aliases", []),
+                        owner_entity_id=owner_entity_id,
+                        owner_match_names=owner_match_names,
+                    )
 
             for item in claims + relationships + behavioral:
                 for key in ("subject", "object"):
                     name = item.get(key, "").strip()
                     if name and len(name) > 1 and not name[0].islower():
-                        _upsert_entity(conn, name)
+                        _upsert_entity(
+                            conn,
+                            name,
+                            owner_entity_id=owner_entity_id,
+                            owner_match_names=owner_match_names,
+                        )
 
             for claim in claims:
                 subject_name = claim.get("subject", "")
