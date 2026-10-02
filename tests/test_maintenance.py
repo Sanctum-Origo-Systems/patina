@@ -616,3 +616,241 @@ def test_cli_extract_reprocess_dry_run(db_path):
     result = runner.invoke(app, ["extract", "--reprocess", "--dry-run", "--home", str(home)])
     assert result.exit_code == 0
     assert "Would reset 1" in result.output
+
+
+# ── cascade delete on prune ────────────────────────────────
+
+
+def test_prune_cascades_claims_and_relationships(db_conn):
+    upsert_entity(db_conn, _entity("e1", "Build Bot"))
+    upsert_entity(db_conn, _entity("e2", "Alice Tran"))
+    insert_claim(db_conn, _claim("c1", "e1"))
+    insert_claim(db_conn, _claim("c2", "e2"))
+    upsert_relationship(db_conn, _rel("r1", "e1", "e2"))
+    upsert_relationship(db_conn, _rel("r2", "e2", "e1"))
+    upsert_relationship(db_conn, _rel("r3", "e2", "e2"))
+
+    prune_non_person_entities(db_conn)
+
+    assert db_conn.execute("SELECT 1 FROM claims WHERE id = 'c1'").fetchone() is None
+    assert db_conn.execute("SELECT 1 FROM claims WHERE id = 'c2'").fetchone() is not None
+    assert db_conn.execute("SELECT 1 FROM relationships WHERE id = 'r1'").fetchone() is None
+    assert db_conn.execute("SELECT 1 FROM relationships WHERE id = 'r2'").fetchone() is None
+    assert db_conn.execute("SELECT 1 FROM relationships WHERE id = 'r3'").fetchone() is not None
+
+
+def test_prune_dry_run_reports_dependent_counts(db_conn):
+    upsert_entity(db_conn, _entity("e1", "Build Bot"))
+    upsert_entity(db_conn, _entity("e2", "Alice Tran"))
+    insert_claim(db_conn, _claim("c1", "e1"))
+    insert_claim(db_conn, _claim("c2", "e1", predicate="team", obj="infra"))
+    upsert_relationship(db_conn, _rel("r1", "e1", "e2"))
+
+    result = prune_non_person_entities(db_conn, dry_run=True)
+
+    assert result["pruned"] == 1
+    assert result["claims_removed"] == 2
+    assert result["relationships_removed"] == 1
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+
+
+# ── cascade on dedup / merge ───────────────────────────────
+
+
+def test_dedup_rewires_claims_and_relationships(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam")
+    upsert_entity(db_conn, _entity("e3", "Bob Marsh"))
+    insert_observation(db_conn, _obs("o1", "e1"))
+    insert_claim(db_conn, _claim("c1", "e2"))
+    upsert_relationship(db_conn, _rel("r1", "e2", "e3"))
+
+    dedup_entities(db_conn)
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is None
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c1'").fetchone()
+    assert claim["subject_id"] == "e1"
+    rel = db_conn.execute(
+        "SELECT subject_id, object_id FROM relationships WHERE id = 'r1'"
+    ).fetchone()
+    assert rel["subject_id"] == "e1"
+    assert rel["object_id"] == "e3"
+
+
+def test_merge_rewires_both_tables(db_conn):
+    upsert_entity(db_conn, _entity("e1", "Alice Tran"))
+    upsert_entity(db_conn, _entity("e2", "alice.tran"))
+    insert_claim(db_conn, _claim("c1", "e2"))
+    upsert_relationship(db_conn, _rel("r1", "e2", "e1"))
+    upsert_relationship(db_conn, _rel("r2", "e1", "e2"))
+
+    merge_entities(db_conn, "e1", "e2")
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is None
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c1'").fetchone()
+    assert claim["subject_id"] == "e1"
+
+    from patina.store import find_dangling_references
+
+    assert find_dangling_references(db_conn) == {}
+
+
+# ── find_dangling_references ───────────────────────────────
+
+
+def test_find_dangling_references_clean(db_conn):
+    from patina.store import find_dangling_references
+
+    upsert_entity(db_conn, _entity("e1", "Alice Tran"))
+    insert_claim(db_conn, _claim("c1", "e1"))
+
+    assert find_dangling_references(db_conn) == {}
+
+
+def test_find_dangling_references_detects_orphans(db_conn):
+    from patina.store import find_dangling_references
+
+    upsert_entity(db_conn, _entity("e1", "Alice Tran"))
+    insert_claim(db_conn, _claim("c1", "e1"))
+    upsert_relationship(db_conn, _rel("r1", "e1", "e1"))
+
+    db_conn.execute("PRAGMA foreign_keys=OFF")
+    db_conn.execute(
+        "INSERT INTO claims (id, subject_id, predicate, object, confidence,"
+        " first_asserted, last_confirmed, decay_rate)"
+        " VALUES ('c_orphan', 'gone', 'role', 'engineer', 0.5,"
+        " '2025-01-01', '2025-01-01', 0.02)"
+    )
+    db_conn.execute(
+        "INSERT INTO relationships (id, subject_id, predicate, object_id,"
+        " confidence, first_seen, last_confirmed)"
+        " VALUES ('r_orphan', 'gone', 'works_with', 'e1', 0.5,"
+        " '2025-01-01', '2025-01-01')"
+    )
+    db_conn.commit()
+    db_conn.execute("PRAGMA foreign_keys=ON")
+
+    result = find_dangling_references(db_conn)
+    assert result["claims"] == 1
+    assert result["relationships"] == 1
+
+
+# ── delete_dangling_references ─────────────────────────────
+
+
+def test_delete_dangling_references(db_conn):
+    from patina.store import delete_dangling_references, find_dangling_references
+
+    upsert_entity(db_conn, _entity("e1", "Alice Tran"))
+    insert_claim(db_conn, _claim("c1", "e1"))
+
+    db_conn.execute("PRAGMA foreign_keys=OFF")
+    db_conn.execute(
+        "INSERT INTO claims (id, subject_id, predicate, object, confidence,"
+        " first_asserted, last_confirmed, decay_rate)"
+        " VALUES ('c_orphan', 'gone', 'role', 'engineer', 0.5,"
+        " '2025-01-01', '2025-01-01', 0.02)"
+    )
+    db_conn.execute(
+        "INSERT INTO relationships (id, subject_id, predicate, object_id,"
+        " confidence, first_seen, last_confirmed)"
+        " VALUES ('r_orphan', 'gone', 'works_with', 'e1', 0.5,"
+        " '2025-01-01', '2025-01-01')"
+    )
+    db_conn.commit()
+    db_conn.execute("PRAGMA foreign_keys=ON")
+
+    result = delete_dangling_references(db_conn)
+    assert result["claims"] == 1
+    assert result["relationships"] == 1
+
+    assert find_dangling_references(db_conn) == {}
+    assert db_conn.execute("SELECT 1 FROM claims WHERE id = 'c1'").fetchone() is not None
+
+
+# ── CLI: patina doctor ─────────────────────────────────────
+
+
+def test_cli_doctor_clean(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["doctor", "--home", str(home)])
+    assert result.exit_code == 0
+    assert result.output.strip() == ""
+
+
+def test_cli_doctor_warns_on_dangling(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    upsert_entity(conn, _entity("e1", "Alice Tran"))
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute(
+        "INSERT INTO claims (id, subject_id, predicate, object, confidence,"
+        " first_asserted, last_confirmed, decay_rate)"
+        " VALUES ('c_orphan', 'gone', 'role', 'engineer', 0.5,"
+        " '2025-01-01', '2025-01-01', 0.02)"
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["doctor", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "WARN dangling claims: 1 claim(s) reference missing entities" in result.output
+
+
+# ── CLI: patina entity cleanup ─────────────────────────────
+
+
+def test_cli_entity_cleanup_noop(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "cleanup", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "No dangling references found." in result.output
+
+
+def test_cli_entity_cleanup_removes(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    upsert_entity(conn, _entity("e1", "Alice Tran"))
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute(
+        "INSERT INTO claims (id, subject_id, predicate, object, confidence,"
+        " first_asserted, last_confirmed, decay_rate)"
+        " VALUES ('c_orphan', 'gone', 'role', 'engineer', 0.5,"
+        " '2025-01-01', '2025-01-01', 0.02)"
+    )
+    conn.execute(
+        "INSERT INTO relationships (id, subject_id, predicate, object_id,"
+        " confidence, first_seen, last_confirmed)"
+        " VALUES ('r_orphan', 'gone', 'works_with', 'e1', 0.5,"
+        " '2025-01-01', '2025-01-01')"
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "cleanup", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Removed 1 dangling claim(s) and 1 dangling relationship(s)." in result.output
