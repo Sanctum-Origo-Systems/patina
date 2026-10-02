@@ -7,6 +7,7 @@ from patina.beliefs.extractor import (
     _is_plausible_person_name,
     _parse_extraction,
     _resolve_entity_id,
+    _resolve_single_token,
     _upsert_entity,
     extract_beliefs,
 )
@@ -124,8 +125,8 @@ def test_upsert_entity_creates_new(db_conn):
 
 
 def test_upsert_entity_returns_existing(db_conn):
-    upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
-    entity_id = _upsert_entity(db_conn, "Alice")
+    upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice Smith"))
+    entity_id = _upsert_entity(db_conn, "Alice Smith")
     assert entity_id == "e1"
 
 
@@ -147,7 +148,13 @@ def test_upsert_entity_rejects_empty(db_conn):
 def test_upsert_entity_accepts_real_names(db_conn):
     assert _upsert_entity(db_conn, "Quarterly Feedback Review") != ""
     assert _upsert_entity(db_conn, "Alice Smith") != ""
-    assert _upsert_entity(db_conn, "Jean-Pierre") != ""
+    assert _upsert_entity(db_conn, "Jean-Pierre Dupont") != ""
+
+
+def test_upsert_entity_rejects_single_token(db_conn):
+    assert _upsert_entity(db_conn, "Sam") == ""
+    assert _upsert_entity(db_conn, "Jean-Pierre") == ""
+    assert _upsert_entity(db_conn, "Alice") == ""
 
 
 class TestIsPlausiblePersonName:
@@ -189,14 +196,14 @@ def test_extract_creates_entities_from_response(db_conn, db_path, tmp_path):
         thread_id=None,
         timestamp=1.0,
         sender_entity_id=None,
-        text="Bob is the new CTO",
+        text="Bob Thornton is the new CTO",
     )
     insert_observation(db_conn, obs)
     db_conn.close()
 
     mock_response = (
-        '{"entities": [{"name": "Bob", "aliases": [], "type": "person"}], '
-        '"claims": [{"subject": "Bob", "predicate": "role", '
+        '{"entities": [{"name": "Bob Thornton", "aliases": [], "type": "person"}], '
+        '"claims": [{"subject": "Bob Thornton", "predicate": "role", '
         '"object": "CTO", "confidence": 0.9}], '
         '"relationships": [], "behavioral": []}'
     )
@@ -512,4 +519,236 @@ class TestExtractionAliasesPollution:
         claim = conn.execute("SELECT subject_id FROM claims WHERE predicate = 'role'").fetchone()
         assert claim is not None
         assert claim["subject_id"] == "owner1"
+        conn.close()
+
+
+class TestSingleTokenResolution:
+    """Single-token names (e.g. 'Sam') must never create new entities.
+    They resolve only when exactly one existing person with that first name
+    co-occurs in the same extraction batch."""
+
+    def test_single_token_resolves_via_sender_cooccurrence(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        result = _resolve_single_token(db_conn, "Sam", {"Rivera, Sam"})
+        assert result == "e1"
+
+    def test_single_token_skipped_when_no_batch_context(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        result = _resolve_single_token(db_conn, "Sam", None)
+        assert result is None
+
+    def test_single_token_skipped_when_not_in_batch(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        result = _resolve_single_token(db_conn, "Sam", {"Jordan Blake"})
+        assert result is None
+
+    def test_single_token_ambiguous_two_matches(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Sam Chen"),
+        )
+        result = _resolve_single_token(db_conn, "Sam", {"Rivera, Sam", "Sam Chen"})
+        assert result is None
+
+    def test_single_token_unique_when_only_one_in_batch(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Sam Chen"),
+        )
+        result = _resolve_single_token(db_conn, "Sam", {"Rivera, Sam"})
+        assert result == "e1"
+
+    def test_single_token_ignores_owner_entities(self, db_conn):
+        _make_owner(db_conn, name="Sam Rivera")
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Sam Chen"),
+        )
+        result = _resolve_single_token(db_conn, "Sam", {"Sam Rivera", "Sam Chen"})
+        assert result == "e2"
+
+    def test_resolve_entity_id_routes_single_token(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        result = _resolve_entity_id(db_conn, "Sam", batch_names={"Rivera, Sam"})
+        assert result == "e1"
+
+    def test_resolve_entity_id_skips_single_token_without_batch(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        result = _resolve_entity_id(db_conn, "Sam")
+        assert result is None
+
+    def test_e2e_single_token_resolves_with_cooccurring_sender(self, db_conn, db_path, tmp_path):
+        """End-to-end: bare 'Sam' in a claim resolves to 'Rivera, Sam'
+        when that person is the sender in the same batch."""
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id="e1",
+            text="Sam mentioned the project deadline is next week",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Rivera, Sam", "aliases": [], "type": "person"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Sam",
+                        "predicate": "commitment",
+                        "object": "project deadline next week",
+                        "confidence": 0.8,
+                    }
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 1
+        assert stats["skipped_unresolved"] == 0
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        row = conn.execute(
+            "SELECT subject_id FROM claims WHERE predicate = 'commitment'"
+        ).fetchone()
+        assert row is not None
+        assert row["subject_id"] == "e1"
+        conn.close()
+
+    def test_e2e_single_token_skipped_without_cooccurrence(self, db_conn, db_path, tmp_path):
+        """End-to-end: bare 'Sam' in a claim is skipped when no matching
+        full-name entity co-occurs in the batch."""
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Rivera, Sam"),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Jordan Blake"),
+        )
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id="e2",
+            text="Sam might join the meeting later",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Jordan Blake", "aliases": [], "type": "person"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Sam",
+                        "predicate": "status",
+                        "object": "might join meeting",
+                        "confidence": 0.6,
+                    }
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 0
+        assert stats["skipped_unresolved"] == 1
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        entities = conn.execute("SELECT name FROM entities WHERE is_owner = 0").fetchall()
+        entity_names = [e["name"] for e in entities]
+        assert "Sam" not in entity_names
+        conn.close()
+
+    def test_e2e_single_token_no_new_entity_created(self, db_conn, db_path, tmp_path):
+        """End-to-end: a bare first name must never create a new entity,
+        even when it appears in the entities list from Claude."""
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id=None,
+            text="Sam is the new lead",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Sam", "aliases": [], "type": "person"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Sam",
+                        "predicate": "role",
+                        "object": "lead",
+                        "confidence": 0.9,
+                    }
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 0
+        assert stats["skipped_unresolved"] == 1
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        entity_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM entities WHERE name = 'Sam'"
+        ).fetchone()["c"]
+        assert entity_count == 0
         conn.close()

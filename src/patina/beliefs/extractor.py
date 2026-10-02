@@ -111,12 +111,48 @@ def _parse_extraction(response: str) -> dict:
     return {"claims": [], "relationships": []}
 
 
+def _resolve_single_token(
+    conn,
+    name: str,
+    batch_names: set[str] | None,
+) -> str | None:
+    if not batch_names:
+        return None
+
+    from patina.graph import normalize_name
+
+    norm_token = name.strip().lower()
+
+    norm_batch = set()
+    for bn in batch_names:
+        if bn:
+            n = normalize_name(bn)
+            if n:
+                norm_batch.add(n)
+
+    rows = conn.execute("SELECT id, name FROM entities WHERE is_owner = 0").fetchall()
+
+    candidates = []
+    for r in rows:
+        entity_norm = normalize_name(r["name"])
+        if not entity_norm:
+            continue
+        first_name = entity_norm.split()[0]
+        if first_name == norm_token and entity_norm in norm_batch:
+            candidates.append(r["id"])
+
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def _resolve_entity_id(
     conn,
     name: str,
     *,
     owner_entity_id: str | None = None,
     owner_match_names: set[str] | None = None,
+    batch_names: set[str] | None = None,
 ) -> str | None:
     from patina.graph import normalize_name, resolve_entity_id
 
@@ -127,6 +163,9 @@ def _resolve_entity_id(
     if owner_entity_id and owner_match_names:
         if name.lower() in owner_match_names or normalize_name(name) in owner_match_names:
             return owner_entity_id
+
+    if len(name.split()) == 1:
+        return _resolve_single_token(conn, name, batch_names)
 
     return resolve_entity_id(conn, name)
 
@@ -166,6 +205,9 @@ def _upsert_entity(
         incoming.discard("")
         if incoming & owner_match_names:
             return owner_entity_id
+
+    if len(name.split()) == 1:
+        return ""
 
     if aliases and owner_match_names:
         aliases = [
@@ -284,9 +326,12 @@ def extract_beliefs(
                 flush=True,
             )
 
+            batch_names: set[str] = set()
             messages_text = ""
             for row in batch:
                 sender = row["sender_name"] or "unknown"
+                if row["sender_name"]:
+                    batch_names.add(row["sender_name"])
                 text = row["text"][:500]
                 messages_text += f"\n[{sender}]: {text}\n"
 
@@ -314,6 +359,7 @@ def extract_beliefs(
             for ent in entities:
                 name = ent.get("name", "").strip()
                 if name and len(name) > 1:
+                    batch_names.add(name)
                     _upsert_entity(
                         conn,
                         name,
@@ -340,6 +386,7 @@ def extract_beliefs(
                     subject_name,
                     owner_entity_id=owner_entity_id,
                     owner_match_names=owner_match_names,
+                    batch_names=batch_names,
                 )
                 if not subject_id:
                     stats["skipped_unresolved"] += 1
@@ -376,12 +423,14 @@ def extract_beliefs(
                     rel.get("subject", ""),
                     owner_entity_id=owner_entity_id,
                     owner_match_names=owner_match_names,
+                    batch_names=batch_names,
                 )
                 object_id = _resolve_entity_id(
                     conn,
                     rel.get("object", ""),
                     owner_entity_id=owner_entity_id,
                     owner_match_names=owner_match_names,
+                    batch_names=batch_names,
                 )
                 if not subject_id or not object_id:
                     stats["skipped_unresolved"] += 1
@@ -418,6 +467,7 @@ def extract_beliefs(
                     subject_name,
                     owner_entity_id=owner_entity_id,
                     owner_match_names=owner_match_names,
+                    batch_names=batch_names,
                 )
                 if not subject_id:
                     stats["skipped_unresolved"] += 1
