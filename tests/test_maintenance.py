@@ -584,6 +584,78 @@ def test_cli_entity_prune_requires_filter(db_path):
     assert "Specify a filter" in result.output
 
 
+def test_cli_entity_prune_links_dry_run(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    upsert_entity(
+        conn,
+        Entity(
+            id="link1",
+            type="reference",
+            name="https://github.com/org/repo|repo link",
+            aliases=[],
+        ),
+    )
+    upsert_entity(
+        conn,
+        Entity(id="clean1", type="reference", name="https://example.com", aliases=[]),
+    )
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "prune-links", "--dry-run", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Would prune" in result.output
+    assert "1 link-markup" in result.output
+    assert "repo link" in result.output
+
+    conn = connect(db_path)
+    remaining = conn.execute("SELECT id FROM entities WHERE type = 'reference'").fetchall()
+    conn.close()
+    assert len(remaining) == 2
+
+
+def test_cli_entity_prune_links_deletes(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    upsert_entity(
+        conn,
+        Entity(
+            id="link1",
+            type="reference",
+            name="https://github.com/org/repo|repo link",
+            aliases=[],
+        ),
+    )
+    upsert_entity(
+        conn,
+        Entity(id="clean1", type="reference", name="https://example.com", aliases=[]),
+    )
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "prune-links", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Pruned" in result.output
+    assert "1 link-markup" in result.output
+
+    conn = connect(db_path)
+    remaining = conn.execute("SELECT id FROM entities WHERE type = 'reference'").fetchall()
+    conn.close()
+    assert len(remaining) == 1
+    assert remaining[0]["id"] == "clean1"
+
+
 def test_cli_entity_list(db_path):
     from typer.testing import CliRunner
 
