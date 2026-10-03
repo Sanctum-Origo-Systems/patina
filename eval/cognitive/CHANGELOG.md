@@ -1,3 +1,16 @@
+## v0.20.0 (2026-10-03)
+- #352: Feat: non-person phrases saved as type=person entities during extr ($1.71)
+- #350: Feat: LLM-supplied aliases merged unchecked into non-owner entitie ($2.15)
+- #345: Feat: add patina entity prune-links CLI command with --dry-run ($0.69)
+- #344: Feat: extraction path aliases pollution — _upsert_entity merges ow ($3.30)
+- #343: Feat: strip_slack_link_markup should preserve label text, not drop ($0.66)
+- #339: Feat: add regression test that owner resolution never pollutes oth ($0.96)
+- #338: Feat: owner merge needs --dry-run and safety checks for non-owner ($1.09)
+- #337: Feat: mention path upserts owner duplicate entity without checking ($4.52)
+- #336: Feat: dangling references after entity deletes and add integrity c ($1.94)
+- #335: Feat: Slack link markup creates junk reference entities and empty ($2.48)
+Total: 10 PRs, $19.50
+
 ## v0.19.2 (2026-09-30)
 - #326: Fix: replace substring LIKE fallback with owner-aware entity resolution ($0.00)
 Total: 1 PRs, $0.00
