@@ -1083,7 +1083,9 @@ def entity_dedup_cmd(
 @entity_app.command("prune")
 def entity_prune_cmd(
     non_person: bool = typer.Option(False, "--non-person", help="Remove non-person entities"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without writing"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Execute pruning (preview only without this flag)"
+    ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Prune entities matching filter criteria."""
@@ -1100,20 +1102,23 @@ def entity_prune_cmd(
 
     conn = connect(db_path)
     try:
-        if not dry_run:
+        if confirm:
             backup_path = backup_store(db_path)
             typer.echo(f"Backup: {backup_path}")
 
-        result = prune_non_person_entities(conn, dry_run=dry_run)
+        result = prune_non_person_entities(conn, dry_run=not confirm)
 
         if result["pruned"] == 0:
             typer.echo("No non-person entities found.")
             return
 
-        mode = "Would prune" if dry_run else "Pruned"
+        mode = "Pruned" if confirm else "Would prune"
         typer.echo(f"{mode} {result['pruned']} non-person entity(ies):")
         for ent in result["entities"]:
             typer.echo(f"  {ent['name']}")
+        if not confirm and result["pruned"] > 0:
+            n = result["pruned"]
+            typer.echo(f"{n} prune(s) proposed — re-run with --confirm to apply")
     finally:
         conn.close()
 

@@ -129,9 +129,19 @@ _NON_NAME_NOUNS = frozenset(
 )
 
 
+_SLACK_ID_RE = re.compile(r"^U[A-Z0-9]{4,}$")
+_HANDLE_RE = re.compile(r"^[a-z][a-z0-9_]{1,}$")
+
+
+def _is_handle_or_slack_id(name: str) -> bool:
+    return bool(_SLACK_ID_RE.match(name) or _HANDLE_RE.match(name))
+
+
 def is_plausible_person_name(name: str) -> bool:
     if not name or len(name) < 3 or len(name) > 50:
         return False
+    if _is_handle_or_slack_id(name):
+        return True
     if any(c in name for c in "()[]/@:."):
         return False
     if name.isupper():
@@ -464,8 +474,17 @@ def prune_non_person_entities(
 ) -> dict:
     rows = conn.execute("SELECT id, name, type FROM entities WHERE is_owner = 0").fetchall()
 
+    sender_ids = {
+        r["sender_entity_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT sender_entity_id FROM observations WHERE sender_entity_id IS NOT NULL"
+        ).fetchall()
+    }
+
     to_prune = []
     for r in rows:
+        if r["id"] in sender_ids:
+            continue
         if is_non_person(r["name"]):
             to_prune.append({"id": r["id"], "name": r["name"]})
         elif r["type"] == "person" and not is_plausible_person_name(r["name"]):
