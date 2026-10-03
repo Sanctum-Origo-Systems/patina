@@ -49,6 +49,106 @@ _NON_PERSON_PREFIXES = (
 )
 
 
+_GRAMMAR_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "for",
+        "nor",
+        "so",
+        "yet",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "by",
+        "with",
+        "from",
+        "into",
+        "about",
+        "through",
+        "during",
+        "before",
+        "after",
+        "between",
+        "under",
+        "over",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "has",
+        "have",
+        "had",
+        "do",
+        "does",
+        "did",
+        "would",
+        "could",
+        "should",
+        "might",
+        "not",
+        "no",
+        "that",
+        "this",
+        "who",
+        "whom",
+        "which",
+        "what",
+        "offered",
+        "said",
+        "mentioned",
+        "asked",
+        "told",
+        "suggested",
+    }
+)
+
+_NON_NAME_NOUNS = frozenset(
+    {
+        "office",
+        "team",
+        "project",
+        "employee",
+        "integration",
+        "support",
+        "meeting",
+        "review",
+        "feedback",
+        "department",
+        "group",
+    }
+)
+
+
+def is_plausible_person_name(name: str) -> bool:
+    if not name or len(name) < 3 or len(name) > 50:
+        return False
+    if any(c in name for c in "()[]/@:."):
+        return False
+    if name.isupper():
+        return False
+    words = name.split()
+    if len(words) > 4:
+        return False
+    if sum(1 for w in words if w[0].isupper()) < 1:
+        return False
+    lower_words = {w.lower().rstrip(".,;!?") for w in words}
+    if lower_words & _GRAMMAR_WORDS:
+        return False
+    if lower_words & _NON_NAME_NOUNS:
+        return False
+    return True
+
+
 def is_non_person(name: str) -> bool:
     if not name or len(name) < 2:
         return False
@@ -291,6 +391,37 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
     return candidates
 
 
+def _merge_aliases_collide(
+    conn: sqlite3.Connection,
+    keep_id: str,
+    drop_id: str,
+) -> bool:
+    keep = conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (keep_id,)).fetchone()
+    drop = conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (drop_id,)).fetchone()
+    if not keep or not drop:
+        return False
+
+    keep_aliases = set(json.loads(keep["aliases"] or "[]"))
+    drop_aliases = set(json.loads(drop["aliases"] or "[]"))
+    new_aliases = (drop_aliases | {drop["name"]}) - keep_aliases - {keep["name"]}
+
+    exclude_ids = {keep_id, drop_id}
+    rows = conn.execute("SELECT id, name, aliases FROM entities").fetchall()
+    for alias in new_aliases:
+        norm = _normalize_for_dedup(alias)
+        if not norm:
+            continue
+        for r in rows:
+            if r["id"] in exclude_ids:
+                continue
+            if _normalize_for_dedup(r["name"]) == norm:
+                return True
+            for stored in json.loads(r["aliases"] or "[]"):
+                if _normalize_for_dedup(stored) == norm:
+                    return True
+    return False
+
+
 def dedup_entities(
     conn: sqlite3.Connection,
     *,
@@ -302,11 +433,23 @@ def dedup_entities(
         "groups": len(candidates),
         "entities_merged": 0,
         "merges": [],
+        "skipped": [],
     }
 
     for group in candidates:
         keep = group["keep"]
         for drop in group["drop"]:
+            if _merge_aliases_collide(conn, keep["id"], drop["id"]):
+                result["skipped"].append(
+                    {
+                        "keep_id": keep["id"],
+                        "keep_name": keep["name"],
+                        "drop_id": drop["id"],
+                        "drop_name": drop["name"],
+                        "reason": "alias collision",
+                    }
+                )
+                continue
             merge_result = merge_entities(conn, keep["id"], drop["id"], dry_run=dry_run)
             result["merges"].append(merge_result)
             result["entities_merged"] += 1
@@ -319,11 +462,13 @@ def prune_non_person_entities(
     *,
     dry_run: bool = False,
 ) -> dict:
-    rows = conn.execute("SELECT id, name FROM entities WHERE is_owner = 0").fetchall()
+    rows = conn.execute("SELECT id, name, type FROM entities WHERE is_owner = 0").fetchall()
 
     to_prune = []
     for r in rows:
         if is_non_person(r["name"]):
+            to_prune.append({"id": r["id"], "name": r["name"]})
+        elif r["type"] == "person" and not is_plausible_person_name(r["name"]):
             to_prune.append({"id": r["id"], "name": r["name"]})
 
     if dry_run and to_prune:

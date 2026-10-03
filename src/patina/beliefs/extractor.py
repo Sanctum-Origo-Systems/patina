@@ -13,6 +13,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from patina.maintenance import is_plausible_person_name as _is_plausible_person_name
 from patina.store import connect, get_db_path, init_db
 
 EXTRACTION_PROMPT = """\
@@ -191,106 +192,6 @@ def _resolve_entity_in_batch(
         owner_entity_id=owner_entity_id,
         owner_match_names=owner_match_names,
     )
-
-
-_GRAMMAR_WORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "and",
-        "or",
-        "but",
-        "for",
-        "nor",
-        "so",
-        "yet",
-        "in",
-        "on",
-        "at",
-        "to",
-        "of",
-        "by",
-        "with",
-        "from",
-        "into",
-        "about",
-        "through",
-        "during",
-        "before",
-        "after",
-        "between",
-        "under",
-        "over",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "has",
-        "have",
-        "had",
-        "do",
-        "does",
-        "did",
-        "would",
-        "could",
-        "should",
-        "might",
-        "not",
-        "no",
-        "that",
-        "this",
-        "who",
-        "whom",
-        "which",
-        "what",
-        "offered",
-        "said",
-        "mentioned",
-        "asked",
-        "told",
-        "suggested",
-    }
-)
-
-_NON_NAME_NOUNS = frozenset(
-    {
-        "office",
-        "team",
-        "project",
-        "employee",
-        "integration",
-        "support",
-        "meeting",
-        "review",
-        "feedback",
-        "department",
-        "group",
-    }
-)
-
-
-def _is_plausible_person_name(name: str) -> bool:
-    if not name or len(name) < 3 or len(name) > 50:
-        return False
-    if any(c in name for c in "()[]/@:."):
-        return False
-    if name.isupper():
-        return False
-    words = name.split()
-    if len(words) > 4:
-        return False
-    if sum(1 for w in words if w[0].isupper()) < 1:
-        return False
-    lower_words = {w.lower().rstrip(".,;!?") for w in words}
-    if lower_words & _GRAMMAR_WORDS:
-        return False
-    if lower_words & _NON_NAME_NOUNS:
-        return False
-    return True
 
 
 def _is_normalized_name_variant(alias: str, name: str) -> bool:

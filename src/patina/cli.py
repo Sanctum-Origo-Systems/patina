@@ -1041,7 +1041,9 @@ def entity_merge_cmd(
 
 @entity_app.command("dedup")
 def entity_dedup_cmd(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without writing"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Execute merges (preview only without this flag)"
+    ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Deduplicate entities by normalized name."""
@@ -1054,20 +1056,26 @@ def entity_dedup_cmd(
 
     conn = connect(db_path)
     try:
-        if not dry_run:
+        if confirm:
             backup_path = backup_store(db_path)
             typer.echo(f"Backup: {backup_path}")
 
-        result = dedup_entities(conn, dry_run=dry_run)
+        result = dedup_entities(conn, dry_run=not confirm)
 
         if result["groups"] == 0:
             typer.echo("No duplicate entities found.")
             return
 
-        mode = "Dry run" if dry_run else "Dedup"
+        mode = "Dedup" if confirm else "Dry run"
         typer.echo(f"{mode}: {result['groups']} group(s), {result['entities_merged']} merge(s)")
         for merge in result["merges"]:
             typer.echo(f"  '{merge['drop_name']}' -> '{merge['keep_name']}'")
+        for skip in result.get("skipped", []):
+            drop, keep = skip["drop_name"], skip["keep_name"]
+            typer.echo(f"  SKIP '{drop}' -> '{keep}' ({skip['reason']})")
+        if not confirm and result["entities_merged"] > 0:
+            n = result["entities_merged"]
+            typer.echo(f"{n} merges proposed — re-run with --confirm to apply")
     finally:
         conn.close()
 
