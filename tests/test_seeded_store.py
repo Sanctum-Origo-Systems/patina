@@ -1,0 +1,88 @@
+"""Tests that verify each edge-case shape in the seeded_store fixture."""
+
+from __future__ import annotations
+
+import json
+
+
+def test_handle_named_sender_358(seeded_store):
+    row = seeded_store.execute("SELECT * FROM entities WHERE id = 'handle-sender-358'").fetchone()
+    assert row is not None
+    assert row["name"] == "jdoe_42"
+    assert row["type"] == "person"
+
+
+def test_w_prefix_slack_id_363(seeded_store):
+    row = seeded_store.execute("SELECT * FROM entities WHERE id = 'w-prefix-363'").fetchone()
+    assert row is not None
+    aliases = json.loads(row["aliases"])
+    w_aliases = [a for a in aliases if a.startswith("W")]
+    assert len(w_aliases) >= 1
+
+
+def test_overlapping_aliases_distinct_slack_ids_364(seeded_store):
+    a = seeded_store.execute("SELECT * FROM entities WHERE id = 'alias-overlap-364-a'").fetchone()
+    b = seeded_store.execute("SELECT * FROM entities WHERE id = 'alias-overlap-364-b'").fetchone()
+    assert a is not None and b is not None
+
+    a_aliases = json.loads(a["aliases"])
+    b_aliases = json.loads(b["aliases"])
+    shared = set(a_aliases) & set(b_aliases)
+    assert len(shared) >= 1
+
+    a_slack = {x for x in a_aliases if x.startswith("slack:")}
+    b_slack = {x for x in b_aliases if x.startswith("slack:")}
+    assert a_slack != b_slack
+
+
+def test_correct_merge_triple_359(seeded_store):
+    rows = seeded_store.execute("SELECT * FROM entities WHERE id LIKE 'merge-%-359'").fetchall()
+    assert len(rows) == 3
+
+    names = {r["name"] for r in rows}
+    assert any(" " in n for n in names), "should have a full name"
+    assert any("@" in n for n in names), "should have an email"
+    assert any(" " not in n and "@" not in n for n in names), "should have a handle"
+
+    slack_ids = set()
+    for r in rows:
+        for alias in json.loads(r["aliases"]):
+            if alias.startswith("slack:"):
+                slack_ids.add(alias)
+    assert len(slack_ids) == 1, "all three should share the same Slack ID"
+
+
+def test_description_as_name_346(seeded_store):
+    row = seeded_store.execute("SELECT * FROM entities WHERE id = 'desc-name-346'").fetchone()
+    assert row is not None
+    name = row["name"]
+    assert len(name.split()) > 4 or "of" in name.lower()
+
+
+def test_owner_duplicate_slack_id_332(seeded_store):
+    owner = seeded_store.execute("SELECT * FROM entities WHERE id = 'owner-332'").fetchone()
+    dup = seeded_store.execute("SELECT * FROM entities WHERE id = 'owner-dup-332'").fetchone()
+    assert owner is not None and dup is not None
+    assert owner["is_owner"] == 1
+    assert dup["is_owner"] == 0
+    owner_aliases = json.loads(owner["aliases"])
+    assert dup["name"] in owner_aliases
+
+
+def test_slack_link_markup_334(seeded_store):
+    row = seeded_store.execute("SELECT * FROM entities WHERE id = 'link-markup-334'").fetchone()
+    assert row is not None
+    assert "|" in row["name"]
+
+
+def test_dangling_claims_333(seeded_store):
+    valid = seeded_store.execute("SELECT * FROM claims WHERE id = 'claim-valid-333'").fetchone()
+    dangling = seeded_store.execute(
+        "SELECT * FROM claims WHERE id = 'claim-dangling-333'"
+    ).fetchone()
+    assert valid is not None
+    assert dangling is not None
+
+    entity_ids = {r["id"] for r in seeded_store.execute("SELECT id FROM entities").fetchall()}
+    assert valid["subject_id"] in entity_ids
+    assert dangling["subject_id"] not in entity_ids
