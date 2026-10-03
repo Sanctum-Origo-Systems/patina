@@ -329,6 +329,47 @@ def test_find_dedup_candidates_skips_owner(db_conn):
     assert len(candidates) == 0
 
 
+def test_find_dedup_conflicting_slack_ids_rejected(db_conn):
+    """Entities with different Slack IDs must not merge even through a shared handle alias."""
+    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["U0AAAA"])
+    _insert_entity_raw(db_conn, "e2", "user_b", aliases=["U0BBBB", "user_a"])
+
+    candidates = find_dedup_candidates(db_conn)
+    assert len(candidates) == 0
+
+
+def test_find_dedup_handle_alias_alone_insufficient(db_conn):
+    """A handle alias on a foreign entity does not trigger a merge without a hard identifier."""
+    _insert_entity_raw(db_conn, "e1", "dkim")
+    _insert_entity_raw(db_conn, "e2", "Dana Brook", aliases=["dkim"])
+
+    candidates = find_dedup_candidates(db_conn)
+    assert len(candidates) == 0
+
+
+def test_find_dedup_conflicting_emails_rejected(db_conn):
+    """Entities sharing a name but holding different emails must not merge."""
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["sam@alpha.com"])
+    _insert_entity_raw(db_conn, "e2", "Sam Rivera", aliases=["sam@beta.com"])
+
+    candidates = find_dedup_candidates(db_conn)
+    assert len(candidates) == 0
+
+
+def test_find_dedup_transitive_conflict_blocked(db_conn):
+    """Transitive chaining through soft matches must not link entities with conflicting IDs."""
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["U0AAAA"])
+    _insert_entity_raw(db_conn, "e2", "Sam Rivera")
+    _insert_entity_raw(db_conn, "e3", "Sam Rivera", aliases=["U0CCCC"])
+
+    candidates = find_dedup_candidates(db_conn)
+    for c in candidates:
+        ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        assert not ("e1" in ids and "e3" in ids), (
+            "Conflicting Slack IDs should not be in same group"
+        )
+
+
 # ── dedup_entities ───────────────────────────────────────────
 
 

@@ -130,6 +130,21 @@ _NON_NAME_NOUNS = frozenset(
 
 
 _SLACK_ID_RE = re.compile(r"^[UW][A-Z0-9]{4,}$")
+_SLACK_ID_EXTRACT_RE = re.compile(r"^(?:slack:)?([UW][A-Z0-9]{4,})$", re.IGNORECASE)
+_HANDLE_RE = re.compile(r"^[a-z][a-z0-9_]{1,}$")
+
+
+def _collect_slack_ids(tokens: list[str]) -> set[str]:
+    ids: set[str] = set()
+    for token in tokens:
+        m = _SLACK_ID_EXTRACT_RE.match(token.strip())
+        if m:
+            ids.add(m.group(1).upper())
+    return ids
+
+
+def _collect_emails(tokens: list[str]) -> set[str]:
+    return {t.strip().lower() for t in tokens if "@" in t.strip()}
 
 
 def is_plausible_person_name(name: str) -> bool:
@@ -351,6 +366,16 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
     if not entities:
         return []
 
+    entity_hard_ids = []
+    for ent in entities:
+        all_tokens = [ent["name"]] + ent["aliases"]
+        entity_hard_ids.append(
+            {
+                "slack_ids": _collect_slack_ids(all_tokens),
+                "emails": _collect_emails(all_tokens),
+            }
+        )
+
     ident_map: dict[str, list[int]] = {}
     for i, ent in enumerate(entities):
         seen: set[str] = set()
@@ -358,9 +383,18 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
             key = token.strip().lower()
             if key and len(key) >= 2 and key not in seen:
                 seen.add(key)
+                is_foreign_handle = (
+                    token != ent["name"]
+                    and _HANDLE_RE.match(key)
+                    and not _SLACK_ID_RE.match(key.upper())
+                )
+                if is_foreign_handle:
+                    continue
                 ident_map.setdefault(key, []).append(i)
 
     parent = list(range(len(entities)))
+    group_slack = [h["slack_ids"].copy() for h in entity_hard_ids]
+    group_emails = [h["emails"].copy() for h in entity_hard_ids]
 
     def _find(x: int) -> int:
         while parent[x] != x:
@@ -370,8 +404,17 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
 
     def _union(a: int, b: int) -> None:
         ra, rb = _find(a), _find(b)
-        if ra != rb:
-            parent[ra] = rb
+        if ra == rb:
+            return
+        sa, sb = group_slack[ra], group_slack[rb]
+        if sa and sb and sa.isdisjoint(sb):
+            return
+        ea, eb = group_emails[ra], group_emails[rb]
+        if ea and eb and ea.isdisjoint(eb):
+            return
+        parent[ra] = rb
+        group_slack[rb] |= sa
+        group_emails[rb] |= ea
 
     pair_match: dict[tuple[int, int], str] = {}
     for ident, indices in ident_map.items():
