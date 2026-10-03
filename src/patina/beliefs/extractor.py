@@ -13,6 +13,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from patina.maintenance import is_plausible_person_name as _is_plausible_person_name
 from patina.store import connect, get_db_path, init_db
 
 EXTRACTION_PROMPT = """\
@@ -131,104 +132,66 @@ def _resolve_entity_id(
     return resolve_entity_id(conn, name)
 
 
-_GRAMMAR_WORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "and",
-        "or",
-        "but",
-        "for",
-        "nor",
-        "so",
-        "yet",
-        "in",
-        "on",
-        "at",
-        "to",
-        "of",
-        "by",
-        "with",
-        "from",
-        "into",
-        "about",
-        "through",
-        "during",
-        "before",
-        "after",
-        "between",
-        "under",
-        "over",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "has",
-        "have",
-        "had",
-        "do",
-        "does",
-        "did",
-        "would",
-        "could",
-        "should",
-        "might",
-        "not",
-        "no",
-        "that",
-        "this",
-        "who",
-        "whom",
-        "which",
-        "what",
-        "offered",
-        "said",
-        "mentioned",
-        "asked",
-        "told",
-        "suggested",
-    }
-)
+def _resolve_single_token_name(
+    conn,
+    token: str,
+    batch_names: set[str],
+    *,
+    owner_entity_id: str | None = None,
+    owner_match_names: set[str] | None = None,
+) -> str | None:
+    from patina.graph import normalize_name
 
-_NON_NAME_NOUNS = frozenset(
-    {
-        "office",
-        "team",
-        "project",
-        "employee",
-        "integration",
-        "support",
-        "meeting",
-        "review",
-        "feedback",
-        "department",
-        "group",
-    }
-)
+    token_lower = token.strip().lower()
+    if not token_lower:
+        return None
+
+    if owner_entity_id and owner_match_names:
+        if token_lower in owner_match_names:
+            return owner_entity_id
+
+    rows = conn.execute("SELECT id, name FROM entities WHERE is_owner = 0").fetchall()
+
+    candidates = []
+    for r in rows:
+        norm = normalize_name(r["name"])
+        parts = norm.split()
+        if not parts:
+            continue
+        if parts[0] == token_lower:
+            if r["name"].lower() in batch_names or norm in batch_names:
+                candidates.append(r["id"])
+
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
 
 
-def _is_plausible_person_name(name: str) -> bool:
-    if not name or len(name) < 3 or len(name) > 50:
-        return False
-    if any(c in name for c in "()[]/@:."):
-        return False
-    if name.isupper():
-        return False
-    words = name.split()
-    if len(words) > 4:
-        return False
-    if sum(1 for w in words if w[0].isupper()) < 1:
-        return False
-    lower_words = {w.lower().rstrip(".,;!?") for w in words}
-    if lower_words & _GRAMMAR_WORDS:
-        return False
-    if lower_words & _NON_NAME_NOUNS:
-        return False
-    return True
+def _resolve_entity_in_batch(
+    conn,
+    name: str,
+    batch_names: set[str],
+    *,
+    owner_entity_id: str | None = None,
+    owner_match_names: set[str] | None = None,
+) -> str | None:
+    if not name or not name.strip():
+        return None
+    name = name.strip()
+    if _is_single_token_name(name):
+        return _resolve_single_token_name(
+            conn,
+            name,
+            batch_names,
+            owner_entity_id=owner_entity_id,
+            owner_match_names=owner_match_names,
+        )
+    return _resolve_entity_id(
+        conn,
+        name,
+        owner_entity_id=owner_entity_id,
+        owner_match_names=owner_match_names,
+    )
 
 
 def _is_normalized_name_variant(alias: str, name: str) -> bool:
@@ -249,6 +212,13 @@ def _is_normalized_name_variant(alias: str, name: str) -> bool:
 
 def _is_handle_or_email(alias: str) -> bool:
     return "@" in alias or alias.startswith("#")
+
+
+def _is_single_token_name(name: str) -> bool:
+    name = name.strip()
+    if not name:
+        return False
+    return " " not in name and "-" not in name and "," not in name
 
 
 def _alias_collides_with_other_entity(conn, alias: str, target_entity_id: str) -> bool:
@@ -349,6 +319,9 @@ def _upsert_entity(
                         (json.dumps(merged), existing_id),
                     )
         return existing_id, collisions
+
+    if _is_single_token_name(name):
+        return "", 0
 
     collisions = 0
     if aliases:
@@ -490,11 +463,28 @@ def extract_beliefs(
                     )
                     stats["alias_collisions"] += collisions
 
+            batch_names: set[str] = set()
+            for row in batch:
+                sender = row["sender_name"]
+                if sender:
+                    batch_names.add(sender.lower())
+                    norm = _normalize_name(sender)
+                    if norm:
+                        batch_names.add(norm)
+            for ent in entities:
+                ent_name = ent.get("name", "").strip()
+                if ent_name:
+                    batch_names.add(ent_name.lower())
+                    norm = _normalize_name(ent_name)
+                    if norm:
+                        batch_names.add(norm)
+
             for claim in claims:
                 subject_name = claim.get("subject", "")
-                subject_id = _resolve_entity_id(
+                subject_id = _resolve_entity_in_batch(
                     conn,
                     subject_name,
+                    batch_names,
                     owner_entity_id=owner_entity_id,
                     owner_match_names=owner_match_names,
                 )
@@ -528,15 +518,17 @@ def extract_beliefs(
                     print(f"\n    [WARN] Failed to insert claim: {e}")
 
             for rel in relationships:
-                subject_id = _resolve_entity_id(
+                subject_id = _resolve_entity_in_batch(
                     conn,
                     rel.get("subject", ""),
+                    batch_names,
                     owner_entity_id=owner_entity_id,
                     owner_match_names=owner_match_names,
                 )
-                object_id = _resolve_entity_id(
+                object_id = _resolve_entity_in_batch(
                     conn,
                     rel.get("object", ""),
+                    batch_names,
                     owner_entity_id=owner_entity_id,
                     owner_match_names=owner_match_names,
                 )
@@ -570,9 +562,10 @@ def extract_beliefs(
 
             for beh in behavioral:
                 subject_name = beh.get("subject", "")
-                subject_id = _resolve_entity_id(
+                subject_id = _resolve_entity_in_batch(
                     conn,
                     subject_name,
+                    batch_names,
                     owner_entity_id=owner_entity_id,
                     owner_match_names=owner_match_names,
                 )

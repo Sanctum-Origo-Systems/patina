@@ -192,14 +192,14 @@ def test_extract_creates_entities_from_response(db_conn, db_path, tmp_path):
         thread_id=None,
         timestamp=1.0,
         sender_entity_id=None,
-        text="Bob is the new CTO",
+        text="Bob Tilman is the new CTO",
     )
     insert_observation(db_conn, obs)
     db_conn.close()
 
     mock_response = (
-        '{"entities": [{"name": "Bob", "aliases": [], "type": "person"}], '
-        '"claims": [{"subject": "Bob", "predicate": "role", '
+        '{"entities": [{"name": "Bob Tilman", "aliases": [], "type": "person"}], '
+        '"claims": [{"subject": "Bob Tilman", "predicate": "role", '
         '"object": "CTO", "confidence": 0.9}], '
         '"relationships": [], "behavioral": []}'
     )
@@ -516,7 +516,7 @@ class TestNonPersonPhrasesRejected:
             thread_id=None,
             timestamp=1.0,
             sender_entity_id=None,
-            text="Alice works at Contoso on Project Lumen",
+            text="Alice Moreno works at Contoso on Project Lumen",
         )
         insert_observation(db_conn, obs)
         db_conn.close()
@@ -524,13 +524,13 @@ class TestNonPersonPhrasesRejected:
         mock_response = json.dumps(
             {
                 "entities": [
-                    {"name": "Alice", "aliases": [], "type": "person"},
+                    {"name": "Alice Moreno", "aliases": [], "type": "person"},
                     {"name": "Contoso", "aliases": [], "type": "organization"},
                     {"name": "Project Lumen", "aliases": [], "type": "project"},
                 ],
                 "claims": [
                     {
-                        "subject": "Alice",
+                        "subject": "Alice Moreno",
                         "predicate": "org",
                         "object": "Contoso",
                         "confidence": 0.9,
@@ -550,7 +550,7 @@ class TestNonPersonPhrasesRejected:
         conn = connect(get_db_path(tmp_path))
         entities = conn.execute("SELECT name FROM entities").fetchall()
         entity_names = {r["name"] for r in entities}
-        assert "Alice" in entity_names
+        assert "Alice Moreno" in entity_names
         assert "Contoso" not in entity_names
         assert "Project Lumen" not in entity_names
         conn.close()
@@ -834,3 +834,203 @@ class TestAliasCollisionFiltering:
         row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e2'").fetchone()
         aliases = json.loads(row["aliases"] or "[]")
         assert "@dkim" not in aliases
+
+
+class TestSingleTokenNameResolution:
+    """Regression tests for #347: first-name-only references must not create
+    duplicate person entities."""
+
+    def test_single_token_entity_not_created(self, db_conn):
+        """Single-token names must never create new entities."""
+        entity_id, collisions = _upsert_entity(db_conn, "Sam")
+        assert entity_id == ""
+
+        row = db_conn.execute("SELECT * FROM entities WHERE name = 'Sam'").fetchone()
+        assert row is None
+
+    def test_single_token_upsert_returns_existing(self, db_conn):
+        """Single-token names that already exist as entities are still found."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
+        entity_id, _ = _upsert_entity(db_conn, "Alice")
+        assert entity_id == "e1"
+
+    def test_single_token_resolves_with_cooccurring_sender(self, db_conn, db_path, tmp_path):
+        """Bare 'Sam' in a claim resolves to 'Rivera, Sam' when that person
+        is the sender in the same batch."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Rivera, Sam"))
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id="e1",
+            text="Sam said the deadline is Friday",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Rivera, Sam", "aliases": [], "type": "person"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Sam",
+                        "predicate": "commitment",
+                        "object": "deadline is Friday",
+                        "confidence": 0.8,
+                    },
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 1
+        assert stats["skipped_unresolved"] == 0
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        row = conn.execute("SELECT subject_id FROM claims").fetchone()
+        assert row is not None
+        assert row["subject_id"] == "e1"
+
+        entities = conn.execute("SELECT name FROM entities").fetchall()
+        entity_names = {r["name"] for r in entities}
+        assert "Sam" not in entity_names
+        conn.close()
+
+    def test_single_token_resolves_with_cooccurring_entity(self, db_conn, db_path, tmp_path):
+        """Bare 'Sam' resolves when 'Rivera, Sam' appears as an extracted
+        entity in the same batch (not just as sender)."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Rivera, Sam"))
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id=None,
+            text="Rivera mentioned the deadline",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Rivera, Sam", "aliases": [], "type": "person"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Sam",
+                        "predicate": "commitment",
+                        "object": "deadline is Friday",
+                        "confidence": 0.8,
+                    },
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 1
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        row = conn.execute("SELECT subject_id FROM claims").fetchone()
+        assert row is not None
+        assert row["subject_id"] == "e1"
+        conn.close()
+
+    def test_single_token_skipped_without_cooccurrence(self, db_conn, db_path, tmp_path):
+        """Bare 'Sam' is skipped when no matching person appears in batch."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Rivera, Sam"))
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id=None,
+            text="Sam said the deadline is Friday",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [],
+                "claims": [
+                    {
+                        "subject": "Sam",
+                        "predicate": "commitment",
+                        "object": "deadline is Friday",
+                        "confidence": 0.8,
+                    },
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 0
+        assert stats["skipped_unresolved"] >= 1
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        entities = conn.execute("SELECT name FROM entities").fetchall()
+        entity_names = {r["name"] for r in entities}
+        assert "Sam" not in entity_names
+        conn.close()
+
+    def test_single_token_skipped_with_ambiguous_match(self, db_conn, db_path, tmp_path):
+        """Bare 'Sam' is skipped when multiple people named Sam appear in batch."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Rivera, Sam"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Kim, Sam"))
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id=None,
+            text="Sam said the deadline is Friday",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Rivera, Sam", "aliases": [], "type": "person"},
+                    {"name": "Kim, Sam", "aliases": [], "type": "person"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Sam",
+                        "predicate": "commitment",
+                        "object": "deadline is Friday",
+                        "confidence": 0.8,
+                    },
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 0
+        assert stats["skipped_unresolved"] >= 1

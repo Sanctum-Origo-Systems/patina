@@ -1,3 +1,21 @@
+## v0.20.0 (2026-10-03)
+
+### Entity Quality & Extraction Fixes
+- #340: Fix: extraction path alias pollution — _upsert_entity merges owner identifiers into partial-match entities
+- #346: Fix: non-person phrases saved as type=person entities during extraction
+- #347: Fix: first-name-only references create duplicate person entities after LIKE removal
+- #348: Fix: LLM-supplied aliases merged unchecked into non-owner entities
+- #349: Fix: entity prune and dedup don't catch extraction residue — shared plausibility check
+
+### Data Quality & Maintenance
+- #330: Test: regression test that owner resolution never pollutes other entity aliases
+- #331: Fix: owner merge --dry-run and safety checks for non-owner entities
+- #332: Fix: mention path upserts owner duplicate entity without checking user_ids
+- #333: Fix: dangling reference cleanup and integrity check
+- #334: Fix: strip Slack link markup and improve channel_id extraction
+- #341: Feat: add patina entity prune-links CLI command with --dry-run
+- #342: Fix: strip_slack_link_markup preserves label text instead of dropping entire link
+
 ## v0.19.2 (2026-09-30)
 - #326: Fix: replace substring LIKE fallback with owner-aware entity resolution ($0.00)
 Total: 1 PRs, $0.00

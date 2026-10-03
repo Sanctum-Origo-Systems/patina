@@ -13,6 +13,7 @@ from patina.maintenance import (
     dedup_entities,
     find_dedup_candidates,
     is_non_person,
+    is_plausible_person_name,
     merge_entities,
     prune_non_person_entities,
     prune_slack_link_entities,
@@ -108,6 +109,26 @@ def test_is_non_person_empty():
 
 def test_is_non_person_bot_parenthetical():
     assert is_non_person("Jenkins (Bot)") is True
+
+
+# ── is_plausible_person_name ────────────────────────────────
+
+
+def test_plausible_accepts_real_names():
+    assert is_plausible_person_name("Sam Rivera") is True
+    assert is_plausible_person_name("Alice Chen") is True
+
+
+def test_plausible_rejects_phrases():
+    assert is_plausible_person_name("Orion and Project Lumen integration") is False
+
+
+def test_plausible_rejects_long_phrases():
+    assert is_plausible_person_name("Head of Engineering at Acme Corp") is False
+
+
+def test_plausible_rejects_grammar_words():
+    assert is_plausible_person_name("Sam and Alice") is False
 
 
 # ── backup_store ─────────────────────────────────────────────
@@ -326,6 +347,34 @@ def test_dedup_entities_dry_run(db_conn):
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
 
 
+def test_dedup_skips_alias_collision(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["sam.r"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["sam.r@example.com"])
+    _insert_entity_raw(db_conn, "e3", "Sam R", aliases=["Rivera, Sam"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = dedup_entities(db_conn)
+
+    assert len(result["skipped"]) >= 1
+    skipped_drops = {s["drop_name"] for s in result["skipped"]}
+    assert "Rivera, Sam" in skipped_drops or "Sam R" in skipped_drops
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e3'").fetchone() is not None
+
+
+def test_dedup_reports_skipped_in_result(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam")
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["Rivera, Sam"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = dedup_entities(db_conn, dry_run=True)
+
+    assert "skipped" in result
+    assert len(result["skipped"]) == 1
+    assert result["skipped"][0]["reason"] == "alias collision"
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
+
+
 # ── prune_non_person_entities ────────────────────────────────
 
 
@@ -369,6 +418,29 @@ def test_prune_no_matches(db_conn):
 
     result = prune_non_person_entities(db_conn)
     assert result["pruned"] == 0
+
+
+def test_prune_catches_phrase_entities(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Orion and Project Lumen integration")
+    _insert_entity_raw(db_conn, "e2", "Alice Tran")
+    _insert_entity_raw(db_conn, "e3", "Head of Engineering at Acme Corp")
+
+    result = prune_non_person_entities(db_conn)
+
+    assert result["pruned"] == 2
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is None
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e3'").fetchone() is None
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
+
+
+def test_prune_phrase_dry_run(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Orion and Project Lumen integration")
+    _insert_entity_raw(db_conn, "e2", "Alice Tran")
+
+    result = prune_non_person_entities(db_conn, dry_run=True)
+
+    assert result["pruned"] == 1
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
 
 
 # ── prune_slack_link_entities ──────────────────────────────────
@@ -546,9 +618,59 @@ def test_cli_entity_dedup(db_path):
 
     runner = CliRunner()
     home = db_path.parent
-    result = runner.invoke(app, ["entity", "dedup", "--dry-run", "--home", str(home)])
+    result = runner.invoke(app, ["entity", "dedup", "--home", str(home)])
     assert result.exit_code == 0
     assert "1 group" in result.output
+    assert "re-run with --confirm to apply" in result.output
+
+    conn = connect(db_path)
+    assert conn.execute("SELECT 1 FROM entities WHERE id = 'e2ddeeff'").fetchone() is not None
+    conn.close()
+
+
+def test_cli_entity_dedup_confirm(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e1aabbcc", "Sam Rivera")
+    _insert_entity_raw(conn, "e2ddeeff", "Rivera, Sam")
+    insert_observation(conn, _obs("o1", "e1aabbcc"))
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "dedup", "--confirm", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Dedup" in result.output
+    assert "re-run with --confirm" not in result.output
+
+    conn = connect(db_path)
+    assert conn.execute("SELECT 1 FROM entities WHERE id = 'e2ddeeff'").fetchone() is None
+    conn.close()
+
+
+def test_cli_entity_dedup_shows_skipped(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e1aabbcc", "Sam Rivera")
+    _insert_entity_raw(conn, "e2ddeeff", "Rivera, Sam")
+    _insert_entity_raw(conn, "e3aabbcc", "Quinn Farrow", aliases=["Rivera, Sam"])
+    insert_observation(conn, _obs("o1", "e1aabbcc"))
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "dedup", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "SKIP" in result.output
+    assert "alias collision" in result.output
 
 
 def test_cli_entity_prune(db_path):
