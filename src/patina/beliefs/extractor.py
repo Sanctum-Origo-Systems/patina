@@ -231,6 +231,75 @@ def _is_plausible_person_name(name: str) -> bool:
     return True
 
 
+def _is_normalized_name_variant(alias: str, name: str) -> bool:
+    from patina.graph import normalize_name
+
+    norm_alias = normalize_name(alias)
+    norm_name = normalize_name(name)
+    if not norm_alias or not norm_name:
+        return False
+    if norm_alias == norm_name:
+        return True
+    name_parts = set(norm_name.split())
+    alias_parts = set(norm_alias.split())
+    if alias_parts and alias_parts <= name_parts:
+        return True
+    return False
+
+
+def _is_handle_or_email(alias: str) -> bool:
+    return "@" in alias or alias.startswith("#")
+
+
+def _alias_collides_with_other_entity(conn, alias: str, target_entity_id: str) -> bool:
+    from patina.graph import normalize_name
+    from patina.owner import normalize_alias
+
+    norm = normalize_name(normalize_alias(alias))
+    rows = conn.execute(
+        "SELECT id, name, aliases FROM entities WHERE id != ?",
+        (target_entity_id,),
+    ).fetchall()
+    for r in rows:
+        if normalize_name(r["name"]) == norm:
+            return True
+        for stored in json.loads(r["aliases"] or "[]"):
+            if normalize_name(normalize_alias(stored)) == norm:
+                return True
+    return False
+
+
+def _filter_aliases(
+    conn,
+    aliases: list[str],
+    entity_name: str,
+    entity_id: str,
+) -> tuple[list[str], int]:
+    collisions = 0
+    accepted = []
+    for alias in aliases:
+        alias = alias.strip()
+        if not alias:
+            continue
+        if _is_handle_or_email(alias):
+            if _alias_collides_with_other_entity(conn, alias, entity_id):
+                collisions += 1
+            else:
+                accepted.append(alias)
+            continue
+        if " " not in alias and "-" not in alias and "," not in alias:
+            collisions += 1
+            continue
+        if _alias_collides_with_other_entity(conn, alias, entity_id):
+            collisions += 1
+            continue
+        if _is_normalized_name_variant(alias, entity_name):
+            accepted.append(alias)
+        else:
+            collisions += 1
+    return accepted, collisions
+
+
 def _upsert_entity(
     conn,
     name: str,
@@ -238,12 +307,12 @@ def _upsert_entity(
     *,
     owner_entity_id: str | None = None,
     owner_match_names: set[str] | None = None,
-) -> str:
+) -> tuple[str, int]:
     from patina.graph import normalize_name, resolve_entity_id
 
     name = name.strip()
     if not _is_plausible_person_name(name):
-        return ""
+        return "", 0
 
     if owner_entity_id and owner_match_names:
         incoming = {name.lower(), normalize_name(name)}
@@ -253,7 +322,7 @@ def _upsert_entity(
                 incoming.add(normalize_name(a))
         incoming.discard("")
         if incoming & owner_match_names:
-            return owner_entity_id
+            return owner_entity_id, 0
 
     if aliases and owner_match_names:
         aliases = [
@@ -264,22 +333,31 @@ def _upsert_entity(
 
     existing_id = resolve_entity_id(conn, name, aliases)
     if existing_id:
+        collisions = 0
         if aliases:
-            existing = conn.execute(
-                "SELECT aliases FROM entities WHERE id = ?",
-                (existing_id,),
-            ).fetchone()
-            if existing:
-                existing_aliases = json.loads(existing["aliases"] or "[]")
-                merged = list(set(existing_aliases + aliases))
-                conn.execute(
-                    "UPDATE entities SET aliases = ? WHERE id = ?",
-                    (json.dumps(merged), existing_id),
-                )
-        return existing_id
+            aliases, collisions = _filter_aliases(conn, aliases, name, existing_id)
+            if aliases:
+                existing = conn.execute(
+                    "SELECT aliases FROM entities WHERE id = ?",
+                    (existing_id,),
+                ).fetchone()
+                if existing:
+                    existing_aliases = json.loads(existing["aliases"] or "[]")
+                    merged = list(set(existing_aliases + aliases))
+                    conn.execute(
+                        "UPDATE entities SET aliases = ? WHERE id = ?",
+                        (json.dumps(merged), existing_id),
+                    )
+        return existing_id, collisions
+
+    collisions = 0
+    if aliases:
+        entity_id = _id("person", name)
+        aliases, collisions = _filter_aliases(conn, aliases, name, entity_id)
+    else:
+        entity_id = _id("person", name)
 
     now = _iso_now()
-    entity_id = _id("person", name)
     conn.execute(
         """INSERT OR IGNORE INTO entities
            (id, type, name, aliases, metadata, first_seen, last_seen,
@@ -287,7 +365,7 @@ def _upsert_entity(
            VALUES (?, 'person', ?, ?, '{}', ?, ?, 0.02, 0)""",
         (entity_id, name, json.dumps(aliases or []), now, now),
     )
-    return entity_id
+    return entity_id, collisions
 
 
 def extract_beliefs(
@@ -309,6 +387,7 @@ def extract_beliefs(
         "batches_sent": 0,
         "errors": 0,
         "skipped_unresolved": 0,
+        "alias_collisions": 0,
     }
 
     try:
@@ -402,13 +481,14 @@ def extract_beliefs(
             for ent in entities:
                 name = ent.get("name", "").strip()
                 if name and len(name) > 1 and ent.get("type") == "person":
-                    _upsert_entity(
+                    _, collisions = _upsert_entity(
                         conn,
                         name,
                         ent.get("aliases", []),
                         owner_entity_id=owner_entity_id,
                         owner_match_names=owner_match_names,
                     )
+                    stats["alias_collisions"] += collisions
 
             for claim in claims:
                 subject_name = claim.get("subject", "")
@@ -547,6 +627,8 @@ def extract_beliefs(
         print(f"  Batches sent to LLM:    {stats['batches_sent']}")
         if stats["skipped_unresolved"]:
             print(f"  Skipped (unresolved):   {stats['skipped_unresolved']}")
+        if stats["alias_collisions"]:
+            print(f"  Alias collisions:       {stats['alias_collisions']}")
         if stats["errors"]:
             print(f"  Errors:                 {stats['errors']}")
 

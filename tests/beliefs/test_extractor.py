@@ -117,39 +117,40 @@ def test_extract_beliefs_with_mock_claude(db_conn, db_path, tmp_path):
 
 
 def test_upsert_entity_creates_new(db_conn):
-    entity_id = _upsert_entity(db_conn, "Bob Smith", ["bob"])
+    entity_id, collisions = _upsert_entity(db_conn, "Bob Smith", ["Smith, Bob"])
     assert entity_id != ""
+    assert collisions == 0
     resolved = _resolve_entity_id(db_conn, "Bob Smith")
     assert resolved == entity_id
 
 
 def test_upsert_entity_returns_existing(db_conn):
     upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
-    entity_id = _upsert_entity(db_conn, "Alice")
+    entity_id, _ = _upsert_entity(db_conn, "Alice")
     assert entity_id == "e1"
 
 
 def test_upsert_entity_rejects_non_persons(db_conn):
-    assert _upsert_entity(db_conn, "JIRA") == ""
-    assert _upsert_entity(db_conn, "AWS/S3") == ""
-    assert _upsert_entity(db_conn, "user@example.com") == ""
-    assert _upsert_entity(db_conn, "https://zoom.us/j/123") == ""
-    assert _upsert_entity(db_conn, "Ab") == ""
-    assert _upsert_entity(db_conn, "API") == ""
-    assert _upsert_entity(db_conn, "a]b") == ""
-    assert _upsert_entity(db_conn, "project(alpha)") == ""
+    assert _upsert_entity(db_conn, "JIRA") == ("", 0)
+    assert _upsert_entity(db_conn, "AWS/S3") == ("", 0)
+    assert _upsert_entity(db_conn, "user@example.com") == ("", 0)
+    assert _upsert_entity(db_conn, "https://zoom.us/j/123") == ("", 0)
+    assert _upsert_entity(db_conn, "Ab") == ("", 0)
+    assert _upsert_entity(db_conn, "API") == ("", 0)
+    assert _upsert_entity(db_conn, "a]b") == ("", 0)
+    assert _upsert_entity(db_conn, "project(alpha)") == ("", 0)
 
 
 def test_upsert_entity_rejects_empty(db_conn):
-    assert _upsert_entity(db_conn, "") == ""
+    assert _upsert_entity(db_conn, "") == ("", 0)
 
 
 def test_upsert_entity_accepts_real_names(db_conn):
-    assert _upsert_entity(db_conn, "Alice Smith") != ""
-    assert _upsert_entity(db_conn, "Jean-Pierre") != ""
-    assert _upsert_entity(db_conn, "Carol Davis-Jones") != ""
-    assert _upsert_entity(db_conn, "Will Smith") != ""
-    assert _upsert_entity(db_conn, "May Chen") != ""
+    assert _upsert_entity(db_conn, "Alice Smith")[0] != ""
+    assert _upsert_entity(db_conn, "Jean-Pierre")[0] != ""
+    assert _upsert_entity(db_conn, "Carol Davis-Jones")[0] != ""
+    assert _upsert_entity(db_conn, "Will Smith")[0] != ""
+    assert _upsert_entity(db_conn, "May Chen")[0] != ""
 
 
 class TestIsPlausiblePersonName:
@@ -688,3 +689,148 @@ class TestExtractionAliasesPollution:
         assert claim is not None
         assert claim["subject_id"] == "owner1"
         conn.close()
+
+
+class TestAliasCollisionFiltering:
+    """Regression tests for #348: LLM-supplied aliases merged unchecked
+    into non-owner entities during extraction."""
+
+    def test_colliding_alias_rejected_end_to_end(self, db_conn, db_path, tmp_path):
+        """Entity A has alias 'Doe, John'. LLM suggests 'Doe, John' as alias
+        for entity B. The multi-token alias passes the single-token filter
+        but must be rejected by the collision checker."""
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="John Doe",
+                aliases=["Doe, John"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Rivera, Sam"),
+        )
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id="e2",
+            text="Rivera mentioned the deadline",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {
+                        "name": "Rivera, Sam",
+                        "aliases": ["Doe, John", "Sam Rivera"],
+                        "type": "person",
+                    },
+                ],
+                "claims": [],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["alias_collisions"] > 0
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        row = conn.execute("SELECT aliases FROM entities WHERE id = 'e2'").fetchone()
+        assert row is not None
+        aliases = json.loads(row["aliases"] or "[]")
+        assert "Doe, John" not in aliases
+        conn.close()
+
+    def test_single_token_alias_rejected(self, db_conn):
+        """Bare first names like 'Dana' or 'Mark' must be rejected."""
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Kim"),
+        )
+        _, collisions = _upsert_entity(db_conn, "Dana Kim", ["Dana", "Mark"])
+        assert collisions == 2
+
+        row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e1'").fetchone()
+        aliases = json.loads(row["aliases"] or "[]")
+        assert "Dana" not in aliases
+        assert "Mark" not in aliases
+
+    def test_normalized_name_variant_accepted(self, db_conn):
+        """'Smith, Alice' is a normalized variant of 'Alice Smith' and should
+        be accepted as an alias."""
+        entity_id, collisions = _upsert_entity(db_conn, "Alice Smith", ["Smith, Alice"])
+        assert entity_id != ""
+        assert collisions == 0
+
+        row = db_conn.execute("SELECT aliases FROM entities WHERE id = ?", (entity_id,)).fetchone()
+        aliases = json.loads(row["aliases"] or "[]")
+        assert "Smith, Alice" in aliases
+
+    def test_cross_entity_handle_collision(self, db_conn):
+        """Alias 'Kim, Dana' belongs to entity 'Dana Kim'. It must not be
+        merged into a different entity 'Lee, Dana'. This is multi-token so
+        it passes the single-token filter and exercises the collision checker."""
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Kim",
+                aliases=["Kim, Dana"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Lee, Dana"),
+        )
+        _, collisions = _upsert_entity(db_conn, "Lee, Dana", ["Kim, Dana", "Lee Dana"])
+        assert collisions >= 1
+
+        row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e2'").fetchone()
+        aliases = json.loads(row["aliases"] or "[]")
+        assert "Kim, Dana" not in aliases
+
+    def test_handle_alias_accepted_when_no_collision(self, db_conn):
+        """A handle like '@srivera' bypasses the single-token filter and is
+        accepted when it doesn't collide with another entity."""
+        entity_id, collisions = _upsert_entity(db_conn, "Rivera, Sam", ["@srivera"])
+        assert entity_id != ""
+        assert collisions == 0
+
+        row = db_conn.execute("SELECT aliases FROM entities WHERE id = ?", (entity_id,)).fetchone()
+        aliases = json.loads(row["aliases"] or "[]")
+        assert "@srivera" in aliases
+
+    def test_handle_alias_rejected_on_collision(self, db_conn):
+        """A handle like '@dkim' that collides with another entity's alias
+        must be rejected even though it's a valid handle format."""
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Kim",
+                aliases=["@dkim"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Lee, Dana"),
+        )
+        _, collisions = _upsert_entity(db_conn, "Lee, Dana", ["@dkim"])
+        assert collisions == 1
+
+        row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e2'").fetchone()
+        aliases = json.loads(row["aliases"] or "[]")
+        assert "@dkim" not in aliases
