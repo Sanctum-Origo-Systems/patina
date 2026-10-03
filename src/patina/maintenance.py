@@ -342,45 +342,65 @@ def merge_entities(
 def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
 
-    groups: dict[str, list[dict]] = {}
+    entities = []
     for r in rows:
-        norm = _normalize_for_dedup(r["name"])
-        if not norm or len(norm) < 2:
-            continue
-        groups.setdefault(norm, []).append(
+        aliases = json.loads(r["aliases"] or "[]")
+        entities.append(
             {
                 "id": r["id"],
                 "name": r["name"],
-                "aliases": json.loads(r["aliases"] or "[]"),
+                "aliases": aliases,
             }
         )
 
-    alias_map: dict[str, str] = {}
-    for r in rows:
-        aliases = json.loads(r["aliases"] or "[]")
-        for alias in aliases:
-            norm_alias = _normalize_for_dedup(alias)
-            if norm_alias and len(norm_alias) > 2:
-                existing = alias_map.get(norm_alias)
-                if existing and existing != r["id"]:
-                    for key, group in groups.items():
-                        ids = {e["id"] for e in group}
-                        if existing in ids and r["id"] not in ids:
-                            group.append(
-                                {
-                                    "id": r["id"],
-                                    "name": r["name"],
-                                    "aliases": aliases,
-                                }
-                            )
-                            break
-                else:
-                    alias_map[norm_alias] = r["id"]
+    if not entities:
+        return []
+
+    ident_map: dict[str, list[int]] = {}
+    for i, ent in enumerate(entities):
+        seen: set[str] = set()
+        for token in [ent["name"]] + ent["aliases"]:
+            key = token.strip().lower()
+            if key and len(key) >= 2 and key not in seen:
+                seen.add(key)
+                ident_map.setdefault(key, []).append(i)
+
+    parent = list(range(len(entities)))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    pair_match: dict[tuple[int, int], str] = {}
+    for ident, indices in ident_map.items():
+        if len(indices) < 2:
+            continue
+        for j in range(1, len(indices)):
+            a, b = indices[0], indices[j]
+            pair = (min(a, b), max(a, b))
+            if pair not in pair_match:
+                pair_match[pair] = ident
+            _union(a, b)
+
+    groups_map: dict[int, list[int]] = {}
+    for i in range(len(entities)):
+        root = _find(i)
+        groups_map.setdefault(root, []).append(i)
 
     candidates = []
-    for norm, group in groups.items():
-        if len(group) < 2:
+    for indices in groups_map.values():
+        if len(indices) < 2:
             continue
+
+        group = [entities[i] for i in indices]
+
         obs_counts = {}
         for ent in group:
             obs_counts[ent["id"]] = conn.execute(
@@ -388,13 +408,28 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
                 (ent["id"],),
             ).fetchone()["c"]
 
-        sorted_group = sorted(group, key=lambda e: obs_counts[e["id"]], reverse=True)
+        sorted_group = sorted(
+            group,
+            key=lambda e: (
+                -int(is_plausible_person_name(e["name"])),
+                -int(" " in e["name"]),
+                -obs_counts[e["id"]],
+            ),
+        )
         keep = sorted_group[0]
+
+        idx_set = set(indices)
+        match_ident = ""
+        for pair, ident in pair_match.items():
+            if pair[0] in idx_set and pair[1] in idx_set:
+                match_ident = ident
+                break
+
         candidates.append(
             {
                 "keep": keep,
                 "drop": sorted_group[1:],
-                "normalized_name": norm,
+                "match_identifier": match_ident,
             }
         )
 
@@ -448,6 +483,7 @@ def dedup_entities(
 
     for group in candidates:
         keep = group["keep"]
+        match_id = group.get("match_identifier", "")
         for drop in group["drop"]:
             if _merge_aliases_collide(conn, keep["id"], drop["id"]):
                 result["skipped"].append(
@@ -461,6 +497,7 @@ def dedup_entities(
                 )
                 continue
             merge_result = merge_entities(conn, keep["id"], drop["id"], dry_run=dry_run)
+            merge_result["match_identifier"] = match_id
             result["merges"].append(merge_result)
             result["entities_merged"] += 1
 
