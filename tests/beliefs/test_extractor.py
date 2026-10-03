@@ -182,6 +182,13 @@ class TestIsPlausiblePersonName:
 
     def test_no_uppercase_word_rejected(self):
         assert not _is_plausible_person_name("the meeting")
+        assert not _is_plausible_person_name("meeting")
+        assert not _is_plausible_person_name("sprint")
+        assert not _is_plausible_person_name("tomorrow")
+
+    def test_slack_ids_accepted(self):
+        assert _is_plausible_person_name("U0EXAMPLE1")
+        assert _is_plausible_person_name("W0EXAMPLE1")
 
 
 def test_extract_creates_entities_from_response(db_conn, db_path, tmp_path):

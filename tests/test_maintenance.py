@@ -493,11 +493,19 @@ def test_prune_handle_named_sender_with_claims_survives(db_conn):
     assert db_conn.execute("SELECT 1 FROM relationships WHERE id = 'r1'").fetchone() is not None
 
 
-def test_plausible_accepts_handles_and_slack_ids():
-    assert is_plausible_person_name("user_a") is True
-    assert is_plausible_person_name("alice_chen") is True
+def test_plausible_accepts_slack_ids():
     assert is_plausible_person_name("U0EXAMPLE1") is True
     assert is_plausible_person_name("U12ABC") is True
+    assert is_plausible_person_name("W0EXAMPLE1") is True
+
+
+def test_plausible_rejects_lowercase_words():
+    assert is_plausible_person_name("meeting") is False
+    assert is_plausible_person_name("sprint") is False
+    assert is_plausible_person_name("tomorrow") is False
+    assert is_plausible_person_name("the_team") is False
+    assert is_plausible_person_name("user_a") is False
+    assert is_plausible_person_name("alice_chen") is False
 
 
 # ── prune_slack_link_entities ──────────────────────────────────
