@@ -412,7 +412,6 @@ def test_prune_removes_bots(db_conn):
     upsert_entity(db_conn, _entity("e1", "Build Bot"))
     upsert_entity(db_conn, _entity("e2", "Alice Tran"))
     insert_claim(db_conn, _claim("c1", "e1"))
-    insert_observation(db_conn, _obs("o1", "e1"))
 
     result = prune_non_person_entities(db_conn)
 
@@ -420,9 +419,6 @@ def test_prune_removes_bots(db_conn):
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is None
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
     assert db_conn.execute("SELECT 1 FROM claims WHERE id = 'c1'").fetchone() is None
-
-    row = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
-    assert row["sender_entity_id"] is None
 
 
 def test_prune_dry_run(db_conn):
@@ -471,6 +467,37 @@ def test_prune_phrase_dry_run(db_conn):
 
     assert result["pruned"] == 1
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+
+
+def test_prune_skips_sender_entities(db_conn):
+    upsert_entity(db_conn, _entity("e1", "Build Bot"))
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = prune_non_person_entities(db_conn)
+
+    assert result["pruned"] == 0
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+
+
+def test_prune_handle_named_sender_with_claims_survives(db_conn):
+    _insert_entity_raw(db_conn, "e1", "user_a")
+    insert_observation(db_conn, _obs("o1", "e1"))
+    insert_claim(db_conn, _claim("c1", "e1"))
+    upsert_relationship(db_conn, _rel("r1", "e1", "e1"))
+
+    result = prune_non_person_entities(db_conn)
+
+    assert result["pruned"] == 0
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+    assert db_conn.execute("SELECT 1 FROM claims WHERE id = 'c1'").fetchone() is not None
+    assert db_conn.execute("SELECT 1 FROM relationships WHERE id = 'r1'").fetchone() is not None
+
+
+def test_plausible_accepts_handles_and_slack_ids():
+    assert is_plausible_person_name("user_a") is True
+    assert is_plausible_person_name("alice_chen") is True
+    assert is_plausible_person_name("U0EXAMPLE1") is True
+    assert is_plausible_person_name("U12ABC") is True
 
 
 # ── prune_slack_link_entities ──────────────────────────────────
@@ -717,12 +744,11 @@ def test_cli_entity_prune(db_path):
 
     runner = CliRunner()
     home = db_path.parent
-    result = runner.invoke(
-        app, ["entity", "prune", "--non-person", "--dry-run", "--home", str(home)]
-    )
+    result = runner.invoke(app, ["entity", "prune", "--non-person", "--home", str(home)])
     assert result.exit_code == 0
     assert "1 non-person" in result.output
     assert "Build Bot" in result.output
+    assert "re-run with --confirm" in result.output
 
 
 def test_cli_entity_prune_requires_filter(db_path):
