@@ -145,9 +145,11 @@ def test_upsert_entity_rejects_empty(db_conn):
 
 
 def test_upsert_entity_accepts_real_names(db_conn):
-    assert _upsert_entity(db_conn, "Quarterly Feedback Review") != ""
     assert _upsert_entity(db_conn, "Alice Smith") != ""
     assert _upsert_entity(db_conn, "Jean-Pierre") != ""
+    assert _upsert_entity(db_conn, "Carol Davis-Jones") != ""
+    assert _upsert_entity(db_conn, "Will Smith") != ""
+    assert _upsert_entity(db_conn, "May Chen") != ""
 
 
 class TestIsPlausiblePersonName:
@@ -430,6 +432,179 @@ class TestExtractBeliefsOwnerResolution:
 
         assert stats["skipped_unresolved"] >= 1
         assert stats["claims_extracted"] == 0
+
+
+class TestNonPersonPhrasesRejected:
+    """Regression tests for #346: non-person phrases must not create person entities."""
+
+    def test_is_plausible_rejects_sentences(self):
+        assert not _is_plausible_person_name("Offered to connect with Sam")
+        assert not _is_plausible_person_name("Has been working on deployment")
+
+    def test_is_plausible_rejects_role_descriptions(self):
+        assert not _is_plausible_person_name("TPM for security")
+        assert not _is_plausible_person_name("Manager of engineering")
+
+    def test_is_plausible_rejects_phrases_with_prepositions(self):
+        assert not _is_plausible_person_name("Lisbon office")
+        assert not _is_plausible_person_name("VP of Engineering")
+
+    def test_is_plausible_rejects_long_phrases(self):
+        assert not _is_plausible_person_name("Senior VP of Global Engineering Strategy")
+
+    def test_is_plausible_accepts_real_names(self):
+        assert _is_plausible_person_name("Alice Smith")
+        assert _is_plausible_person_name("Jean-Pierre")
+        assert _is_plausible_person_name("Bob")
+
+    def test_is_plausible_accepts_names_colliding_with_verbs(self):
+        assert _is_plausible_person_name("Will Smith")
+        assert _is_plausible_person_name("May Chen")
+        assert _is_plausible_person_name("Can Yilmaz")
+
+    def test_claim_subject_resolve_only(self, db_conn, db_path, tmp_path):
+        """Claim subjects that don't match an existing entity are skipped, not created."""
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id=None,
+            text="Project Lumen integration is on track",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Project Lumen", "aliases": [], "type": "project"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Project Lumen",
+                        "predicate": "status",
+                        "object": "on track",
+                        "confidence": 0.9,
+                    }
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["skipped_unresolved"] >= 1
+        assert stats["claims_extracted"] == 0
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        row = conn.execute("SELECT * FROM entities WHERE name = 'Project Lumen'").fetchone()
+        assert row is None
+        conn.close()
+
+    def test_only_person_type_entities_created(self, db_conn, db_path, tmp_path):
+        """Entities with type != 'person' in the LLM response must not be created."""
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id=None,
+            text="Alice works at Contoso on Project Lumen",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Alice", "aliases": [], "type": "person"},
+                    {"name": "Contoso", "aliases": [], "type": "organization"},
+                    {"name": "Project Lumen", "aliases": [], "type": "project"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Alice",
+                        "predicate": "org",
+                        "object": "Contoso",
+                        "confidence": 0.9,
+                    }
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 1
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        entities = conn.execute("SELECT name FROM entities").fetchall()
+        entity_names = {r["name"] for r in entities}
+        assert "Alice" in entity_names
+        assert "Contoso" not in entity_names
+        assert "Project Lumen" not in entity_names
+        conn.close()
+
+    def test_end_to_end_non_person_phrases(self, db_conn, db_path, tmp_path):
+        """End-to-end: phrases from the issue examples must not become person entities."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Sam Rivera"))
+        obs = Observation(
+            id="o1",
+            source="slack",
+            channel_id="C1",
+            thread_id=None,
+            timestamp=1.0,
+            sender_entity_id="e1",
+            text="Sam Rivera discussed the project integration and Canada expansion",
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Sam Rivera", "aliases": [], "type": "person"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Sam Rivera",
+                        "predicate": "topic",
+                        "object": "project integration",
+                        "confidence": 0.8,
+                    },
+                    {
+                        "subject": "Canada expansion team",
+                        "predicate": "status",
+                        "object": "growing",
+                        "confidence": 0.7,
+                    },
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stats["claims_extracted"] == 1
+        assert stats["skipped_unresolved"] >= 1
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        entities = conn.execute("SELECT name FROM entities").fetchall()
+        entity_names = {r["name"] for r in entities}
+        assert "Canada expansion team" not in entity_names
+        conn.close()
 
 
 class TestExtractionAliasesPollution:
