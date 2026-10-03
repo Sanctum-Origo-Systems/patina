@@ -490,7 +490,6 @@ def extract_beliefs(
                     )
                     stats["alias_collisions"] += collisions
 
-
             for claim in claims:
                 subject_name = claim.get("subject", "")
                 subject_id = _resolve_entity_id(
