@@ -284,15 +284,16 @@ def test_merge_preserves_earlier_first_seen(db_conn):
 # ── find_dedup_candidates ───────────────────────────────────
 
 
-def test_find_dedup_candidates_normalized_names(db_conn):
-    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
-    _insert_entity_raw(db_conn, "e2", "Rivera, Sam")
+def test_find_dedup_candidates_shared_alias(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
     insert_observation(db_conn, _obs("o1", "e1"))
 
     candidates = find_dedup_candidates(db_conn)
     assert len(candidates) == 1
     assert candidates[0]["keep"]["id"] == "e1"
     assert len(candidates[0]["drop"]) == 1
+    assert candidates[0]["match_identifier"] == "slack:u001"
 
 
 def test_find_dedup_candidates_no_duplicates(db_conn):
@@ -303,9 +304,18 @@ def test_find_dedup_candidates_no_duplicates(db_conn):
     assert len(candidates) == 0
 
 
+def test_find_dedup_candidates_rejects_unrelated_handles(db_conn):
+    """Two handles with no shared hard identifier must not be merged."""
+    _insert_entity_raw(db_conn, "e1", "dkim")
+    _insert_entity_raw(db_conn, "e2", "dkay")
+
+    candidates = find_dedup_candidates(db_conn)
+    assert len(candidates) == 0
+
+
 def test_find_dedup_candidates_email_vs_name(db_conn):
     _insert_entity_raw(db_conn, "e1", "sam.rivera@example.com")
-    _insert_entity_raw(db_conn, "e2", "Sam Rivera")
+    _insert_entity_raw(db_conn, "e2", "Sam Rivera", aliases=["sam.rivera@example.com"])
 
     candidates = find_dedup_candidates(db_conn)
     assert len(candidates) == 1
@@ -323,8 +333,8 @@ def test_find_dedup_candidates_skips_owner(db_conn):
 
 
 def test_dedup_entities_merges_group(db_conn):
-    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
-    _insert_entity_raw(db_conn, "e2", "Rivera, Sam")
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
     insert_observation(db_conn, _obs("o1", "e1"))
     insert_observation(db_conn, _obs("o2", "e2"))
     insert_observation(db_conn, _obs("o3", "e1"))
@@ -333,13 +343,14 @@ def test_dedup_entities_merges_group(db_conn):
 
     assert result["groups"] == 1
     assert result["entities_merged"] == 1
+    assert result["merges"][0]["match_identifier"] == "slack:u001"
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is None
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
 
 
 def test_dedup_entities_dry_run(db_conn):
-    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
-    _insert_entity_raw(db_conn, "e2", "Rivera, Sam")
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
 
     result = dedup_entities(db_conn, dry_run=True)
 
@@ -347,24 +358,43 @@ def test_dedup_entities_dry_run(db_conn):
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
 
 
+def test_dedup_canonical_prefers_full_name(db_conn):
+    """Full-name + handle merge keeps the full name as canonical."""
+    _insert_entity_raw(db_conn, "e1", "dkim", aliases=["slack:U007"])
+    _insert_entity_raw(db_conn, "e2", "Dana Brook", aliases=["slack:U007"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+    insert_observation(db_conn, _obs("o2", "e1"))
+    insert_observation(db_conn, _obs("o3", "e1"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 1
+    assert result["merges"][0]["keep_name"] == "Dana Brook"
+    assert result["merges"][0]["drop_name"] == "dkim"
+    keep = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'e2'").fetchone()
+    assert keep["name"] == "Dana Brook"
+    aliases = json.loads(keep["aliases"])
+    assert "dkim" in aliases
+
+
 def test_dedup_skips_alias_collision(db_conn):
-    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["sam.r"])
-    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["sam.r@example.com"])
-    _insert_entity_raw(db_conn, "e3", "Sam R", aliases=["Rivera, Sam"])
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["sam.rivera@work.com"])
     insert_observation(db_conn, _obs("o1", "e1"))
 
     result = dedup_entities(db_conn)
 
     assert len(result["skipped"]) >= 1
     skipped_drops = {s["drop_name"] for s in result["skipped"]}
-    assert "Rivera, Sam" in skipped_drops or "Sam R" in skipped_drops
+    assert "Rivera, Sam" in skipped_drops
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e3'").fetchone() is not None
 
 
 def test_dedup_reports_skipped_in_result(db_conn):
-    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
-    _insert_entity_raw(db_conn, "e2", "Rivera, Sam")
-    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["Rivera, Sam"])
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["sam.rivera@work.com"])
     insert_observation(db_conn, _obs("o1", "e1"))
 
     result = dedup_entities(db_conn, dry_run=True)
@@ -612,8 +642,8 @@ def test_cli_entity_dedup(db_path):
     from patina.store import connect
 
     conn = connect(db_path)
-    _insert_entity_raw(conn, "e1aabbcc", "Sam Rivera")
-    _insert_entity_raw(conn, "e2ddeeff", "Rivera, Sam")
+    _insert_entity_raw(conn, "e1aabbcc", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(conn, "e2ddeeff", "Rivera, Sam", aliases=["slack:U001"])
     conn.close()
 
     runner = CliRunner()
@@ -622,6 +652,7 @@ def test_cli_entity_dedup(db_path):
     assert result.exit_code == 0
     assert "1 group" in result.output
     assert "re-run with --confirm to apply" in result.output
+    assert "(match: slack:u001)" in result.output
 
     conn = connect(db_path)
     assert conn.execute("SELECT 1 FROM entities WHERE id = 'e2ddeeff'").fetchone() is not None
@@ -635,8 +666,8 @@ def test_cli_entity_dedup_confirm(db_path):
     from patina.store import connect
 
     conn = connect(db_path)
-    _insert_entity_raw(conn, "e1aabbcc", "Sam Rivera")
-    _insert_entity_raw(conn, "e2ddeeff", "Rivera, Sam")
+    _insert_entity_raw(conn, "e1aabbcc", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(conn, "e2ddeeff", "Rivera, Sam", aliases=["slack:U001"])
     insert_observation(conn, _obs("o1", "e1aabbcc"))
     conn.close()
 
@@ -659,9 +690,9 @@ def test_cli_entity_dedup_shows_skipped(db_path):
     from patina.store import connect
 
     conn = connect(db_path)
-    _insert_entity_raw(conn, "e1aabbcc", "Sam Rivera")
-    _insert_entity_raw(conn, "e2ddeeff", "Rivera, Sam")
-    _insert_entity_raw(conn, "e3aabbcc", "Quinn Farrow", aliases=["Rivera, Sam"])
+    _insert_entity_raw(conn, "e1aabbcc", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(conn, "e2ddeeff", "Rivera, Sam", aliases=["slack:U001"])
+    _insert_entity_raw(conn, "e3aabbcc", "Quinn Farrow", aliases=["sam.rivera@work.com"])
     insert_observation(conn, _obs("o1", "e1aabbcc"))
     conn.close()
 
@@ -852,8 +883,8 @@ def test_prune_dry_run_reports_dependent_counts(db_conn):
 
 
 def test_dedup_rewires_claims_and_relationships(db_conn):
-    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
-    _insert_entity_raw(db_conn, "e2", "Rivera, Sam")
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
     upsert_entity(db_conn, _entity("e3", "Bob Marsh"))
     insert_observation(db_conn, _obs("o1", "e1"))
     insert_claim(db_conn, _claim("c1", "e2"))

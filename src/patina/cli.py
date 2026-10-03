@@ -1069,7 +1069,9 @@ def entity_dedup_cmd(
         mode = "Dedup" if confirm else "Dry run"
         typer.echo(f"{mode}: {result['groups']} group(s), {result['entities_merged']} merge(s)")
         for merge in result["merges"]:
-            typer.echo(f"  '{merge['drop_name']}' -> '{merge['keep_name']}'")
+            match = merge.get("match_identifier", "")
+            suffix = f" (match: {match})" if match else ""
+            typer.echo(f"  '{merge['drop_name']}' -> '{merge['keep_name']}'{suffix}")
         for skip in result.get("skipped", []):
             drop, keep = skip["drop_name"], skip["keep_name"]
             typer.echo(f"  SKIP '{drop}' -> '{keep}' ({skip['reason']})")
