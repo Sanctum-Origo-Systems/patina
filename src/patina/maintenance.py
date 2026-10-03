@@ -129,18 +129,13 @@ _NON_NAME_NOUNS = frozenset(
 )
 
 
-_SLACK_ID_RE = re.compile(r"^U[A-Z0-9]{4,}$")
-_HANDLE_RE = re.compile(r"^[a-z][a-z0-9_]{1,}$")
-
-
-def _is_handle_or_slack_id(name: str) -> bool:
-    return bool(_SLACK_ID_RE.match(name) or _HANDLE_RE.match(name))
+_SLACK_ID_RE = re.compile(r"^[UW][A-Z0-9]{4,}$")
 
 
 def is_plausible_person_name(name: str) -> bool:
     if not name or len(name) < 3 or len(name) > 50:
         return False
-    if _is_handle_or_slack_id(name):
+    if _SLACK_ID_RE.match(name):
         return True
     if any(c in name for c in "()[]/@:."):
         return False
