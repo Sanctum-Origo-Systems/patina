@@ -51,6 +51,7 @@ triage_labels = [
     "in-review",
     "needs-human",
     "relay",
+    "review-queue",
 ]
 # Graduated autonomy — repo-level promotion (not enough per-module volume yet)
 auto_merge_promotion_level = "repo"
