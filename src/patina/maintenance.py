@@ -412,6 +412,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
             group,
             key=lambda e: (
                 -int(is_plausible_person_name(e["name"])),
+                -int(" " in e["name"]),
                 -obs_counts[e["id"]],
             ),
         )
