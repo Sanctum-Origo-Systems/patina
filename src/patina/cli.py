@@ -1062,7 +1062,9 @@ def entity_dedup_cmd(
 
         result = dedup_entities(conn, dry_run=not confirm)
 
-        if result["groups"] == 0:
+        needs_review = result.get("needs_review", [])
+
+        if result["groups"] == 0 and not needs_review:
             typer.echo("No duplicate entities found.")
             return
 
@@ -1075,6 +1077,8 @@ def entity_dedup_cmd(
         for skip in result.get("skipped", []):
             drop, keep = skip["drop_name"], skip["keep_name"]
             typer.echo(f"  SKIP '{drop}' -> '{keep}' ({skip['reason']})")
+        for review in needs_review:
+            typer.echo(f"  REVIEW '{review['name']}' (needs review: multiple Slack IDs)")
         if not confirm and result["entities_merged"] > 0:
             n = result["entities_merged"]
             typer.echo(f"{n} merges proposed — re-run with --confirm to apply")

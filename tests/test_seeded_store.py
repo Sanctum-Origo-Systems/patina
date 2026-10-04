@@ -75,6 +75,50 @@ def test_slack_link_markup_334(seeded_store):
     assert "|" in row["name"]
 
 
+def test_contaminated_bare_slack_id_372(seeded_store):
+    """Shape 9: entity with slack:-prefixed ID and a different bare Slack ID."""
+    a = seeded_store.execute("SELECT * FROM entities WHERE id = 'contaminated-372-a'").fetchone()
+    b = seeded_store.execute("SELECT * FROM entities WHERE id = 'contaminated-372-b'").fetchone()
+    assert a is not None and b is not None
+
+    a_aliases = json.loads(a["aliases"])
+    assert "slack:U0SOREN" in a_aliases, "should have a prefixed Slack ID"
+    assert "U0LIANA" in a_aliases, "should have a bare Slack ID from another entity"
+    assert b["name"] == "U0LIANA"
+
+
+def test_contaminated_entity_excluded_from_dedup_372(seeded_store):
+    """Contaminated entity is excluded from merge pool and flagged as needs review."""
+    from patina.maintenance import find_dedup_candidates
+
+    result = find_dedup_candidates(seeded_store)
+
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "Soren Voss" in review_names
+
+    for c in result["candidates"]:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        assert "contaminated-372-a" not in all_ids
+
+
+def test_correct_merge_keeps_full_name_359(seeded_store):
+    """Dedup of the correct-merge triple keeps the full name as canonical."""
+    from patina.maintenance import find_dedup_candidates
+
+    result = find_dedup_candidates(seeded_store)
+    candidates = result["candidates"]
+
+    merge_group = None
+    for c in candidates:
+        ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        if "merge-name-359" in ids:
+            merge_group = c
+            break
+
+    assert merge_group is not None, "Should find a merge group for the triple"
+    assert merge_group["keep"]["name"] == "Dana Kowalski"
+
+
 def test_dangling_claims_333(seeded_store):
     valid = seeded_store.execute("SELECT * FROM claims WHERE id = 'claim-valid-333'").fetchone()
     dangling = seeded_store.execute(
