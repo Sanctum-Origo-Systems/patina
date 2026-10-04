@@ -57,9 +57,12 @@ patina reject <id>                 # reject (freezes advancement, stores anti-pa
 # Entity & data maintenance
 patina entity list                 # list all entities
 patina entity merge <drop> <keep>  # merge entities, rewire references
-patina entity dedup                # deduplicate by normalized name
-patina entity prune                # prune non-person entities
-patina owner merge                 # fold duplicate self-entities into canonical owner
+patina entity dedup                # deduplicate (hard identifiers only, --confirm to execute)
+patina entity dedup --dry-run      # preview proposed merges with match reasons
+patina entity prune                # prune non-person entities (protects senders)
+patina entity prune-links          # remove Slack link markup entities
+patina owner merge                 # fold duplicate self-entities (--dry-run available)
+patina doctor                      # includes dangling reference integrity check
 
 # Live adapters
 patina connect slack --token "xoxb-..."
