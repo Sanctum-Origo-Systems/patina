@@ -129,7 +129,7 @@ _NON_NAME_NOUNS = frozenset(
 )
 
 
-_SLACK_ID_RE = re.compile(r"^[UW][A-Z0-9]{4,}$")
+_SLACK_ID_RE = re.compile(r"^[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}$")
 _SLACK_ID_EXTRACT_RE = re.compile(r"^(?:slack:)?([UW][A-Z0-9]{4,})$", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"^[a-z][a-z0-9_]{1,}$")
 
