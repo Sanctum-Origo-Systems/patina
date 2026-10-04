@@ -1,3 +1,23 @@
+## v0.21.0 (2026-10-04)
+
+### Dedup Safety & Correctness
+- #372: Fix: dedup ignores contaminated bare Slack IDs and uses name-type ranking for canonical direction
+- #373: Fix: restore correct handle-to-full-name merges lost by is_foreign_handle
+- #364: Fix: dedup merges different people through contaminated handle aliases
+- #359: Fix: dedup canonical direction prefers full name over handle
+
+### Entity Quality
+- #363: Fix: is_plausible_person_name split — handle check removed from shared function
+- #374: Fix: tighten Slack ID regex to reject uppercase words like URGENT
+- #358: Fix: entity prune --non-person protects handle-named senders
+
+### Testing Infrastructure
+- #366: Feat: seeded in-memory store fixture covering all known edge-case shapes
+- #367: Feat: invariants test module and process-rule documentation
+
+### Config
+- #368: Chore: add review-queue to triage_labels exclusion list
+
 ## v0.20.0 (2026-10-03)
 
 ### Entity Quality & Extraction Fixes

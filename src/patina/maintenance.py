@@ -129,7 +129,7 @@ _NON_NAME_NOUNS = frozenset(
 )
 
 
-_SLACK_ID_RE = re.compile(r"^[UW][A-Z0-9]{4,}$")
+_SLACK_ID_RE = re.compile(r"^[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}$")
 _SLACK_ID_EXTRACT_RE = re.compile(r"^(?:slack:)?([UW][A-Z0-9]{4,})$", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"^[a-z][a-z0-9_]{1,}$")
 
@@ -167,6 +167,17 @@ def is_plausible_person_name(name: str) -> bool:
     if lower_words & _NON_NAME_NOUNS:
         return False
     return True
+
+
+def _name_type_rank(name: str) -> int:
+    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3)."""
+    if " " in name and is_plausible_person_name(name):
+        return 0
+    if "@" in name:
+        return 2
+    if _SLACK_ID_RE.match(name):
+        return 3
+    return 1
 
 
 def is_non_person(name: str) -> bool:
@@ -349,7 +360,7 @@ def merge_entities(
     return result
 
 
-def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
+def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
     rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
 
     entities = []
@@ -364,7 +375,56 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
         )
 
     if not entities:
-        return []
+        return {"candidates": [], "needs_review": []}
+
+    needs_review = []
+    clean = []
+    for ent in entities:
+        all_tokens = [ent["name"]] + ent["aliases"]
+        if len(_collect_slack_ids(all_tokens)) > 1:
+            needs_review.append(ent)
+        else:
+            clean.append(ent)
+    entities = clean
+
+    if not entities:
+        return {"candidates": [], "needs_review": needs_review}
+
+    sender_ids = {
+        r["sender_entity_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT sender_entity_id FROM observations WHERE sender_entity_id IS NOT NULL"
+        ).fetchall()
+    }
+
+    name_by_handle: dict[str, list[dict]] = {}
+    for ent in entities:
+        key = ent["name"].strip().lower()
+        if _HANDLE_RE.match(key) and not _SLACK_ID_RE.match(key.upper()):
+            name_by_handle.setdefault(key, []).append(ent)
+
+    alias_holders_by_handle: dict[str, list[dict]] = {}
+    for ent in entities:
+        if _name_type_rank(ent["name"]) != 0:
+            continue
+        for alias in ent["aliases"]:
+            akey = alias.strip().lower()
+            if _HANDLE_RE.match(akey) and not _SLACK_ID_RE.match(akey.upper()):
+                alias_holders_by_handle.setdefault(akey, []).append(ent)
+
+    ambiguous_handle_ids: set[str] = set()
+    for handle_key, holders in alias_holders_by_handle.items():
+        if len(holders) > 1:
+            for named_ent in name_by_handle.get(handle_key, []):
+                if named_ent["id"] not in ambiguous_handle_ids:
+                    ambiguous_handle_ids.add(named_ent["id"])
+                    needs_review.append(named_ent)
+
+    if ambiguous_handle_ids:
+        entities = [e for e in entities if e["id"] not in ambiguous_handle_ids]
+
+    if not entities:
+        return {"candidates": [], "needs_review": needs_review}
 
     entity_hard_ids = []
     for ent in entities:
@@ -389,7 +449,14 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
                     and not _SLACK_ID_RE.match(key.upper())
                 )
                 if is_foreign_handle:
-                    continue
+                    named = [
+                        n
+                        for n in name_by_handle.get(key, [])
+                        if n["id"] not in ambiguous_handle_ids
+                    ]
+                    holders = alias_holders_by_handle.get(key, [])
+                    if not (len(named) == 1 and named[0]["id"] in sender_ids and len(holders) == 1):
+                        continue
                 ident_map.setdefault(key, []).append(i)
 
     parent = list(range(len(entities)))
@@ -449,8 +516,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
         sorted_group = sorted(
             group,
             key=lambda e: (
-                -int(is_plausible_person_name(e["name"])),
-                -int(" " in e["name"]),
+                _name_type_rank(e["name"]),
                 -obs_counts[e["id"]],
             ),
         )
@@ -471,7 +537,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
             }
         )
 
-    return candidates
+    return {"candidates": candidates, "needs_review": needs_review}
 
 
 def _merge_aliases_collide(
@@ -510,13 +576,15 @@ def dedup_entities(
     *,
     dry_run: bool = False,
 ) -> dict:
-    candidates = find_dedup_candidates(conn)
+    dedup_result = find_dedup_candidates(conn)
+    candidates = dedup_result["candidates"]
 
     result = {
         "groups": len(candidates),
         "entities_merged": 0,
         "merges": [],
         "skipped": [],
+        "needs_review": dedup_result["needs_review"],
     }
 
     for group in candidates:

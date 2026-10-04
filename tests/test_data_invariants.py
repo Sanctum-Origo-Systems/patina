@@ -46,6 +46,7 @@ def invariant_store(seeded_store):
       #332  — owner duplicate under Slack ID (U_OWNER332)
       #334  — Slack link markup entity (pipe character)
       #333  — dangling claim (nonexistent subject)
+      #372  — contaminated bare Slack ID alias (U0SOREN + U0LIANA)
     """
     conn = seeded_store
 
