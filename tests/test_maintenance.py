@@ -408,6 +408,35 @@ def test_find_dedup_canonical_full_name_over_handle_and_id(db_conn):
     assert candidates[0]["keep"]["name"] == "Aria Johansson"
 
 
+def test_find_dedup_handle_alias_merges_sender(db_conn):
+    """Full-name entity with handle alias merges with sender handle entity."""
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook"])
+    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DDD"])
+    insert_observation(db_conn, _obs("o1", "e2"))
+
+    result = find_dedup_candidates(db_conn)
+    candidates = result["candidates"]
+    assert len(candidates) == 1
+    assert candidates[0]["keep"]["name"] == "Dana Brook"
+
+
+def test_find_dedup_ambiguous_handle_alias_needs_review(db_conn):
+    """Handle held as alias by two full-name entities goes to needs review."""
+    _insert_entity_raw(db_conn, "e1", "Alice Tran", aliases=["jfox"])
+    _insert_entity_raw(db_conn, "e2", "Beth Marsh", aliases=["jfox"])
+    _insert_entity_raw(db_conn, "e3", "jfox")
+    insert_observation(db_conn, _obs("o1", "e3"))
+
+    result = find_dedup_candidates(db_conn)
+
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "jfox" in review_names
+
+    for c in result["candidates"]:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        assert "e3" not in all_ids
+
+
 # ── dedup_entities ───────────────────────────────────────────
 
 
@@ -466,6 +495,23 @@ def test_dedup_canonical_prefers_full_name(db_conn):
     assert keep["name"] == "Dana Brook"
     aliases = json.loads(keep["aliases"])
     assert "dkim" in aliases
+
+
+def test_dedup_handle_alias_merge_keeps_full_name(db_conn):
+    """Handle alias on full-name entity merges with sender, keeping full name."""
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook"])
+    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DDD"])
+    insert_observation(db_conn, _obs("o1", "e2"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 1
+    assert result["merges"][0]["keep_name"] == "Dana Brook"
+    assert result["merges"][0]["drop_name"] == "dbrook"
+    keep = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'e1'").fetchone()
+    assert keep["name"] == "Dana Brook"
+    aliases = json.loads(keep["aliases"])
+    assert "dbrook" in aliases
 
 
 def test_dedup_skips_alias_collision(db_conn):

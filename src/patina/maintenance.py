@@ -390,6 +390,42 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
     if not entities:
         return {"candidates": [], "needs_review": needs_review}
 
+    sender_ids = {
+        r["sender_entity_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT sender_entity_id FROM observations WHERE sender_entity_id IS NOT NULL"
+        ).fetchall()
+    }
+
+    name_by_handle: dict[str, list[dict]] = {}
+    for ent in entities:
+        key = ent["name"].strip().lower()
+        if _HANDLE_RE.match(key) and not _SLACK_ID_RE.match(key.upper()):
+            name_by_handle.setdefault(key, []).append(ent)
+
+    alias_holders_by_handle: dict[str, list[dict]] = {}
+    for ent in entities:
+        if _name_type_rank(ent["name"]) != 0:
+            continue
+        for alias in ent["aliases"]:
+            akey = alias.strip().lower()
+            if _HANDLE_RE.match(akey) and not _SLACK_ID_RE.match(akey.upper()):
+                alias_holders_by_handle.setdefault(akey, []).append(ent)
+
+    ambiguous_handle_ids: set[str] = set()
+    for handle_key, holders in alias_holders_by_handle.items():
+        if len(holders) > 1:
+            for named_ent in name_by_handle.get(handle_key, []):
+                if named_ent["id"] not in ambiguous_handle_ids:
+                    ambiguous_handle_ids.add(named_ent["id"])
+                    needs_review.append(named_ent)
+
+    if ambiguous_handle_ids:
+        entities = [e for e in entities if e["id"] not in ambiguous_handle_ids]
+
+    if not entities:
+        return {"candidates": [], "needs_review": needs_review}
+
     entity_hard_ids = []
     for ent in entities:
         all_tokens = [ent["name"]] + ent["aliases"]
@@ -413,7 +449,14 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                     and not _SLACK_ID_RE.match(key.upper())
                 )
                 if is_foreign_handle:
-                    continue
+                    named = [
+                        n
+                        for n in name_by_handle.get(key, [])
+                        if n["id"] not in ambiguous_handle_ids
+                    ]
+                    holders = alias_holders_by_handle.get(key, [])
+                    if not (len(named) == 1 and named[0]["id"] in sender_ids and len(holders) == 1):
+                        continue
                 ident_map.setdefault(key, []).append(i)
 
     parent = list(range(len(entities)))
