@@ -51,7 +51,7 @@ def _seed_claim(conn, cid, subject_id, predicate="role", obj="engineer"):
 
 @pytest.fixture
 def seeded_store(tmp_path):
-    """In-memory-like store seeded with 8 edge-case entity shapes.
+    """In-memory-like store seeded with 9 edge-case entity shapes.
 
     Each shape is annotated with the issue number it covers.
     Returns a sqlite3.Connection with the full schema initialized.
@@ -142,6 +142,22 @@ def seeded_store(tmp_path):
         "link-markup-334",
         "reference",
         "https://github.com/org/repo|repo link",
+    )
+
+    # --- Shape 9: contaminated bare Slack ID alias (#372) ---
+    _seed_entity(
+        conn,
+        "contaminated-372-a",
+        "person",
+        "Soren Voss",
+        aliases=["slack:U0SOREN", "U0LIANA"],
+    )
+    _seed_entity(
+        conn,
+        "contaminated-372-b",
+        "person",
+        "U0LIANA",
+        aliases=["U0LIANA"],
     )
 
     # --- Shape 8: dangling claims (#333) ---

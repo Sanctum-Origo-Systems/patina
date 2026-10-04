@@ -169,6 +169,17 @@ def is_plausible_person_name(name: str) -> bool:
     return True
 
 
+def _name_type_rank(name: str) -> int:
+    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3)."""
+    if " " in name and is_plausible_person_name(name):
+        return 0
+    if "@" in name:
+        return 2
+    if _SLACK_ID_RE.match(name):
+        return 3
+    return 1
+
+
 def is_non_person(name: str) -> bool:
     if not name or len(name) < 2:
         return False
@@ -349,7 +360,7 @@ def merge_entities(
     return result
 
 
-def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
+def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
     rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
 
     entities = []
@@ -364,7 +375,20 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
         )
 
     if not entities:
-        return []
+        return {"candidates": [], "needs_review": []}
+
+    needs_review = []
+    clean = []
+    for ent in entities:
+        all_tokens = [ent["name"]] + ent["aliases"]
+        if len(_collect_slack_ids(all_tokens)) > 1:
+            needs_review.append(ent)
+        else:
+            clean.append(ent)
+    entities = clean
+
+    if not entities:
+        return {"candidates": [], "needs_review": needs_review}
 
     entity_hard_ids = []
     for ent in entities:
@@ -449,8 +473,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
         sorted_group = sorted(
             group,
             key=lambda e: (
-                -int(is_plausible_person_name(e["name"])),
-                -int(" " in e["name"]),
+                _name_type_rank(e["name"]),
                 -obs_counts[e["id"]],
             ),
         )
@@ -471,7 +494,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
             }
         )
 
-    return candidates
+    return {"candidates": candidates, "needs_review": needs_review}
 
 
 def _merge_aliases_collide(
@@ -510,13 +533,15 @@ def dedup_entities(
     *,
     dry_run: bool = False,
 ) -> dict:
-    candidates = find_dedup_candidates(conn)
+    dedup_result = find_dedup_candidates(conn)
+    candidates = dedup_result["candidates"]
 
     result = {
         "groups": len(candidates),
         "entities_merged": 0,
         "merges": [],
         "skipped": [],
+        "needs_review": dedup_result["needs_review"],
     }
 
     for group in candidates:
