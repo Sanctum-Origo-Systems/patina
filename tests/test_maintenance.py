@@ -289,7 +289,7 @@ def test_find_dedup_candidates_shared_alias(db_conn):
     _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
     insert_observation(db_conn, _obs("o1", "e1"))
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     assert len(candidates) == 1
     assert candidates[0]["keep"]["id"] == "e1"
     assert len(candidates[0]["drop"]) == 1
@@ -300,7 +300,7 @@ def test_find_dedup_candidates_no_duplicates(db_conn):
     upsert_entity(db_conn, _entity("e1", "Alice Tran"))
     upsert_entity(db_conn, _entity("e2", "Bob Marsh"))
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     assert len(candidates) == 0
 
 
@@ -309,7 +309,7 @@ def test_find_dedup_candidates_rejects_unrelated_handles(db_conn):
     _insert_entity_raw(db_conn, "e1", "dkim")
     _insert_entity_raw(db_conn, "e2", "dkay")
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     assert len(candidates) == 0
 
 
@@ -317,7 +317,7 @@ def test_find_dedup_candidates_email_vs_name(db_conn):
     _insert_entity_raw(db_conn, "e1", "sam.rivera@example.com")
     _insert_entity_raw(db_conn, "e2", "Sam Rivera", aliases=["sam.rivera@example.com"])
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     assert len(candidates) == 1
 
 
@@ -325,7 +325,7 @@ def test_find_dedup_candidates_skips_owner(db_conn):
     _insert_entity_raw(db_conn, "e1", "Sam Rivera", is_owner=1)
     _insert_entity_raw(db_conn, "e2", "Rivera, Sam")
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     assert len(candidates) == 0
 
 
@@ -334,7 +334,7 @@ def test_find_dedup_conflicting_slack_ids_rejected(db_conn):
     _insert_entity_raw(db_conn, "e1", "user_a", aliases=["U0AAAA"])
     _insert_entity_raw(db_conn, "e2", "user_b", aliases=["U0BBBB", "user_a"])
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     assert len(candidates) == 0
 
 
@@ -343,7 +343,7 @@ def test_find_dedup_handle_alias_alone_insufficient(db_conn):
     _insert_entity_raw(db_conn, "e1", "dkim")
     _insert_entity_raw(db_conn, "e2", "Dana Brook", aliases=["dkim"])
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     assert len(candidates) == 0
 
 
@@ -352,7 +352,7 @@ def test_find_dedup_conflicting_emails_rejected(db_conn):
     _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["sam@alpha.com"])
     _insert_entity_raw(db_conn, "e2", "Sam Rivera", aliases=["sam@beta.com"])
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     assert len(candidates) == 0
 
 
@@ -362,12 +362,37 @@ def test_find_dedup_transitive_conflict_blocked(db_conn):
     _insert_entity_raw(db_conn, "e2", "Sam Rivera")
     _insert_entity_raw(db_conn, "e3", "Sam Rivera", aliases=["U0CCCC"])
 
-    candidates = find_dedup_candidates(db_conn)
+    candidates, _ = find_dedup_candidates(db_conn)
     for c in candidates:
         ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
         assert not ("e1" in ids and "e3" in ids), (
             "Conflicting Slack IDs should not be in same group"
         )
+
+
+def test_find_dedup_handle_alias_merges_when_safe(db_conn):
+    """Handle alias on full-name entity merges with sender handle entity (#373)."""
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook"])
+    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DDD"])
+    insert_observation(db_conn, _obs("o1", "e2"))
+
+    candidates, _ = find_dedup_candidates(db_conn)
+    assert len(candidates) == 1
+    assert candidates[0]["keep"]["name"] == "Dana Brook"
+
+
+def test_find_dedup_ambiguous_handle_alias_needs_review(db_conn):
+    """Handle held as alias by two full-name entities goes to needs_review (#373)."""
+    _insert_entity_raw(db_conn, "e1", "Tessa Moreno", aliases=["tmoreno"])
+    _insert_entity_raw(db_conn, "e2", "Tara Montoya", aliases=["tmoreno"])
+    _insert_entity_raw(db_conn, "e3", "tmoreno")
+    insert_observation(db_conn, _obs("o1", "e3"))
+
+    candidates, needs_review = find_dedup_candidates(db_conn)
+    assert len(candidates) == 0
+    assert len(needs_review) == 1
+    assert needs_review[0]["handle"] == "tmoreno"
+    assert needs_review[0]["reason"] == "ambiguous handle alias"
 
 
 # ── dedup_entities ───────────────────────────────────────────
@@ -444,6 +469,38 @@ def test_dedup_reports_skipped_in_result(db_conn):
     assert len(result["skipped"]) == 1
     assert result["skipped"][0]["reason"] == "alias collision"
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
+
+
+def test_dedup_handle_alias_merge_keeps_full_name(db_conn):
+    """Dana Brook {alias dbrook} + dbrook {sender} merges, keeping full name (#373)."""
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook"])
+    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DDD"])
+    insert_observation(db_conn, _obs("o1", "e2"))
+
+    result = dedup_entities(db_conn)
+    assert result["entities_merged"] == 1
+    assert result["merges"][0]["keep_name"] == "Dana Brook"
+    assert result["merges"][0]["drop_name"] == "dbrook"
+
+    keep = db_conn.execute("SELECT name FROM entities WHERE id = 'e1'").fetchone()
+    assert keep["name"] == "Dana Brook"
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is None
+
+
+def test_dedup_ambiguous_handle_alias_in_needs_review(db_conn):
+    """Ambiguous handle alias appears in needs_review, not merged (#373)."""
+    _insert_entity_raw(db_conn, "e1", "Tessa Moreno", aliases=["tmoreno"])
+    _insert_entity_raw(db_conn, "e2", "Tara Montoya", aliases=["tmoreno"])
+    _insert_entity_raw(db_conn, "e3", "tmoreno")
+    insert_observation(db_conn, _obs("o1", "e3"))
+
+    result = dedup_entities(db_conn)
+    assert result["entities_merged"] == 0
+    assert len(result["needs_review"]) == 1
+    assert result["needs_review"][0]["reason"] == "ambiguous handle alias"
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e3'").fetchone() is not None
 
 
 # ── prune_non_person_entities ────────────────────────────────

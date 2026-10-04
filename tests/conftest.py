@@ -144,6 +144,38 @@ def seeded_store(tmp_path):
         "https://github.com/org/repo|repo link",
     )
 
+    # --- Shape 9: full-name holds handle as alias, no ID (#373) ---
+    _seed_entity(
+        conn,
+        "handle-alias-373-name",
+        "person",
+        "Dana Brook",
+        aliases=["dbrook"],
+    )
+    _seed_entity(
+        conn,
+        "handle-alias-373-handle",
+        "person",
+        "dbrook",
+        aliases=["slack:U0DDD"],
+    )
+
+    # --- Shape 10: bare (non-slack:-prefixed) contaminated Slack ID (#373) ---
+    _seed_entity(
+        conn,
+        "bare-id-373-a",
+        "person",
+        "Noa Fischer",
+        aliases=["U400AA"],
+    )
+    _seed_entity(
+        conn,
+        "bare-id-373-b",
+        "person",
+        "Noa Fischer",
+        aliases=["U500AA"],
+    )
+
     # --- Shape 8: dangling claims (#333) ---
     _seed_entity(conn, "valid-entity-333", "person", "Yuki Arai")
     _seed_claim(conn, "claim-valid-333", "valid-entity-333")

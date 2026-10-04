@@ -1075,6 +1075,9 @@ def entity_dedup_cmd(
         for skip in result.get("skipped", []):
             drop, keep = skip["drop_name"], skip["keep_name"]
             typer.echo(f"  SKIP '{drop}' -> '{keep}' ({skip['reason']})")
+        for nr in result.get("needs_review", []):
+            names = ", ".join(c["name"] for c in nr["claimants"])
+            typer.echo(f"  REVIEW '{nr['handle']}' — {nr['reason']}: {names}")
         if not confirm and result["entities_merged"] > 0:
             n = result["entities_merged"]
             typer.echo(f"{n} merges proposed — re-run with --confirm to apply")

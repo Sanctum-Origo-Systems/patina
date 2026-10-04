@@ -46,6 +46,8 @@ def invariant_store(seeded_store):
       #332  — owner duplicate under Slack ID (U_OWNER332)
       #334  — Slack link markup entity (pipe character)
       #333  — dangling claim (nonexistent subject)
+      #373  — full-name holds handle as alias, no ID (Dana Brook / dbrook)
+      #373  — bare contaminated Slack ID (U400AA / U500AA)
     """
     conn = seeded_store
 
@@ -54,6 +56,7 @@ def invariant_store(seeded_store):
     _seed_observation(conn, "obs-handle-359", "merge-handle-359")  # #359
     _seed_observation(conn, "obs-email-359", "merge-email-359")  # #359
     _seed_observation(conn, "obs-owner-dup", "owner-dup-332")  # #332
+    _seed_observation(conn, "obs-handle-alias-373", "handle-alias-373-handle")  # #373
 
     # Clean pre-existing dangling refs so invariant checks start clean.  #333
     delete_dangling_references(conn)
@@ -113,6 +116,24 @@ def _assert_invariants(conn, *, after, pre_ids=None, check_merge_triple=False):
         )
     else:
         assert len(triple) >= 1, f"after {after}: merge triple entities were all deleted"
+
+    # 7) Handle-alias pair merges to one entity (after dedup/merge) (#373)
+    handle_alias = conn.execute(
+        "SELECT id FROM entities WHERE id IN ('handle-alias-373-name', 'handle-alias-373-handle')"
+    ).fetchall()
+    if check_merge_triple:
+        assert len(handle_alias) == 1, (
+            f"after {after}: handle-alias pair should be 1 entity, got {len(handle_alias)}"
+        )
+    else:
+        assert len(handle_alias) >= 1, f"after {after}: handle-alias entities were all deleted"
+
+    # 8) Bare Slack ID conflict: both entities survive (#373)
+    bare_a = conn.execute("SELECT 1 FROM entities WHERE id = 'bare-id-373-a'").fetchone()
+    bare_b = conn.execute("SELECT 1 FROM entities WHERE id = 'bare-id-373-b'").fetchone()
+    assert bare_a is not None and bare_b is not None, (
+        f"after {after}: bare-Slack-ID-conflicting entities were incorrectly merged"
+    )
 
 
 def test_invariants_pipeline(invariant_store, tmp_path, monkeypatch):

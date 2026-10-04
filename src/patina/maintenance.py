@@ -349,7 +349,9 @@ def merge_entities(
     return result
 
 
-def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
+def find_dedup_candidates(
+    conn: sqlite3.Connection,
+) -> tuple[list[dict], list[dict]]:
     rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
 
     entities = []
@@ -364,7 +366,29 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
         )
 
     if not entities:
-        return []
+        return [], []
+
+    sender_ids = {
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT sender_entity_id FROM observations WHERE sender_entity_id IS NOT NULL"
+        ).fetchall()
+    }
+
+    handle_primary: dict[str, list[int]] = {}
+    handle_alias_holders: dict[str, list[int]] = {}
+    for i, ent in enumerate(entities):
+        name_key = ent["name"].strip().lower()
+        if _HANDLE_RE.match(name_key) and not _SLACK_ID_RE.match(name_key.upper()):
+            handle_primary.setdefault(name_key, []).append(i)
+        for alias in ent["aliases"]:
+            akey = alias.strip().lower()
+            if (
+                _HANDLE_RE.match(akey)
+                and not _SLACK_ID_RE.match(akey.upper())
+                and is_plausible_person_name(ent["name"])
+            ):
+                handle_alias_holders.setdefault(akey, []).append(i)
 
     entity_hard_ids = []
     for ent in entities:
@@ -389,7 +413,15 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
                     and not _SLACK_ID_RE.match(key.upper())
                 )
                 if is_foreign_handle:
-                    continue
+                    primaries = handle_primary.get(key, [])
+                    holders = handle_alias_holders.get(key, [])
+                    safe = (
+                        len(primaries) == 1
+                        and entities[primaries[0]]["id"] in sender_ids
+                        and len(holders) == 1
+                    )
+                    if not safe:
+                        continue
                 ident_map.setdefault(key, []).append(i)
 
     parent = list(range(len(entities)))
@@ -471,7 +503,26 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> list[dict]:
             }
         )
 
-    return candidates
+    needs_review: list[dict] = []
+    for handle_key, holders in handle_alias_holders.items():
+        if len(holders) < 2:
+            continue
+        primaries = handle_primary.get(handle_key, [])
+        if len(primaries) != 1:
+            continue
+        primary_idx = primaries[0]
+        if entities[primary_idx]["id"] not in sender_ids:
+            continue
+        needs_review.append(
+            {
+                "handle": handle_key,
+                "handle_entity": entities[primary_idx],
+                "claimants": [entities[h] for h in holders],
+                "reason": "ambiguous handle alias",
+            }
+        )
+
+    return candidates, needs_review
 
 
 def _merge_aliases_collide(
@@ -510,13 +561,14 @@ def dedup_entities(
     *,
     dry_run: bool = False,
 ) -> dict:
-    candidates = find_dedup_candidates(conn)
+    candidates, needs_review = find_dedup_candidates(conn)
 
     result = {
         "groups": len(candidates),
         "entities_merged": 0,
         "merges": [],
         "skipped": [],
+        "needs_review": needs_review,
     }
 
     for group in candidates:
