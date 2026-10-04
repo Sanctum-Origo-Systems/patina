@@ -78,14 +78,14 @@ def seeded_store(tmp_path):
         "alias-overlap-364-a",
         "person",
         "Ren Oshiro",
-        aliases=["slack:U100", "ren.oshiro"],
+        aliases=["slack:U100AA", "ren.oshiro"],
     )
     _seed_entity(
         conn,
         "alias-overlap-364-b",
         "person",
         "Lina Petrova",
-        aliases=["slack:U200", "ren.oshiro"],
+        aliases=["slack:U200AA", "ren.oshiro"],
     )
 
     # --- Shape 4: correct-merge full-name/handle/email triple (#359) ---
@@ -94,21 +94,21 @@ def seeded_store(tmp_path):
         "merge-name-359",
         "person",
         "Dana Kowalski",
-        aliases=["slack:U300"],
+        aliases=["slack:U300AA"],
     )
     _seed_entity(
         conn,
         "merge-handle-359",
         "person",
         "dkowalski",
-        aliases=["slack:U300"],
+        aliases=["slack:U300AA"],
     )
     _seed_entity(
         conn,
         "merge-email-359",
         "person",
         "dana.kowalski@example.com",
-        aliases=["slack:U300"],
+        aliases=["slack:U300AA"],
     )
 
     # --- Shape 5: description-saved-as-name (#346/#349) ---
