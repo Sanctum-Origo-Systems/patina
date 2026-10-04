@@ -632,8 +632,15 @@ def test_prune_handle_named_sender_with_claims_survives(db_conn):
 
 def test_plausible_accepts_slack_ids():
     assert is_plausible_person_name("U0EXAMPLE1") is True
-    assert is_plausible_person_name("U12ABC") is True
+    assert is_plausible_person_name("U012ABCDEF") is True
     assert is_plausible_person_name("W0EXAMPLE1") is True
+
+
+def test_plausible_rejects_uppercase_words():
+    assert is_plausible_person_name("URGENT") is False
+    assert is_plausible_person_name("WEEKLY") is False
+    assert is_plausible_person_name("UPDATE") is False
+    assert is_plausible_person_name("WORKSHOP") is False
 
 
 def test_plausible_rejects_lowercase_words():
