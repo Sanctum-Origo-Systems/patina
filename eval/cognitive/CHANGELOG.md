@@ -1,3 +1,16 @@
+## v0.21.0 (2026-10-04)
+- #375: Feat: invariants test module and process-rule documentation for da ($4.59)
+- #371: Feat: seeded in-memory store fixture covering all known edge-case ($1.33)
+- #370: Feat: is_plausible_person_name accepts lowercase words like 'meeti ($0.74)
+- #369: Feat: dedup merges different people through contaminated handle al ($1.99)
+- #361: Feat: entity prune --non-person deletes handle-named senders with ($1.23)
+- #360: Feat: dedup merges different people and uses wrong canonical direc ($2.48)
+- #356: Feat: first-name-only references create duplicate person entities ($2.30)
+- #353: Feat: entity prune and dedup don't catch extraction residue — shar ($2.75)
+- #352: Feat: non-person phrases saved as type=person entities during extr ($1.71)
+- #350: Feat: LLM-supplied aliases merged unchecked into non-owner entitie ($2.15)
+Total: 10 PRs, $21.27
+
 ## v0.20.0 (2026-10-03)
 
 ### Entity Quality & Extraction Fixes
