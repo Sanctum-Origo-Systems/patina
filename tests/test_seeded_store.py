@@ -75,6 +75,91 @@ def test_slack_link_markup_334(seeded_store):
     assert "|" in row["name"]
 
 
+def test_contaminated_bare_slack_id_372(seeded_store):
+    """Shape 9: entity with slack:-prefixed ID and a different bare Slack ID."""
+    a = seeded_store.execute("SELECT * FROM entities WHERE id = 'contaminated-372-a'").fetchone()
+    b = seeded_store.execute("SELECT * FROM entities WHERE id = 'contaminated-372-b'").fetchone()
+    assert a is not None and b is not None
+
+    a_aliases = json.loads(a["aliases"])
+    assert "slack:U0SOREN" in a_aliases, "should have a prefixed Slack ID"
+    assert "U0LIANA" in a_aliases, "should have a bare Slack ID from another entity"
+    assert b["name"] == "U0LIANA"
+
+
+def test_handle_alias_no_id_373(seeded_store):
+    """Shape 10: full-name entity holds handle as alias, no Slack ID."""
+    name_ent = seeded_store.execute(
+        "SELECT * FROM entities WHERE id = 'handle-alias-noid-373-name'"
+    ).fetchone()
+    handle_ent = seeded_store.execute(
+        "SELECT * FROM entities WHERE id = 'handle-alias-noid-373-handle'"
+    ).fetchone()
+    assert name_ent is not None and handle_ent is not None
+    assert " " in name_ent["name"]
+    aliases = json.loads(name_ent["aliases"])
+    assert handle_ent["name"] in aliases
+
+
+def test_bare_contaminated_slack_id_373(seeded_store):
+    """Shape 11: entity with two bare (non-slack:-prefixed) Slack IDs."""
+    a = seeded_store.execute("SELECT * FROM entities WHERE id = 'bare-contam-373-a'").fetchone()
+    b = seeded_store.execute("SELECT * FROM entities WHERE id = 'bare-contam-373-b'").fetchone()
+    assert a is not None and b is not None
+
+    a_aliases = json.loads(a["aliases"])
+    assert "U0TESSA" in a_aliases
+    assert "U0MAXIM" in a_aliases
+    assert all(not alias.startswith("slack:") for alias in a_aliases)
+    assert b["name"] == "U0MAXIM"
+
+
+def test_bare_contaminated_excluded_from_dedup_373(seeded_store):
+    """Shape 11: bare contaminated entity is excluded and flagged as needs review."""
+    from patina.maintenance import find_dedup_candidates
+
+    result = find_dedup_candidates(seeded_store)
+
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "Tessa Lindgren" in review_names
+
+    for c in result["candidates"]:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        assert "bare-contam-373-a" not in all_ids
+
+
+def test_contaminated_entity_excluded_from_dedup_372(seeded_store):
+    """Contaminated entity is excluded from merge pool and flagged as needs review."""
+    from patina.maintenance import find_dedup_candidates
+
+    result = find_dedup_candidates(seeded_store)
+
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "Soren Voss" in review_names
+
+    for c in result["candidates"]:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        assert "contaminated-372-a" not in all_ids
+
+
+def test_correct_merge_keeps_full_name_359(seeded_store):
+    """Dedup of the correct-merge triple keeps the full name as canonical."""
+    from patina.maintenance import find_dedup_candidates
+
+    result = find_dedup_candidates(seeded_store)
+    candidates = result["candidates"]
+
+    merge_group = None
+    for c in candidates:
+        ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        if "merge-name-359" in ids:
+            merge_group = c
+            break
+
+    assert merge_group is not None, "Should find a merge group for the triple"
+    assert merge_group["keep"]["name"] == "Dana Kowalski"
+
+
 def test_dangling_claims_333(seeded_store):
     valid = seeded_store.execute("SELECT * FROM claims WHERE id = 'claim-valid-333'").fetchone()
     dangling = seeded_store.execute(
