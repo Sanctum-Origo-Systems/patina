@@ -1,3 +1,13 @@
+## v0.22.0 (2026-10-05)
+
+### Dedup Safety (continued)
+- #384: Fix: restrict foreign-handle exemption to full-name entities
+- #385: Fix: REVIEW reason shows correct label for ambiguous-handle entries
+
+### Testing & Dashboard
+- #367: Feat: invariants test module and process-rule documentation
+- #383: Chore: refresh EVAL.md with short date labels (MM-DD)
+
 ## v0.21.0 (2026-10-04)
 
 ### Dedup Safety & Correctness
