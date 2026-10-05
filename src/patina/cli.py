@@ -1078,7 +1078,7 @@ def entity_dedup_cmd(
             drop, keep = skip["drop_name"], skip["keep_name"]
             typer.echo(f"  SKIP '{drop}' -> '{keep}' ({skip['reason']})")
         for review in needs_review:
-            typer.echo(f"  REVIEW '{review['name']}' (needs review: multiple Slack IDs)")
+            typer.echo(f"  REVIEW '{review['name']}' (needs review: {review['reason']})")
         if not confirm and result["entities_merged"] > 0:
             n = result["entities_merged"]
             typer.echo(f"{n} merges proposed — re-run with --confirm to apply")

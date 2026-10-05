@@ -382,7 +382,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
     for ent in entities:
         all_tokens = [ent["name"]] + ent["aliases"]
         if len(_collect_slack_ids(all_tokens)) > 1:
-            needs_review.append(ent)
+            needs_review.append({**ent, "reason": "multiple Slack IDs"})
         else:
             clean.append(ent)
     entities = clean
@@ -418,7 +418,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
             for named_ent in name_by_handle.get(handle_key, []):
                 if named_ent["id"] not in ambiguous_handle_ids:
                     ambiguous_handle_ids.add(named_ent["id"])
-                    needs_review.append(named_ent)
+                    needs_review.append({**named_ent, "reason": "ambiguous handle alias"})
 
     if ambiguous_handle_ids:
         entities = [e for e in entities if e["id"] not in ambiguous_handle_ids]

@@ -381,6 +381,7 @@ def test_find_dedup_contaminated_bare_id_needs_review(db_conn):
     assert len(result["candidates"]) == 0
     assert len(result["needs_review"]) == 1
     assert result["needs_review"][0]["name"] == "user_a"
+    assert result["needs_review"][0]["reason"] == "multiple Slack IDs"
 
 
 def test_find_dedup_canonical_handle_over_slack_id(db_conn):
@@ -457,6 +458,8 @@ def test_find_dedup_ambiguous_handle_alias_needs_review(db_conn):
 
     review_names = {r["name"] for r in result["needs_review"]}
     assert "jfox" in review_names
+    review_by_name = {r["name"]: r for r in result["needs_review"]}
+    assert review_by_name["jfox"]["reason"] == "ambiguous handle alias"
 
     for c in result["candidates"]:
         all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
@@ -502,6 +505,7 @@ def test_dedup_contaminated_appears_in_result(db_conn):
     assert result["entities_merged"] == 0
     assert len(result["needs_review"]) == 1
     assert result["needs_review"][0]["name"] == "user_a"
+    assert result["needs_review"][0]["reason"] == "multiple Slack IDs"
 
 
 def test_dedup_canonical_prefers_full_name(db_conn):
@@ -926,6 +930,30 @@ def test_cli_entity_dedup_shows_needs_review(db_path):
     assert result.exit_code == 0
     assert "REVIEW" in result.output
     assert "user_a" in result.output
+    assert "multiple Slack IDs" in result.output
+
+
+def test_cli_entity_dedup_ambiguous_handle_shows_correct_reason(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e1aabbcc", "Alice Tran", aliases=["jfox"])
+    _insert_entity_raw(conn, "e2ddeeff", "Beth Marsh", aliases=["jfox"])
+    _insert_entity_raw(conn, "e3001122", "jfox", aliases=["slack:U0AAAA"])
+    insert_observation(conn, _obs("o1", "e3001122"))
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "dedup", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "REVIEW" in result.output
+    assert "jfox" in result.output
+    assert "ambiguous handle alias" in result.output
+    assert "multiple Slack IDs" not in result.output
 
 
 def test_cli_entity_prune(db_path):
