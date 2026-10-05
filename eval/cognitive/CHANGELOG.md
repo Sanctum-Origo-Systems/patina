@@ -1,3 +1,11 @@
+## v0.22.0 (2026-10-05)
+- #386: Fix: foreign-handle exemption lets handle-named entity merge thro ($2.23)
+- #381: Fix: restore correct handle-to-full-name merges lost by is_foreig ($2.34)
+- #380: Fix: tighten Slack ID regex to reject uppercase words like URGENT ($0.38)
+- #379: Fix: dedup ignores contaminated bare Slack IDs and uses name-type ($3.36)
+- #375: Feat: invariants test module and process-rule documentation for da ($4.59)
+Total: 5 PRs, $12.90
+
 ## v0.21.0 (2026-10-04)
 
 ### Dedup Safety & Correctness
@@ -58,9 +66,5 @@ Total: 3 PRs, $0.00
 
 ## v0.18.2 (2026-09-21)
 - #291: Fix: exclude relay label from triage pipeline ($0.00)
-Total: 1 PRs, $0.00
-
-## v0.18.1 (2026-09-20)
-- #285: Docs: add EVAL.md dashboard link to README ($0.00)
 Total: 1 PRs, $0.00
 
