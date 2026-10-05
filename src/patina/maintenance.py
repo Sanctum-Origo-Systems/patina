@@ -449,6 +449,8 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                     and not _SLACK_ID_RE.match(key.upper())
                 )
                 if is_foreign_handle:
+                    if _name_type_rank(ent["name"]) != 0:
+                        continue
                     named = [
                         n
                         for n in name_by_handle.get(key, [])
@@ -505,6 +507,22 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
             continue
 
         group = [entities[i] for i in indices]
+        idx_set = set(indices)
+
+        group_names_lower = {e["name"].strip().lower() for e in group}
+        send_to_review = False
+        for pair, ident in pair_match.items():
+            if pair[0] in idx_set and pair[1] in idx_set:
+                if (
+                    _HANDLE_RE.match(ident)
+                    and not _SLACK_ID_RE.match(ident.upper())
+                    and ident not in group_names_lower
+                ):
+                    send_to_review = True
+                    break
+        if send_to_review:
+            needs_review.extend(group)
+            continue
 
         obs_counts = {}
         for ent in group:
@@ -522,7 +540,6 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
         )
         keep = sorted_group[0]
 
-        idx_set = set(indices)
         match_ident = ""
         for pair, ident in pair_match.items():
             if pair[0] in idx_set and pair[1] in idx_set:

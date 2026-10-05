@@ -420,6 +420,32 @@ def test_find_dedup_handle_alias_merges_sender(db_conn):
     assert candidates[0]["keep"]["name"] == "Dana Brook"
 
 
+def test_find_dedup_foreign_handle_exemption_requires_full_name(db_conn):
+    """Handle-named entity holding another person's handle must not merge through it."""
+    _insert_entity_raw(db_conn, "ec", "user_c", aliases=["slack:U0CCCCC", "user_d"])
+    _insert_entity_raw(db_conn, "ed", "user_d", aliases=["slack:U0DDDDD"])
+    _insert_entity_raw(db_conn, "edb", "Dana Brook", aliases=["user_d", "Brook, Dana"])
+    insert_observation(db_conn, _obs("o1", "ec"))
+    insert_observation(db_conn, _obs("o2", "ed"))
+
+    result = find_dedup_candidates(db_conn)
+    candidates = result["candidates"]
+
+    all_merged_ids = set()
+    for c in candidates:
+        all_merged_ids.add(c["keep"]["id"])
+        for d in c["drop"]:
+            all_merged_ids.add(d["id"])
+
+    assert "ec" not in all_merged_ids, "user_c must not be in any merge group"
+    assert "ed" in all_merged_ids and "edb" in all_merged_ids, "user_d and Dana Brook should merge"
+
+    for c in candidates:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        if "ed" in all_ids:
+            assert c["keep"]["name"] == "Dana Brook"
+
+
 def test_find_dedup_ambiguous_handle_alias_needs_review(db_conn):
     """Handle held as alias by two full-name entities goes to needs review."""
     _insert_entity_raw(db_conn, "e1", "Alice Tran", aliases=["jfox"])

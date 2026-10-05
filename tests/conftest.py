@@ -186,6 +186,42 @@ def seeded_store(tmp_path):
         aliases=["U0MAXIM"],
     )
 
+    # --- Shape 12: handle entity holding another person's handle as alias (#384) ---
+    _seed_entity(
+        conn,
+        "contam-handle-384-c",
+        "person",
+        "cmorris",
+        aliases=["slack:U0CMORR", "dnovak"],
+    )
+    _seed_entity(
+        conn,
+        "contam-handle-384-d",
+        "person",
+        "dnovak",
+        aliases=["slack:U0DNOVA"],
+    )
+    _seed_entity(
+        conn,
+        "contam-handle-384-name",
+        "person",
+        "Pria Novak",
+        aliases=["dnovak"],
+    )
+    now_384 = "2025-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, processed, ingested_at)"
+        " VALUES (?, 'slack_export', 'C001', 1000.0, ?, 'The quick brown fox', 1, ?)",
+        ("obs-384-c", "contam-handle-384-c", now_384),
+    )
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, processed, ingested_at)"
+        " VALUES (?, 'slack_export', 'C001', 1001.0, ?, 'The quick brown fox', 1, ?)",
+        ("obs-384-d", "contam-handle-384-d", now_384),
+    )
+
     # --- Shape 8: dangling claims (#333) ---
     _seed_entity(conn, "valid-entity-333", "person", "Yuki Arai")
     _seed_claim(conn, "claim-valid-333", "valid-entity-333")
