@@ -160,6 +160,47 @@ def test_correct_merge_keeps_full_name_359(seeded_store):
     assert merge_group["keep"]["name"] == "Dana Kowalski"
 
 
+def test_contam_handle_alias_384(seeded_store):
+    """Shape 12: handle entity holding another person's handle as alias."""
+    c = seeded_store.execute("SELECT * FROM entities WHERE id = 'contam-handle-384-c'").fetchone()
+    d = seeded_store.execute("SELECT * FROM entities WHERE id = 'contam-handle-384-d'").fetchone()
+    name_ent = seeded_store.execute(
+        "SELECT * FROM entities WHERE id = 'contam-handle-384-name'"
+    ).fetchone()
+    assert c is not None and d is not None and name_ent is not None
+
+    c_aliases = json.loads(c["aliases"])
+    assert d["name"] in c_aliases, "handle entity should hold other person's handle"
+    assert " " in name_ent["name"], "should have a full-name entity"
+
+    name_aliases = json.loads(name_ent["aliases"])
+    assert d["name"] in name_aliases, "full-name entity should hold the same handle"
+
+
+def test_contam_handle_alias_dedup_384(seeded_store):
+    """Shape 12: contaminated handle entity must not merge; handle merges with full name."""
+    from patina.maintenance import find_dedup_candidates
+
+    result = find_dedup_candidates(seeded_store)
+
+    for c in result["candidates"]:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        assert "contam-handle-384-c" not in all_ids, (
+            "handle entity holding another's handle must not merge"
+        )
+
+    merged_ids = set()
+    for c in result["candidates"]:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        if "contam-handle-384-d" in all_ids:
+            merged_ids = all_ids
+            assert c["keep"]["name"] == "Pria Novak", "full name should be kept as canonical"
+
+    assert "contam-handle-384-d" in merged_ids and "contam-handle-384-name" in merged_ids, (
+        "handle entity and full-name entity should merge"
+    )
+
+
 def test_dangling_claims_333(seeded_store):
     valid = seeded_store.execute("SELECT * FROM claims WHERE id = 'claim-valid-333'").fetchone()
     dangling = seeded_store.execute(
