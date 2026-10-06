@@ -440,12 +440,42 @@ def test_find_dedup_foreign_handle_exemption_requires_full_name(db_conn):
             all_merged_ids.add(d["id"])
 
     assert "ec" not in all_merged_ids, "user_c must not be in any merge group"
-    assert "ed" in all_merged_ids and "edb" in all_merged_ids, "user_d and Dana Brook should merge"
+    assert "ed" in all_merged_ids and "edb" in all_merged_ids, "dbrook and Dana Brook should merge"
 
     for c in candidates:
         all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
         if "ed" in all_ids:
             assert c["keep"]["name"] == "Dana Brook"
+
+
+def test_find_dedup_handle_alias_no_id_mismatch_needs_review(db_conn):
+    """Handle alias merge bypasses Slack ID guard when target has no ID (#391)."""
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook2", "Brook, Dana"])
+    _insert_entity_raw(db_conn, "e2", "dbrook2", aliases=["U0EXAMPLE9"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+    insert_observation(db_conn, _obs("o2", "e2"))
+
+    result = find_dedup_candidates(db_conn)
+
+    for c in result["candidates"]:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        assert not ("e1" in all_ids and "e2" in all_ids), "dbrook2 -> Dana Brook must not merge"
+
+    review_items = [r for r in result["needs_review"] if r["id"] in {"e1", "e2"}]
+    assert len(review_items) >= 1
+    assert any(r["reason"] == "handle-name mismatch" for r in review_items)
+
+
+def test_find_dedup_handle_alias_with_own_slack_id_merges(db_conn):
+    """Full-name entity with matching handle alias and its own Slack ID still merges (#391)."""
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook", "slack:U0DBID"])
+    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DBID"])
+    insert_observation(db_conn, _obs("o1", "e2"))
+
+    result = find_dedup_candidates(db_conn)
+    candidates = result["candidates"]
+    assert len(candidates) == 1
+    assert candidates[0]["keep"]["name"] == "Dana Brook"
 
 
 def test_find_dedup_ambiguous_handle_alias_needs_review(db_conn):

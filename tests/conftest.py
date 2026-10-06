@@ -222,6 +222,35 @@ def seeded_store(tmp_path):
         ("obs-384-d", "contam-handle-384-d", now_384),
     )
 
+    # --- Shape 13: handle-alias merge bypass, no Slack ID on full-name (#391) ---
+    _seed_entity(
+        conn,
+        "handle-bypass-391-name",
+        "person",
+        "Fern Langley",
+        aliases=["flangley2", "Langley, Fern"],
+    )
+    _seed_entity(
+        conn,
+        "handle-bypass-391-handle",
+        "person",
+        "flangley2",
+        aliases=["U0FEXAMPLE"],
+    )
+    now_391 = "2025-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, processed, ingested_at)"
+        " VALUES (?, 'slack_export', 'C001', 1002.0, ?, 'The quick brown fox', 1, ?)",
+        ("obs-391-name", "handle-bypass-391-name", now_391),
+    )
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, processed, ingested_at)"
+        " VALUES (?, 'slack_export', 'C001', 1003.0, ?, 'The quick brown fox', 1, ?)",
+        ("obs-391-handle", "handle-bypass-391-handle", now_391),
+    )
+
     # --- Shape 8: dangling claims (#333) ---
     _seed_entity(conn, "valid-entity-333", "person", "Yuki Arai")
     _seed_claim(conn, "claim-valid-333", "valid-entity-333")

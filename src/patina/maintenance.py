@@ -200,6 +200,22 @@ def _normalize_for_dedup(name: str) -> str:
     return " ".join(norm.split())
 
 
+def _handle_fits_name(handle: str, full_name: str) -> bool:
+    """Check if a handle is a plausible abbreviation of a full name."""
+    parts = full_name.strip().lower().split()
+    if len(parts) < 2:
+        return False
+    first = parts[0]
+    surname = parts[-1]
+    h = re.sub(r"[._\-]", "", handle.strip().lower())
+    for length in range(3, len(surname) + 1):
+        if h.endswith(surname[:length]):
+            return True
+    if h == first + surname[0]:
+        return True
+    return False
+
+
 def backup_store(db_path: Path) -> Path:
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     backup_path = db_path.with_suffix(f".db.bak.{ts}")
@@ -522,6 +538,30 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                     break
         if send_to_review:
             needs_review.extend(group)
+            continue
+
+        send_to_review = False
+        for pair, ident in pair_match.items():
+            if pair[0] not in idx_set or pair[1] not in idx_set:
+                continue
+            if not (_HANDLE_RE.match(ident) and not _SLACK_ID_RE.match(ident.upper())):
+                continue
+            for a_idx, b_idx in ((pair[0], pair[1]), (pair[1], pair[0])):
+                fn_ent = entities[a_idx]
+                if _name_type_rank(fn_ent["name"]) != 0:
+                    continue
+                if entity_hard_ids[a_idx]["slack_ids"]:
+                    continue
+                if not entity_hard_ids[b_idx]["slack_ids"]:
+                    continue
+                if not _handle_fits_name(ident, fn_ent["name"]):
+                    send_to_review = True
+                    break
+            if send_to_review:
+                break
+        if send_to_review:
+            for ent in group:
+                needs_review.append({**ent, "reason": "handle-name mismatch"})
             continue
 
         obs_counts = {}
