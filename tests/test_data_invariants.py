@@ -147,3 +147,39 @@ def test_invariants_pipeline(invariant_store, tmp_path, monkeypatch):
     pre = _entity_ids(conn)
     merge_entities(conn, "owner-332", "owner-dup-332")
     _assert_invariants(conn, after="merge", pre_ids=pre, check_merge_triple=True)
+
+
+def test_invariant_cleanup_nulls_dangling_senders(seeded_store):
+    """Entity cleanup nulls orphaned sender_entity_id; invariant #2 passes after."""
+    conn = seeded_store
+
+    # Insert observation referencing a non-existent entity.
+    conn.execute("PRAGMA foreign_keys=OFF")
+    _seed_observation(conn, "obs-dangling-392", "no-such-entity-392")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+
+    # Pre-cleanup: dangling sender exists.
+    orphans = conn.execute(
+        "SELECT COUNT(*) AS c FROM observations"
+        " WHERE sender_entity_id IS NOT NULL"
+        "   AND sender_entity_id NOT IN (SELECT id FROM entities)"
+    ).fetchone()["c"]
+    assert orphans > 0
+
+    obs_before = conn.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"]
+
+    # Run cleanup.
+    delete_dangling_references(conn)
+
+    # Post-cleanup: invariant #2 holds (0 orphan sender refs).
+    orphans = conn.execute(
+        "SELECT COUNT(*) AS c FROM observations"
+        " WHERE sender_entity_id IS NOT NULL"
+        "   AND sender_entity_id NOT IN (SELECT id FROM entities)"
+    ).fetchone()["c"]
+    assert orphans == 0, f"expected 0 orphan sender refs after cleanup, got {orphans}"
+
+    # No observation rows deleted.
+    obs_after = conn.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"]
+    assert obs_after == obs_before, "cleanup must not delete observation rows"

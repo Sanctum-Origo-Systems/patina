@@ -373,6 +373,16 @@ def doctor_cmd(
                 f"WARN dangling relationships: {dangling['relationships']} "
                 f"relationship(s) reference missing entities"
             )
+        if dangling.get("senders"):
+            typer.echo(
+                f"WARN dangling senders: {dangling['senders']} observation(s) "
+                f"reference missing entities"
+            )
+        if dangling.get("style_exemplars"):
+            typer.echo(
+                f"WARN dangling style exemplars: {dangling['style_exemplars']} "
+                f"style exemplar(s) reference missing entities"
+            )
     finally:
         conn.close()
 
@@ -1199,6 +1209,9 @@ def entity_list_cmd(
 
 @entity_app.command("cleanup")
 def entity_cleanup_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview dangling counts without writing"
+    ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Remove claims and relationships referencing deleted entities."""
@@ -1209,15 +1222,37 @@ def entity_cleanup_cmd(
 
     conn = connect(db_path)
     try:
-        result = delete_dangling_references(conn)
-        total = result["claims"] + result["relationships"]
-        if total == 0:
-            typer.echo("No dangling references found.")
+        if dry_run:
+            result = find_dangling_references(conn)
+            if not result:
+                typer.echo("No dangling references found.")
+            else:
+                parts = []
+                if result.get("claims"):
+                    parts.append(f"{result['claims']} claim(s)")
+                if result.get("relationships"):
+                    parts.append(f"{result['relationships']} relationship(s)")
+                if result.get("senders"):
+                    parts.append(f"{result['senders']} sender ref(s)")
+                if result.get("style_exemplars"):
+                    parts.append(f"{result['style_exemplars']} style exemplar(s)")
+                typer.echo(f"Would fix: {', '.join(parts)}.")
         else:
-            typer.echo(
-                f"Removed {result['claims']} dangling claim(s) "
-                f"and {result['relationships']} dangling relationship(s)."
-            )
+            result = delete_dangling_references(conn)
+            total = sum(result.values())
+            if total == 0:
+                typer.echo("No dangling references found.")
+            else:
+                parts = []
+                if result["claims"]:
+                    parts.append(f"{result['claims']} dangling claim(s)")
+                if result["relationships"]:
+                    parts.append(f"{result['relationships']} dangling relationship(s)")
+                if result["senders"]:
+                    parts.append(f"{result['senders']} dangling sender ref(s)")
+                if result["style_exemplars"]:
+                    parts.append(f"{result['style_exemplars']} dangling style exemplar(s)")
+                typer.echo(f"Removed {', '.join(parts)}.")
     finally:
         conn.close()
 
