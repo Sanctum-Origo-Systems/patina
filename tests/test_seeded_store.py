@@ -82,9 +82,9 @@ def test_contaminated_bare_slack_id_372(seeded_store):
     assert a is not None and b is not None
 
     a_aliases = json.loads(a["aliases"])
-    assert "slack:U0SOREN" in a_aliases, "should have a prefixed Slack ID"
-    assert "U0LIANA" in a_aliases, "should have a bare Slack ID from another entity"
-    assert b["name"] == "U0LIANA"
+    assert "slack:U0SOREN111" in a_aliases, "should have a prefixed Slack ID"
+    assert "U0LIANA222" in a_aliases, "should have a bare Slack ID from another entity"
+    assert b["name"] == "U0LIANA222"
 
 
 def test_handle_alias_no_id_373(seeded_store):
@@ -108,10 +108,10 @@ def test_bare_contaminated_slack_id_373(seeded_store):
     assert a is not None and b is not None
 
     a_aliases = json.loads(a["aliases"])
-    assert "U0TESSA" in a_aliases
-    assert "U0MAXIM" in a_aliases
+    assert "U0TESSA333" in a_aliases
+    assert "U0MAXIM444" in a_aliases
     assert all(not alias.startswith("slack:") for alias in a_aliases)
-    assert b["name"] == "U0MAXIM"
+    assert b["name"] == "U0MAXIM444"
 
 
 def test_bare_contaminated_excluded_from_dedup_373(seeded_store):

@@ -78,14 +78,14 @@ def seeded_store(tmp_path):
         "alias-overlap-364-a",
         "person",
         "Ren Oshiro",
-        aliases=["slack:U100AA", "ren.oshiro"],
+        aliases=["slack:U100AA1111", "ren.oshiro"],
     )
     _seed_entity(
         conn,
         "alias-overlap-364-b",
         "person",
         "Lina Petrova",
-        aliases=["slack:U200AA", "ren.oshiro"],
+        aliases=["slack:U200AA2222", "ren.oshiro"],
     )
 
     # --- Shape 4: correct-merge full-name/handle/email triple (#359) ---
@@ -94,21 +94,21 @@ def seeded_store(tmp_path):
         "merge-name-359",
         "person",
         "Dana Kowalski",
-        aliases=["slack:U300AA"],
+        aliases=["slack:U300AA3333"],
     )
     _seed_entity(
         conn,
         "merge-handle-359",
         "person",
         "dkowalski",
-        aliases=["slack:U300AA"],
+        aliases=["slack:U300AA3333"],
     )
     _seed_entity(
         conn,
         "merge-email-359",
         "person",
         "dana.kowalski@example.com",
-        aliases=["slack:U300AA"],
+        aliases=["slack:U300AA3333"],
     )
 
     # --- Shape 5: description-saved-as-name (#346/#349) ---
@@ -150,14 +150,14 @@ def seeded_store(tmp_path):
         "contaminated-372-a",
         "person",
         "Soren Voss",
-        aliases=["slack:U0SOREN", "U0LIANA"],
+        aliases=["slack:U0SOREN111", "U0LIANA222"],
     )
     _seed_entity(
         conn,
         "contaminated-372-b",
         "person",
-        "U0LIANA",
-        aliases=["U0LIANA"],
+        "U0LIANA222",
+        aliases=["U0LIANA222"],
     )
 
     # --- Shape 10: full name holds handle alias, no ID (#373) ---
@@ -176,14 +176,14 @@ def seeded_store(tmp_path):
         "bare-contam-373-a",
         "person",
         "Tessa Lindgren",
-        aliases=["U0TESSA", "U0MAXIM"],
+        aliases=["U0TESSA333", "U0MAXIM444"],
     )
     _seed_entity(
         conn,
         "bare-contam-373-b",
         "person",
-        "U0MAXIM",
-        aliases=["U0MAXIM"],
+        "U0MAXIM444",
+        aliases=["U0MAXIM444"],
     )
 
     # --- Shape 12: handle entity holding another person's handle as alias (#384) ---
@@ -192,14 +192,14 @@ def seeded_store(tmp_path):
         "contam-handle-384-c",
         "person",
         "cmorris",
-        aliases=["slack:U0CMORR", "dnovak"],
+        aliases=["slack:U0CMORR555", "dnovak"],
     )
     _seed_entity(
         conn,
         "contam-handle-384-d",
         "person",
         "dnovak",
-        aliases=["slack:U0DNOVA"],
+        aliases=["slack:U0DNOVA666"],
     )
     _seed_entity(
         conn,
