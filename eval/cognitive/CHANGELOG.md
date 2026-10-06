@@ -1,3 +1,11 @@
+## v0.23.0 (2026-10-06)
+- #394: Fix: entity cleanup nulls dangling sender_entity_id refs ($1.20)
+- #393: Fix: route handle-alias merge to REVIEW when target has no Slack ID ($3.53)
+- #395: Fix: validate _collect_slack_ids captures against _SLACK_ID_RE ($1.52)
+- #387: Feat: REVIEW reason shows wrong label for ambiguous-handle entries ($0.79)
+- #386: Fix: foreign-handle exemption lets handle-named entity merge thro ($2.23)
+Total: 5 PRs, $9.27
+
 ## v0.22.0 (2026-10-05)
 
 ### Dedup Safety (continued)
@@ -65,12 +73,4 @@ Total: 7 PRs, $16.18
 - #299: Chore: regenerate EVAL.md with corrected metrics ($0.00)
 - #300: Chore: set auto-merge promotion level to repo ($0.00)
 Total: 3 PRs, $0.00
-
-## v0.18.2 (2026-09-21)
-- #291: Fix: exclude relay label from triage pipeline ($0.00)
-Total: 1 PRs, $0.00
-
-## v0.18.1 (2026-09-20)
-- #285: Docs: add EVAL.md dashboard link to README ($0.00)
-Total: 1 PRs, $0.00
 
