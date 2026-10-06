@@ -138,7 +138,7 @@ def _collect_slack_ids(tokens: list[str]) -> set[str]:
     ids: set[str] = set()
     for token in tokens:
         m = _SLACK_ID_EXTRACT_RE.match(token.strip())
-        if m:
+        if m and _SLACK_ID_RE.match(m.group(1).upper()):
             ids.add(m.group(1).upper())
     return ids
 

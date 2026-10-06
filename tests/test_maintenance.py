@@ -9,6 +9,7 @@ from patina.graph import (
     upsert_relationship,
 )
 from patina.maintenance import (
+    _collect_slack_ids,
     backup_store,
     dedup_entities,
     find_dedup_candidates,
@@ -332,8 +333,8 @@ def test_find_dedup_candidates_skips_owner(db_conn):
 
 def test_find_dedup_conflicting_slack_ids_rejected(db_conn):
     """Entities with different Slack IDs must not merge even through a shared handle alias."""
-    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["U0AAAA"])
-    _insert_entity_raw(db_conn, "e2", "user_b", aliases=["U0BBBB", "user_a"])
+    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["U0AAAA111"])
+    _insert_entity_raw(db_conn, "e2", "user_b", aliases=["U0BBBB222", "user_a"])
 
     result = find_dedup_candidates(db_conn)
     assert len(result["candidates"]) == 0
@@ -359,9 +360,9 @@ def test_find_dedup_conflicting_emails_rejected(db_conn):
 
 def test_find_dedup_transitive_conflict_blocked(db_conn):
     """Transitive chaining through soft matches must not link entities with conflicting IDs."""
-    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["U0AAAA"])
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["U0AAAA111"])
     _insert_entity_raw(db_conn, "e2", "Sam Rivera")
-    _insert_entity_raw(db_conn, "e3", "Sam Rivera", aliases=["U0CCCC"])
+    _insert_entity_raw(db_conn, "e3", "Sam Rivera", aliases=["U0CCCC333"])
 
     result = find_dedup_candidates(db_conn)
     for c in result["candidates"]:
@@ -373,8 +374,8 @@ def test_find_dedup_transitive_conflict_blocked(db_conn):
 
 def test_find_dedup_contaminated_bare_id_needs_review(db_conn):
     """Entity with contaminated bare Slack ID is excluded and flagged as needs review."""
-    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["slack:U0AAAA", "U0BBBB"])
-    _insert_entity_raw(db_conn, "e2", "U0BBBB", aliases=["U0BBBB"])
+    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["slack:U0AAAA111", "U0BBBB222"])
+    _insert_entity_raw(db_conn, "e2", "U0BBBB222", aliases=["U0BBBB222"])
 
     result = find_dedup_candidates(db_conn)
 
@@ -386,8 +387,8 @@ def test_find_dedup_contaminated_bare_id_needs_review(db_conn):
 
 def test_find_dedup_canonical_handle_over_slack_id(db_conn):
     """Handle + Slack ID merge keeps the handle as canonical."""
-    _insert_entity_raw(db_conn, "e1", "user_b", aliases=["slack:U0CCCC"])
-    _insert_entity_raw(db_conn, "e2", "U0CCCC", aliases=["slack:U0CCCC"])
+    _insert_entity_raw(db_conn, "e1", "user_b", aliases=["slack:U0CCCC333"])
+    _insert_entity_raw(db_conn, "e2", "U0CCCC333", aliases=["slack:U0CCCC333"])
 
     result = find_dedup_candidates(db_conn)
     candidates = result["candidates"]
@@ -398,9 +399,9 @@ def test_find_dedup_canonical_handle_over_slack_id(db_conn):
 
 def test_find_dedup_canonical_full_name_over_handle_and_id(db_conn):
     """Full name + handle + ID merge keeps the full name as canonical."""
-    _insert_entity_raw(db_conn, "e1", "Aria Johansson", aliases=["slack:U0DDDD"])
-    _insert_entity_raw(db_conn, "e2", "ajohansson", aliases=["slack:U0DDDD"])
-    _insert_entity_raw(db_conn, "e3", "U0DDDD", aliases=["slack:U0DDDD"])
+    _insert_entity_raw(db_conn, "e1", "Aria Johansson", aliases=["slack:U0DDD55555D444"])
+    _insert_entity_raw(db_conn, "e2", "ajohansson", aliases=["slack:U0DDD55555D444"])
+    _insert_entity_raw(db_conn, "e3", "U0DDD55555D444", aliases=["slack:U0DDD55555D444"])
 
     result = find_dedup_candidates(db_conn)
     candidates = result["candidates"]
@@ -412,7 +413,7 @@ def test_find_dedup_canonical_full_name_over_handle_and_id(db_conn):
 def test_find_dedup_handle_alias_merges_sender(db_conn):
     """Full-name entity with handle alias merges with sender handle entity."""
     _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook"])
-    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DDD"])
+    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DDD55555"])
     insert_observation(db_conn, _obs("o1", "e2"))
 
     result = find_dedup_candidates(db_conn)
@@ -423,8 +424,8 @@ def test_find_dedup_handle_alias_merges_sender(db_conn):
 
 def test_find_dedup_foreign_handle_exemption_requires_full_name(db_conn):
     """Handle-named entity holding another person's handle must not merge through it."""
-    _insert_entity_raw(db_conn, "ec", "user_c", aliases=["slack:U0CCCCC", "user_d"])
-    _insert_entity_raw(db_conn, "ed", "user_d", aliases=["slack:U0DDDDD"])
+    _insert_entity_raw(db_conn, "ec", "user_c", aliases=["slack:U0CCCC333C", "user_d"])
+    _insert_entity_raw(db_conn, "ed", "user_d", aliases=["slack:U0DDD55555D444D"])
     _insert_entity_raw(db_conn, "edb", "Dana Brook", aliases=["user_d", "Brook, Dana"])
     insert_observation(db_conn, _obs("o1", "ec"))
     insert_observation(db_conn, _obs("o2", "ed"))
@@ -497,8 +498,8 @@ def test_dedup_entities_dry_run(db_conn):
 
 def test_dedup_contaminated_appears_in_result(db_conn):
     """dedup_entities reports contaminated entities in needs_review."""
-    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["slack:U0AAAA", "U0BBBB"])
-    _insert_entity_raw(db_conn, "e2", "U0BBBB", aliases=["U0BBBB"])
+    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["slack:U0AAAA111", "U0BBBB222"])
+    _insert_entity_raw(db_conn, "e2", "U0BBBB222", aliases=["U0BBBB222"])
 
     result = dedup_entities(db_conn, dry_run=True)
 
@@ -530,7 +531,7 @@ def test_dedup_canonical_prefers_full_name(db_conn):
 def test_dedup_handle_alias_merge_keeps_full_name(db_conn):
     """Handle alias on full-name entity merges with sender, keeping full name."""
     _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook"])
-    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DDD"])
+    _insert_entity_raw(db_conn, "e2", "dbrook", aliases=["slack:U0DDD55555"])
     insert_observation(db_conn, _obs("o1", "e2"))
 
     result = dedup_entities(db_conn)
@@ -920,8 +921,8 @@ def test_cli_entity_dedup_shows_needs_review(db_path):
     from patina.store import connect
 
     conn = connect(db_path)
-    _insert_entity_raw(conn, "e1aabbcc", "user_a", aliases=["slack:U0AAAA", "U0BBBB"])
-    _insert_entity_raw(conn, "e2ddeeff", "U0BBBB", aliases=["U0BBBB"])
+    _insert_entity_raw(conn, "e1aabbcc", "user_a", aliases=["slack:U0AAAA111", "U0BBBB222"])
+    _insert_entity_raw(conn, "e2ddeeff", "U0BBBB222", aliases=["U0BBBB222"])
     conn.close()
 
     runner = CliRunner()
@@ -942,7 +943,7 @@ def test_cli_entity_dedup_ambiguous_handle_shows_correct_reason(db_path):
     conn = connect(db_path)
     _insert_entity_raw(conn, "e1aabbcc", "Alice Tran", aliases=["jfox"])
     _insert_entity_raw(conn, "e2ddeeff", "Beth Marsh", aliases=["jfox"])
-    _insert_entity_raw(conn, "e3001122", "jfox", aliases=["slack:U0AAAA"])
+    _insert_entity_raw(conn, "e3001122", "jfox", aliases=["slack:U0AAAA111"])
     insert_observation(conn, _obs("o1", "e3001122"))
     conn.close()
 
@@ -1330,3 +1331,45 @@ def test_cli_entity_cleanup_removes(db_path):
     result = runner.invoke(app, ["entity", "cleanup", "--home", str(home)])
     assert result.exit_code == 0
     assert "Removed 1 dangling claim(s) and 1 dangling relationship(s)." in result.output
+
+
+def test_collect_slack_ids_filters_plain_handle():
+    assert _collect_slack_ids(["wdana", "alias:wdana", "slack:W0EXAMPLE1"]) == {"W0EXAMPLE1"}
+
+
+def test_collect_slack_ids_filters_first_name_aliases():
+    assert _collect_slack_ids(["Umara Lee", "Umara", "Umarah"]) == set()
+
+
+def test_collect_slack_ids_accepts_real_ids():
+    assert _collect_slack_ids(["U0EXAMPLE1", "slack:W0EXAMPLE2"]) == {
+        "U0EXAMPLE1",
+        "W0EXAMPLE2",
+    }
+
+
+def test_find_dedup_plain_handle_with_id_not_in_review(db_conn):
+    """A u/w-handle entity with one real Slack ID should not need review."""
+    _insert_entity_raw(db_conn, "e1", "wdana", aliases=["alias:wdana", "slack:W0EXAMPLE1"])
+
+    result = find_dedup_candidates(db_conn)
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "wdana" not in review_names
+
+
+def test_find_dedup_u_first_name_aliases_not_in_review(db_conn):
+    """A full-name entity with U-starting first-name aliases should not need review."""
+    _insert_entity_raw(db_conn, "e1", "Umara Lee", aliases=["Umara", "Umarah"])
+
+    result = find_dedup_candidates(db_conn)
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "Umara Lee" not in review_names
+
+
+def test_find_dedup_two_real_ids_still_needs_review(db_conn):
+    """An entity with two genuine Slack IDs should still be flagged for review."""
+    _insert_entity_raw(db_conn, "e1", "user_x", aliases=["slack:U0AAAA11111", "U0BBBB22222"])
+
+    result = find_dedup_candidates(db_conn)
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "user_x" in review_names
