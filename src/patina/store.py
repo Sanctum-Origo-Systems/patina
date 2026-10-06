@@ -811,11 +811,27 @@ def find_dangling_references(conn: sqlite3.Connection) -> dict[str, int]:
         "WHERE subject_id NOT IN (SELECT id FROM entities) "
         "OR object_id NOT IN (SELECT id FROM entities)"
     ).fetchone()["c"]
+    senders = conn.execute(
+        "SELECT COUNT(*) AS c FROM observations"
+        " WHERE sender_entity_id IS NOT NULL"
+        "   AND sender_entity_id NOT IN (SELECT id FROM entities)"
+    ).fetchone()["c"]
+    style_exemplars = conn.execute(
+        "SELECT COUNT(*) AS c FROM style_exemplars"
+        " WHERE (sender_entity_id IS NOT NULL"
+        "        AND sender_entity_id NOT IN (SELECT id FROM entities))"
+        "    OR (recipient_entity_id IS NOT NULL"
+        "        AND recipient_entity_id NOT IN (SELECT id FROM entities))"
+    ).fetchone()["c"]
     result = {}
     if claims:
         result["claims"] = claims
     if relationships:
         result["relationships"] = relationships
+    if senders:
+        result["senders"] = senders
+    if style_exemplars:
+        result["style_exemplars"] = style_exemplars
     return result
 
 
@@ -828,7 +844,24 @@ def delete_dangling_references(conn: sqlite3.Connection) -> dict[str, int]:
         "WHERE subject_id NOT IN (SELECT id FROM entities) "
         "OR object_id NOT IN (SELECT id FROM entities)"
     )
-    result = {"claims": claims_cur.rowcount, "relationships": rels_cur.rowcount}
+    senders_cur = conn.execute(
+        "UPDATE observations SET sender_entity_id = NULL"
+        " WHERE sender_entity_id IS NOT NULL"
+        "   AND sender_entity_id NOT IN (SELECT id FROM entities)"
+    )
+    style_cur = conn.execute(
+        "DELETE FROM style_exemplars"
+        " WHERE (sender_entity_id IS NOT NULL"
+        "        AND sender_entity_id NOT IN (SELECT id FROM entities))"
+        "    OR (recipient_entity_id IS NOT NULL"
+        "        AND recipient_entity_id NOT IN (SELECT id FROM entities))"
+    )
+    result = {
+        "claims": claims_cur.rowcount,
+        "relationships": rels_cur.rowcount,
+        "senders": senders_cur.rowcount,
+        "style_exemplars": style_cur.rowcount,
+    }
     conn.commit()
     return result
 

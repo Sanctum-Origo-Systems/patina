@@ -1360,7 +1360,7 @@ def test_cli_entity_cleanup_removes(db_path):
     home = db_path.parent
     result = runner.invoke(app, ["entity", "cleanup", "--home", str(home)])
     assert result.exit_code == 0
-    assert "Removed 1 dangling claim(s) and 1 dangling relationship(s)." in result.output
+    assert "Removed 1 dangling claim(s), 1 dangling relationship(s)." in result.output
 
 
 def test_collect_slack_ids_filters_plain_handle():
@@ -1403,3 +1403,58 @@ def test_find_dedup_two_real_ids_still_needs_review(db_conn):
     result = find_dedup_candidates(db_conn)
     review_names = {r["name"] for r in result["needs_review"]}
     assert "user_x" in review_names
+
+
+def test_cli_entity_cleanup_nulls_sender_entity_id(db_path):
+    """Orphaned sender_entity_id is reported in dry-run and nulled after cleanup."""
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    upsert_entity(conn, _entity("e_alive", "Xander Rowe"))
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs_orphan', 'slack_export', 'C001', 1000.0, 'gone',"
+        "  'The quick brown fox', '{}', '2025-01-01T00:00:00+00:00', 1)"
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+
+    obs_before = conn.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"]
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+
+    # Dry-run should report dangling sender ref
+    result = runner.invoke(app, ["entity", "cleanup", "--dry-run", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "1 sender ref(s)" in result.output
+
+    # Actual cleanup
+    result = runner.invoke(app, ["entity", "cleanup", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "1 dangling sender ref(s)" in result.output
+
+    # Verify: sender_entity_id nulled, observation not deleted
+    conn = connect(db_path)
+    row = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs_orphan'"
+    ).fetchone()
+    assert row is not None, "observation row must not be deleted"
+    assert row["sender_entity_id"] is None
+
+    obs_after = conn.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"]
+    assert obs_after == obs_before, "no observation rows should be deleted"
+
+    # No dangling refs remain
+    from patina.store import find_dangling_references
+
+    dangling = find_dangling_references(conn)
+    assert dangling.get("senders", 0) == 0
+    conn.close()
