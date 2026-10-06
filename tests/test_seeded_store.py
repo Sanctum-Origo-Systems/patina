@@ -201,6 +201,36 @@ def test_contam_handle_alias_dedup_384(seeded_store):
     )
 
 
+def test_handle_alias_bypass_391(seeded_store):
+    """Shape 13: handle alias on full-name entity with no Slack ID, mismatched handle."""
+    name_ent = seeded_store.execute(
+        "SELECT * FROM entities WHERE id = 'handle-bypass-391-name'"
+    ).fetchone()
+    handle_ent = seeded_store.execute(
+        "SELECT * FROM entities WHERE id = 'handle-bypass-391-handle'"
+    ).fetchone()
+    assert name_ent is not None and handle_ent is not None
+    assert " " in name_ent["name"]
+    aliases = json.loads(name_ent["aliases"])
+    assert handle_ent["name"] in aliases
+
+
+def test_handle_alias_bypass_dedup_391(seeded_store):
+    """Shape 13: mismatched handle on no-ID full-name entity goes to REVIEW."""
+    from patina.maintenance import find_dedup_candidates
+
+    result = find_dedup_candidates(seeded_store)
+
+    for c in result["candidates"]:
+        all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
+        assert not (
+            "handle-bypass-391-name" in all_ids and "handle-bypass-391-handle" in all_ids
+        ), "mismatched handle must not merge with no-ID full-name entity"
+
+    review_ids = {r["id"] for r in result["needs_review"]}
+    assert "handle-bypass-391-name" in review_ids or "handle-bypass-391-handle" in review_ids
+
+
 def test_dangling_claims_333(seeded_store):
     valid = seeded_store.execute("SELECT * FROM claims WHERE id = 'claim-valid-333'").fetchone()
     dangling = seeded_store.execute(
