@@ -1,7 +1,10 @@
 ## v0.23.0 (2026-10-06)
+- #394: Fix: entity cleanup nulls dangling sender_entity_id refs ($1.20)
+- #393: Fix: route handle-alias merge to REVIEW when target has no Slack ID ($3.53)
+- #395: Fix: validate _collect_slack_ids captures against _SLACK_ID_RE ($1.52)
 - #387: Feat: REVIEW reason shows wrong label for ambiguous-handle entries ($0.79)
 - #386: Fix: foreign-handle exemption lets handle-named entity merge thro ($2.23)
-Total: 2 PRs, $3.02
+Total: 5 PRs, $9.27
 
 ## v0.22.0 (2026-10-05)
 
