@@ -251,6 +251,24 @@ def seeded_store(tmp_path):
         ("obs-391-handle", "handle-bypass-391-handle", now_391),
     )
 
+    # --- Shape 14: ingest overwrites merged entity's name (#398, Slack) ---
+    _seed_entity(
+        conn,
+        "ingest-overwrite-398-slack",
+        "person",
+        "Maren Solberg",
+        aliases=["Brook, Maren", "msolberg", "slack:U0MAREN111"],
+    )
+
+    # --- Shape 15: ingest overwrites merged entity's name (#398, email) ---
+    _seed_entity(
+        conn,
+        "ingest-overwrite-398-email",
+        "person",
+        "Quinn Avery",
+        aliases=["qavery@example.com", "qavery"],
+    )
+
     # --- Shape 8: dangling claims (#333) ---
     _seed_entity(conn, "valid-entity-333", "person", "Yuki Arai")
     _seed_claim(conn, "claim-valid-333", "valid-entity-333")
