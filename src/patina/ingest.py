@@ -225,6 +225,12 @@ def _ingest_messages(
 def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
     results = []
     for em in emails:
+        if em.sender_name:
+            user_name = em.sender_name
+        elif "@" not in em.sender:
+            user_name = em.sender
+        else:
+            user_name = None
         results.append(
             ChatMessage(
                 user_id=em.sender,
@@ -232,7 +238,7 @@ def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
                 timestamp=em.timestamp,
                 channel_id=f"email:{em.conversation_id or em.id}",
                 thread_id=em.conversation_id,
-                user_name=em.sender.split("@")[0] if "@" in em.sender else em.sender,
+                user_name=user_name,
             )
         )
     return results

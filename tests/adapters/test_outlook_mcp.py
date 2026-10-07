@@ -9,6 +9,7 @@ from patina.adapters.outlook_mcp import (
     OutlookMcpAdapter,
     _email_from_raw,
     _is_meeting_message,
+    _normalize_sender,
     _parse_outlook_datetime,
     _strip_caution_banner,
     _unwrap_email_list,
@@ -720,3 +721,125 @@ class TestMeetingRequestFilter:
         adapter = OutlookMcpAdapter(bridge)
         emails = adapter.list_inbox(since=0.0)
         assert len(emails) == 1
+
+
+class TestNormalizeSender:
+    def test_legacy_dn_returns_empty(self):
+        dn = (
+            "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP"
+            " (FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN=abc123def456"
+        )
+        assert _normalize_sender(dn) == ""
+
+    def test_legacy_dn_lowercase(self):
+        assert _normalize_sender("/o=EXCHANGELABS/ou=GROUP/cn=abc") == ""
+
+    def test_parenthetical_stripped(self):
+        assert _normalize_sender("Brook, Dana (Marketing)") == "Brook, Dana"
+
+    def test_truncated_bracket_stripped(self):
+        assert _normalize_sender("Brook, Dana (") == "Brook, Dana"
+
+    def test_clean_name_unchanged(self):
+        assert _normalize_sender("Park, David") == "Park, David"
+
+    def test_empty_unchanged(self):
+        assert _normalize_sender("") == ""
+
+    def test_email_address_unchanged(self):
+        assert _normalize_sender("dpark@example.com") == "dpark@example.com"
+
+
+class TestSenderNormalizationInEmail:
+    def test_legacy_dn_falls_back_to_from_email(self):
+        raw = {
+            "senders": ["/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=abc123"],
+            "from": {"name": "Brook, Dana", "email": "dbrook@example.com"},
+            "topic": "Contract Review",
+            "lastDeliveryTime": "2026-10-01T09:00:00Z",
+            "conversationId": "CONV_DN001",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == "dbrook@example.com"
+        assert email.sender_name == "Brook, Dana"
+        assert "/O=" not in email.text
+
+    def test_legacy_dn_no_from_fallback(self):
+        raw = {
+            "senders": ["/O=EXCHANGELABS/OU=GROUP/CN=RECIPIENTS/CN=xyz789"],
+            "topic": "Orphan DN",
+            "lastDeliveryTime": "2026-10-01T09:00:00Z",
+            "conversationId": "CONV_DN002",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == ""
+        assert email.sender_name is None
+
+    def test_parenthetical_stripped_from_senders(self):
+        raw = {
+            "senders": ["Brook, Dana (Marketing)"],
+            "topic": "Team Update",
+            "lastDeliveryTime": "2026-10-01T09:00:00Z",
+            "conversationId": "CONV_PAR001",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == "Brook, Dana"
+        assert email.sender_name == "Brook, Dana"
+
+    def test_truncated_bracket_stripped(self):
+        raw = {
+            "senders": ["Brook, Dana ("],
+            "topic": "Bracket Test",
+            "lastDeliveryTime": "2026-10-01T09:00:00Z",
+            "conversationId": "CONV_PAR002",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == "Brook, Dana"
+
+    def test_sender_name_from_dict(self):
+        raw = {
+            "from": {"name": "Brook, Dana", "email": "dbrook@example.com"},
+            "subject": "Direct Email",
+            "receivedDateTime": "2026-10-01T09:00:00Z",
+            "id": "AAMk_SN001",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == "dbrook@example.com"
+        assert email.sender_name == "Brook, Dana"
+
+    def test_sender_name_none_when_no_display_name(self):
+        raw = {
+            "from": {"email": "unknown@example.com"},
+            "subject": "No Name",
+            "receivedDateTime": "2026-10-01T09:00:00Z",
+            "id": "AAMk_SN002",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == "unknown@example.com"
+        assert email.sender_name is None
+
+    def test_mixed_senders_dn_filtered(self):
+        raw = {
+            "senders": [
+                "/O=EXCHANGELABS/OU=GROUP/CN=RECIPIENTS/CN=hex001",
+                "Park, David",
+            ],
+            "topic": "Mixed Senders",
+            "lastDeliveryTime": "2026-10-01T09:00:00Z",
+            "conversationId": "CONV_MIX001",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == "Park, David"
+        assert "/O=" not in email.text
+        assert "Park, David" in email.text
+
+    def test_clean_sender_preserves_name(self):
+        raw = {
+            "senders": ["Martinez, Elena"],
+            "topic": "Normal",
+            "lastDeliveryTime": "2026-10-01T09:00:00Z",
+            "conversationId": "CONV_OK001",
+        }
+        email = _email_from_raw(raw)
+        assert email.sender == "Martinez, Elena"
+        assert email.sender_name == "Martinez, Elena"

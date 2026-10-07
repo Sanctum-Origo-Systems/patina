@@ -72,6 +72,12 @@ def is_non_person_sender(user_id: str, user_name: str | None = None) -> bool:
 
 def extract_sender_entity(user_id: str, user_name: str | None = None) -> Entity:
     aliases = [user_id, f"slack:{user_id}"]
+
+    if user_name:
+        cleaned = user_name.split("(", 1)[0].strip()
+        if cleaned:
+            user_name = cleaned
+
     canonical_name = user_name or user_id
 
     if user_name and "," in user_name:

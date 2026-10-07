@@ -168,3 +168,30 @@ def test_strip_slack_link_markup_no_label():
 def test_strip_slack_link_markup_mixed():
     text = "Check <https://github.com/org/repo|this PR> and <https://example.com>"
     assert strip_slack_link_markup(text) == "Check this PR and https://example.com"
+
+
+def test_sender_entity_strips_parenthetical():
+    e = extract_sender_entity("U001", "Dana Brook (Marketing)")
+    assert e.name == "Dana Brook"
+    assert "U001" in e.aliases
+
+
+def test_sender_entity_strips_truncated_bracket():
+    e = extract_sender_entity("U001", "Dana Brook (")
+    assert e.name == "Dana Brook"
+
+
+def test_sender_entity_parenthetical_with_comma_format():
+    e = extract_sender_entity("U001", "Brook, Dana (Ext)")
+    assert e.name == "Dana Brook"
+
+
+def test_sender_entity_no_parenthetical_unchanged():
+    e = extract_sender_entity("U001", "Dana Brook")
+    assert e.name == "Dana Brook"
+
+
+def test_sender_entity_email_as_user_id_no_name():
+    e = extract_sender_entity("dbrook@example.com", None)
+    assert e.name == "dbrook@example.com"
+    assert "dbrook@example.com" in e.aliases

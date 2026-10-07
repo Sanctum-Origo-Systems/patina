@@ -39,6 +39,12 @@ _NON_PERSON_SUFFIXES = (
     " calendar",
     " (bot)",
     " (Bot)",
+    " Team",
+    " team",
+    " List",
+    " list",
+    " Group",
+    " group",
 )
 
 _NON_PERSON_PREFIXES = (
@@ -46,6 +52,9 @@ _NON_PERSON_PREFIXES = (
     "bot ",
     "noreply",
     "no-reply",
+    "donotreply",
+    "do-not-reply",
+    "do_not_reply",
 )
 
 
@@ -183,6 +192,8 @@ def _name_type_rank(name: str) -> int:
 def is_non_person(name: str) -> bool:
     if not name or len(name) < 2:
         return False
+    if name.startswith("/O=") or name.startswith("/o="):
+        return True
     if any(name.endswith(s) for s in _NON_PERSON_SUFFIXES):
         return True
     if any(name.startswith(s) for s in _NON_PERSON_PREFIXES):

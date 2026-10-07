@@ -112,6 +112,36 @@ def test_is_non_person_bot_parenthetical():
     assert is_non_person("Jenkins (Bot)") is True
 
 
+def test_is_non_person_legacy_dn():
+    dn = "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=abc123"
+    assert is_non_person(dn) is True
+
+
+def test_is_non_person_legacy_dn_lowercase():
+    assert is_non_person("/o=EXCHANGELABS/ou=GROUP/cn=abc") is True
+
+
+def test_is_non_person_team_suffix():
+    assert is_non_person("Engineering Team") is True
+    assert is_non_person("IT Support team") is True
+
+
+def test_is_non_person_list_suffix():
+    assert is_non_person("All-Hands List") is True
+    assert is_non_person("Distribution list") is True
+
+
+def test_is_non_person_group_suffix():
+    assert is_non_person("Marketing Group") is True
+    assert is_non_person("Finance group") is True
+
+
+def test_is_non_person_donotreply():
+    assert is_non_person("donotreply@example.com") is True
+    assert is_non_person("do-not-reply@example.com") is True
+    assert is_non_person("do_not_reply@example.com") is True
+
+
 # ── is_plausible_person_name ────────────────────────────────
 
 

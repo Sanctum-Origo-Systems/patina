@@ -110,14 +110,32 @@ def _strip_caution_banner(text: str) -> str:
     return _CAUTION_BANNER_RE.sub("", text).strip()
 
 
+_LEGACY_DN_RE = re.compile(r"^/[Oo]=")
+_PAREN_SUFFIX_RE = re.compile(r"\s*\(.*$")
+
+
+def _normalize_sender(sender: str) -> str:
+    if not sender:
+        return sender
+    if _LEGACY_DN_RE.match(sender):
+        return ""
+    return _PAREN_SUFFIX_RE.sub("", sender).strip()
+
+
 def _email_from_raw(raw: dict) -> EmailMessage:
     senders = raw.get("senders", [])
-    sender = senders[0] if senders else ""
+    clean_senders = [s for s in (_normalize_sender(s) for s in senders) if s]
+    sender = clean_senders[0] if clean_senders else ""
+    sender_name = sender if sender else None
 
     if not sender:
         from_raw = raw.get("from", {})
         if isinstance(from_raw, dict):
             sender = from_raw.get("email", from_raw.get("name", ""))
+            raw_name = from_raw.get("name", "")
+            if raw_name:
+                normalized = _normalize_sender(raw_name)
+                sender_name = normalized if normalized else None
         elif from_raw:
             sender = str(from_raw)
 
@@ -134,7 +152,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
     subject = raw.get("topic", raw.get("subject", ""))
     preview = raw.get("preview", raw.get("bodyPreview", raw.get("body", "")))
     preview = _strip_caution_banner(preview)
-    participants_text = ", ".join(senders) if senders else sender
+    participants_text = ", ".join(clean_senders) if clean_senders else sender
     text = f"[Subject: {subject}] [Participants: {participants_text}]\n{preview}"
 
     return EmailMessage(
@@ -145,6 +163,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
         timestamp=timestamp,
         recipients=recipients,
         conversation_id=raw.get("conversationId"),
+        sender_name=sender_name,
     )
 
 
