@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from patina.beliefs.extractor import extract_beliefs
+from patina.graph import get_entity, upsert_entity
 from patina.maintenance import (
     dedup_entities,
     is_plausible_person_name,
@@ -16,6 +17,7 @@ from patina.maintenance import (
     prune_non_person_entities,
     prune_slack_link_entities,
 )
+from patina.models import Entity
 from patina.store import delete_dangling_references, find_dangling_references
 
 
@@ -47,6 +49,7 @@ def invariant_store(seeded_store):
       #334  — Slack link markup entity (pipe character)
       #333  — dangling claim (nonexistent subject)
       #372  — contaminated bare Slack ID alias (U0SOREN + U0LIANA)
+      #398  — ingest overwrites merged entity name (Slack + email)
     """
     conn = seeded_store
 
@@ -183,3 +186,40 @@ def test_invariant_cleanup_nulls_dangling_senders(seeded_store):
     # No observation rows deleted.
     obs_after = conn.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"]
     assert obs_after == obs_before, "cleanup must not delete observation rows"
+
+
+class TestIngestDoesNotOverwriteMergedEntity:
+    """#398: upsert_entity must not overwrite a merged entity's name or aliases."""
+
+    def test_slack_sender_preserves_full_name(self, seeded_store):
+        conn = seeded_store
+        upsert_entity(
+            conn,
+            Entity(
+                id="ingest-overwrite-398-slack",
+                type="person",
+                name="msolberg",
+                aliases=["msolberg", "U0MAREN111", "slack:U0MAREN111"],
+            ),
+        )
+        ent = get_entity(conn, "ingest-overwrite-398-slack")
+        assert ent.name == "Maren Solberg"
+        assert "Brook, Maren" in ent.aliases
+        assert "U0MAREN111" in ent.aliases
+        assert "slack:U0MAREN111" in ent.aliases
+
+    def test_email_sender_preserves_full_name(self, seeded_store):
+        conn = seeded_store
+        upsert_entity(
+            conn,
+            Entity(
+                id="ingest-overwrite-398-email",
+                type="person",
+                name="qavery@example.com",
+                aliases=["qavery@example.com"],
+            ),
+        )
+        ent = get_entity(conn, "ingest-overwrite-398-email")
+        assert ent.name == "Quinn Avery"
+        assert "qavery@example.com" in ent.aliases
+        assert "qavery" in ent.aliases

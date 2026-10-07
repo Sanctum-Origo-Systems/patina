@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from patina.graph import (
+    _name_type_rank,
     count_entities,
     count_observations,
     get_entity,
@@ -258,6 +259,179 @@ class TestUpsertEntityMerge:
         ent = get_entity(db_conn, "e1")
         assert ent.name == "Alice Updated"
         assert count_entities(db_conn) == 1
+
+
+class TestNameTypeRank:
+    def test_full_name(self):
+        assert _name_type_rank("Dana Brook") == 0
+
+    def test_handle(self):
+        assert _name_type_rank("dbrook") == 1
+
+    def test_email(self):
+        assert _name_type_rank("dbrook@example.com") == 2
+
+    def test_slack_id(self):
+        assert _name_type_rank("U0EXAMPLE1") == 3
+
+    def test_ordering(self):
+        assert (
+            _name_type_rank("Dana Brook")
+            < _name_type_rank("dbrook")
+            < _name_type_rank("dbrook@example.com")
+            < _name_type_rank("U0EXAMPLE1")
+        )
+
+
+class TestUpsertEntityNoOverwrite:
+    """#398: upsert must not overwrite a merged entity's name or aliases."""
+
+    def test_same_id_preserves_full_name_over_handle(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["Brook, Dana", "dbrook"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="dbrook",
+                aliases=["dbrook", "U0EXAMPLE1", "slack:U0EXAMPLE1"],
+            ),
+        )
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Brook"
+        assert "Brook, Dana" in ent.aliases
+        assert "U0EXAMPLE1" in ent.aliases
+        assert "slack:U0EXAMPLE1" in ent.aliases
+        assert count_entities(db_conn, "person") == 1
+
+    def test_same_id_preserves_full_name_over_slack_id(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["dbrook"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="U0EXAMPLE1",
+                aliases=["U0EXAMPLE1"],
+            ),
+        )
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Brook"
+        assert "dbrook" in ent.aliases
+        assert "U0EXAMPLE1" in ent.aliases
+
+    def test_same_id_preserves_full_name_over_email(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["dbrook@example.com"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="dbrook@example.com",
+                aliases=["dbrook@example.com"],
+            ),
+        )
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Brook"
+
+    def test_same_id_upgrades_handle_to_full_name(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="dbrook"),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook"),
+        )
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Brook"
+
+    def test_same_id_unions_aliases(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["Brook, Dana", "dbrook"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+            ),
+        )
+        ent = get_entity(db_conn, "e1")
+        assert "Brook, Dana" in ent.aliases
+        assert "dbrook" in ent.aliases
+        assert "U0EXAMPLE1" in ent.aliases
+        assert "slack:U0EXAMPLE1" in ent.aliases
+
+    def test_email_alias_no_new_entity(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["dbrook@example.com"],
+            ),
+        )
+        resolved = resolve_entity_id(db_conn, "dbrook@example.com", aliases=["dbrook@example.com"])
+        assert resolved == "e1"
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="dbrook@example.com",
+                aliases=["dbrook@example.com"],
+            ),
+        )
+        assert count_entities(db_conn, "person") == 1
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Brook"
+
+    def test_email_alias_case_insensitive(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["DBook@Example.COM"],
+            ),
+        )
+        resolved = resolve_entity_id(db_conn, "dbook@example.com")
+        assert resolved == "e1"
 
 
 class TestResolveEntityIdPrefixNormalization:
