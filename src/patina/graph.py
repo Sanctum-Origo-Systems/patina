@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 
 from patina.models import Claim, Entity, Observation, Relationship
 from patina.owner import normalize_alias
+
+_SLACK_ID_PAT = re.compile(r"^[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}$")
+
+
+def _name_type_rank(name: str) -> int:
+    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3)."""
+    if " " in name:
+        return 0
+    if "@" in name:
+        return 2
+    if _SLACK_ID_PAT.match(name):
+        return 3
+    return 1
 
 
 def normalize_name(name: str) -> str:
@@ -89,26 +103,39 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
         entity.id = existing_id
         return
 
-    conn.execute(
-        """INSERT INTO entities
-               (id, type, name, aliases, metadata, first_seen, last_seen,
-                decay_rate)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-               name = excluded.name,
-               aliases = excluded.aliases,
-               last_seen = excluded.last_seen""",
-        (
-            entity.id,
-            entity.type,
-            entity.name,
-            json.dumps(entity.aliases),
-            json.dumps(entity.metadata),
-            entity.first_seen,
-            entity.last_seen,
-            entity.decay_rate,
-        ),
-    )
+    existing = conn.execute(
+        "SELECT name, aliases FROM entities WHERE id = ?", (entity.id,)
+    ).fetchone()
+
+    if existing:
+        existing_aliases = json.loads(existing["aliases"] or "[]")
+        merged_aliases = list(set(existing_aliases + entity.aliases))
+        name = (
+            existing["name"]
+            if _name_type_rank(existing["name"]) < _name_type_rank(entity.name)
+            else entity.name
+        )
+        conn.execute(
+            "UPDATE entities SET name = ?, aliases = ?, last_seen = ? WHERE id = ?",
+            (name, json.dumps(merged_aliases), entity.last_seen, entity.id),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO entities
+                   (id, type, name, aliases, metadata, first_seen, last_seen,
+                    decay_rate)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                entity.id,
+                entity.type,
+                entity.name,
+                json.dumps(entity.aliases),
+                json.dumps(entity.metadata),
+                entity.first_seen,
+                entity.last_seen,
+                entity.decay_rate,
+            ),
+        )
     conn.commit()
 
 
