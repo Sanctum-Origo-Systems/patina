@@ -110,6 +110,7 @@ class EmailMessage:
     timestamp: float
     recipients: list[str] = field(default_factory=list)
     conversation_id: str | None = None
+    sender_name: str | None = None
 
 
 @dataclass
