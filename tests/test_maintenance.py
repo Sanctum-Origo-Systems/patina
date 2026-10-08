@@ -10,16 +10,20 @@ from patina.graph import (
 )
 from patina.maintenance import (
     _collect_slack_ids,
+    _is_junk_sender_name,
     backup_store,
     dedup_entities,
     find_dedup_candidates,
     find_id_named_entities,
+    fix_junk_senders,
     is_non_person,
+    is_organization,
     is_plausible_person_name,
     merge_entities,
     prune_non_person_entities,
     prune_slack_link_entities,
     reprocess_observations,
+    retype_organization_entities,
     rewire_entity_references,
 )
 from patina.models import Claim, Entity, Observation, Relationship
@@ -141,6 +145,55 @@ def test_is_non_person_donotreply():
     assert is_non_person("donotreply@example.com") is True
     assert is_non_person("do-not-reply@example.com") is True
     assert is_non_person("do_not_reply@example.com") is True
+
+
+# ── is_organization ─────────────────────────────────────────
+
+
+def test_is_organization_field_research():
+    assert is_organization("Acme Field Research") is True
+
+
+def test_is_organization_events():
+    assert is_organization("Acme Events") is True
+
+
+def test_is_organization_newsletter():
+    assert is_organization("Weekly Newsletter") is True
+
+
+def test_is_organization_role_title():
+    assert is_organization("Acme Engagement Manager") is True
+
+
+def test_is_organization_person_name():
+    assert is_organization("Dana Brook") is False
+    assert is_organization("Sam Rivera") is False
+    assert is_organization("Alice Chen") is False
+
+
+def test_is_organization_single_word():
+    assert is_organization("Newsletter") is False
+    assert is_organization("Research") is False
+
+
+def test_is_organization_empty():
+    assert is_organization("") is False
+
+
+def test_is_organization_various_suffixes():
+    assert is_organization("Acme Services") is True
+    assert is_organization("Regional Office") is True
+    assert is_organization("Product Solutions") is True
+    assert is_organization("Global Consulting") is True
+    assert is_organization("Acme Labs") is True
+    assert is_organization("Corporate Communications") is True
+
+
+def test_is_organization_role_nouns():
+    assert is_organization("Sales Director") is True
+    assert is_organization("VP Operations Coordinator") is True
+    assert is_organization("Acme Specialist") is True
 
 
 # ── is_plausible_person_name ────────────────────────────────
@@ -634,6 +687,45 @@ def test_dedup_reports_skipped_in_result(db_conn):
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
 
 
+def test_dedup_shared_slack_id_overrides_alias_collision(db_conn):
+    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["slack:U0AAAA1111"])
+    _insert_entity_raw(db_conn, "e2", "U0AAAA1111", aliases=["slack:U0AAAA1111"])
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["u0aaaa1111@work.com"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 1
+    assert len(result["skipped"]) == 0
+    merged_names = {m["drop_name"] for m in result["merges"]}
+    assert "U0AAAA1111" in merged_names
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+
+
+def test_dedup_shared_slack_id_extra_email_goes_to_review(db_conn):
+    _insert_entity_raw(
+        db_conn,
+        "e1",
+        "user_a",
+        aliases=["slack:U0AAAA1111"],
+    )
+    _insert_entity_raw(
+        db_conn,
+        "e2",
+        "U0AAAA1111",
+        aliases=["slack:U0AAAA1111", "bob@elsewhere.com"],
+    )
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["u0aaaa1111@work.com"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 0
+    assert len(result["skipped"]) == 0
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "U0AAAA1111" in review_names
+
+
 # ── prune_non_person_entities ────────────────────────────────
 
 
@@ -786,6 +878,303 @@ def test_prune_slack_link_entities_dry_run(db_conn):
 
     remaining = db_conn.execute("SELECT id FROM entities WHERE type = 'reference'").fetchall()
     assert len(remaining) == 1
+
+
+# ── retype_organization_entities ─────────────────────────────
+
+
+def test_retype_retypes_orgs(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Acme Field Research")
+    _insert_entity_raw(db_conn, "e2", "Dana Brook")
+    _insert_entity_raw(db_conn, "e3", "Acme Events")
+
+    result = retype_organization_entities(db_conn)
+
+    assert result["retyped"] == 2
+    row1 = db_conn.execute("SELECT type FROM entities WHERE id = 'e1'").fetchone()
+    assert row1["type"] == "organization"
+    row2 = db_conn.execute("SELECT type FROM entities WHERE id = 'e2'").fetchone()
+    assert row2["type"] == "person"
+    row3 = db_conn.execute("SELECT type FROM entities WHERE id = 'e3'").fetchone()
+    assert row3["type"] == "organization"
+
+
+def test_retype_dry_run(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Acme Field Research")
+
+    result = retype_organization_entities(db_conn, dry_run=True)
+
+    assert result["retyped"] == 1
+    row = db_conn.execute("SELECT type FROM entities WHERE id = 'e1'").fetchone()
+    assert row["type"] == "person"
+
+
+def test_retype_skips_owner(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Acme Research", is_owner=1)
+
+    result = retype_organization_entities(db_conn)
+    assert result["retyped"] == 0
+
+
+def test_retype_skips_already_organization(db_conn):
+    db_conn.execute(
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata,"
+        "  first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES ('e1', 'organization', 'Acme Research', '[]', '{}', '', '', 0.02, 0)"
+    )
+    db_conn.commit()
+
+    result = retype_organization_entities(db_conn)
+    assert result["retyped"] == 0
+
+
+# ── _is_junk_sender_name ─────────────────────────────────────
+
+
+def test_is_junk_sender_name_legacy_dn():
+    assert _is_junk_sender_name("/O=EXCHANGELABS/OU=GROUP/CN=abc") is True
+
+
+def test_is_junk_sender_name_legacy_dn_lower():
+    assert _is_junk_sender_name("/o=EXCHANGELABS/ou=GROUP/cn=abc") is True
+
+
+def test_is_junk_sender_name_bare_email():
+    assert _is_junk_sender_name("dana.brook@example.com") is True
+
+
+def test_is_junk_sender_name_regular_name():
+    assert _is_junk_sender_name("Dana Brook") is False
+
+
+def test_is_junk_sender_name_handle():
+    assert _is_junk_sender_name("dbrook") is False
+
+
+# ── fix_junk_senders ────────────────────────────────────────
+
+
+def test_fix_junk_senders_dn_merges_via_alias(db_conn):
+    """DN entity whose email alias matches Dana Brook merges into her."""
+    _insert_entity_raw(db_conn, "e_dana", "Dana Brook", aliases=["dana.brook@example.com"])
+    dn = "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP/CN=RECIPIENTS/CN=abc123"
+    _insert_entity_raw(db_conn, "e_dn", dn, aliases=["dana.brook@example.com"])
+    insert_observation(db_conn, _obs("o1", "e_dn"))
+
+    result = fix_junk_senders(db_conn)
+
+    assert len(result["merged"]) == 1
+    assert result["merged"][0]["target_name"] == "Dana Brook"
+    assert result["merged"][0]["junk_name"] == dn
+    assert len(result["retyped"]) == 0
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e_dn'").fetchone() is None
+    row = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
+    assert row["sender_entity_id"] == "e_dana"
+
+
+def test_fix_junk_senders_email_merges_via_dedup_norm(db_conn):
+    """Email-as-name entity merges into matching person via dedup normalization."""
+    _insert_entity_raw(db_conn, "e_sam", "Sam Rivera")
+    _insert_entity_raw(db_conn, "e_email", "sam.rivera@example.com")
+    insert_observation(db_conn, _obs("o1", "e_email"))
+
+    result = fix_junk_senders(db_conn)
+
+    assert len(result["merged"]) == 1
+    assert result["merged"][0]["target_name"] == "Sam Rivera"
+    assert len(result["retyped"]) == 0
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e_email'").fetchone() is None
+    row = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
+    assert row["sender_entity_id"] == "e_sam"
+
+
+def test_fix_junk_senders_unmatched_retyped(db_conn):
+    """Unmatched DN entity is retyped to reference and keeps its observations."""
+    dn = "/O=EXCHANGELABS/OU=GROUP/CN=unknown_user"
+    _insert_entity_raw(db_conn, "e_dn", dn)
+    insert_observation(db_conn, _obs("o1", "e_dn"))
+
+    result = fix_junk_senders(db_conn)
+
+    assert len(result["merged"]) == 0
+    assert len(result["retyped"]) == 1
+    assert result["retyped"][0]["name"] == dn
+
+    ent = db_conn.execute("SELECT type FROM entities WHERE id = 'e_dn'").fetchone()
+    assert ent["type"] == "reference"
+
+    row = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
+    assert row["sender_entity_id"] == "e_dn"
+
+
+def test_fix_junk_senders_dry_run(db_conn):
+    """Dry run previews changes without modifying the database."""
+    _insert_entity_raw(db_conn, "e_dana", "Dana Brook", aliases=["dana.brook@example.com"])
+    dn = "/O=EXCHANGELABS/OU=GROUP/CN=abc"
+    _insert_entity_raw(db_conn, "e_dn", dn, aliases=["dana.brook@example.com"])
+    insert_observation(db_conn, _obs("o1", "e_dn"))
+
+    result = fix_junk_senders(db_conn, dry_run=True)
+
+    assert len(result["merged"]) == 1
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e_dn'").fetchone() is not None
+    row = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
+    assert row["sender_entity_id"] == "e_dn"
+
+
+def test_fix_junk_senders_skips_non_senders(db_conn):
+    """Junk-named entities without observations are not processed."""
+    _insert_entity_raw(db_conn, "e_dn", "/O=EXCHANGELABS/OU=GROUP/CN=abc")
+
+    result = fix_junk_senders(db_conn)
+
+    assert len(result["merged"]) == 0
+    assert len(result["retyped"]) == 0
+    ent = db_conn.execute("SELECT type FROM entities WHERE id = 'e_dn'").fetchone()
+    assert ent["type"] == "person"
+
+
+def test_fix_junk_senders_skips_owner(db_conn):
+    """Owner entities are never touched."""
+    _insert_entity_raw(db_conn, "e_own", "owner@example.com", is_owner=1)
+    insert_observation(db_conn, _obs("o1", "e_own"))
+
+    result = fix_junk_senders(db_conn)
+
+    assert len(result["merged"]) == 0
+    assert len(result["retyped"]) == 0
+
+
+def test_fix_junk_senders_no_junk(db_conn):
+    """No changes when all sender entities have proper names."""
+    _insert_entity_raw(db_conn, "e1", "Alice Tran")
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = fix_junk_senders(db_conn)
+
+    assert len(result["merged"]) == 0
+    assert len(result["retyped"]) == 0
+
+
+def test_fix_junk_senders_observations_never_deleted(db_conn):
+    """Both merge and retype paths preserve all observations."""
+    _insert_entity_raw(db_conn, "e_dana", "Dana Brook", aliases=["dana.brook@example.com"])
+    _insert_entity_raw(
+        db_conn,
+        "e_dn_match",
+        "/O=EXCHANGELABS/OU=GROUP/CN=match",
+        aliases=["dana.brook@example.com"],
+    )
+    insert_observation(db_conn, _obs("o_match", "e_dn_match"))
+
+    _insert_entity_raw(db_conn, "e_dn_nomatch", "/O=EXCHANGELABS/OU=GROUP/CN=nomatch")
+    insert_observation(db_conn, _obs("o_nomatch", "e_dn_nomatch"))
+
+    obs_before = db_conn.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"]
+
+    fix_junk_senders(db_conn)
+
+    obs_after = db_conn.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"]
+    assert obs_after == obs_before
+
+
+# ── CLI: patina entity fix-senders ────────────────────────────
+
+
+def test_cli_entity_fix_senders_dry_run(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e_dana", "Dana Brook", aliases=["dana.brook@example.com"])
+    dn = "/O=EXCHANGELABS/OU=GROUP/CN=abc"
+    _insert_entity_raw(conn, "e_dn", dn, aliases=["dana.brook@example.com"])
+    insert_observation(conn, _obs("o1", "e_dn"))
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "fix-senders", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Would apply 1 merge(s)" in result.output
+    assert "Dana Brook" in result.output
+    assert "re-run with --confirm to apply" in result.output
+
+    conn = connect(db_path)
+    assert conn.execute("SELECT 1 FROM entities WHERE id = 'e_dn'").fetchone() is not None
+    conn.close()
+
+
+def test_cli_entity_fix_senders_confirm(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e_dana", "Dana Brook", aliases=["dana.brook@example.com"])
+    dn = "/O=EXCHANGELABS/OU=GROUP/CN=abc"
+    _insert_entity_raw(conn, "e_dn", dn, aliases=["dana.brook@example.com"])
+    insert_observation(conn, _obs("o1", "e_dn"))
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "fix-senders", "--confirm", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Applied 1 merge(s)" in result.output
+    assert "Dana Brook" in result.output
+    assert "re-run with --confirm" not in result.output
+
+    conn = connect(db_path)
+    assert conn.execute("SELECT 1 FROM entities WHERE id = 'e_dn'").fetchone() is None
+    row = conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
+    assert row["sender_entity_id"] == "e_dana"
+    conn.close()
+
+
+def test_cli_entity_fix_senders_retype(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    dn = "/O=EXCHANGELABS/OU=GROUP/CN=orphan"
+    _insert_entity_raw(conn, "e_dn", dn)
+    insert_observation(conn, _obs("o1", "e_dn"))
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "fix-senders", "--confirm", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Applied 1 retype(s)" in result.output
+    assert "reference" in result.output
+
+    conn = connect(db_path)
+    ent = conn.execute("SELECT type FROM entities WHERE id = 'e_dn'").fetchone()
+    assert ent["type"] == "reference"
+    row = conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
+    assert row["sender_entity_id"] == "e_dn"
+    conn.close()
+
+
+def test_cli_entity_fix_senders_noop(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "fix-senders", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "No junk sender entities found." in result.output
 
 
 # ── reprocess_observations ───────────────────────────────────
@@ -1137,6 +1526,55 @@ def test_cli_entity_list(db_path):
     result = runner.invoke(app, ["entity", "list", "--home", str(home)])
     assert result.exit_code == 0
     assert "Alice Tran" in result.output
+
+
+def test_cli_entity_retype_dry_run(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e1aabbcc", "Acme Field Research")
+    _insert_entity_raw(conn, "e2ddeeff", "Dana Brook")
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "retype", "--dry-run", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Would retype" in result.output
+    assert "Acme Field Research" in result.output
+    assert "Dana Brook" not in result.output
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT type FROM entities WHERE id = 'e1aabbcc'").fetchone()
+    conn.close()
+    assert row["type"] == "person"
+
+
+def test_cli_entity_retype_applies(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e1aabbcc", "Acme Events")
+    _insert_entity_raw(conn, "e2ddeeff", "Dana Brook")
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "retype", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Retyped" in result.output
+    assert "Acme Events" in result.output
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT type FROM entities WHERE id = 'e1aabbcc'").fetchone()
+    conn.close()
+    assert row["type"] == "organization"
 
 
 def test_cli_extract_reprocess_dry_run(db_path):
