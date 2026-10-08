@@ -634,6 +634,45 @@ def test_dedup_reports_skipped_in_result(db_conn):
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
 
 
+def test_dedup_shared_slack_id_overrides_alias_collision(db_conn):
+    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["slack:U0AAAA1111"])
+    _insert_entity_raw(db_conn, "e2", "U0AAAA1111", aliases=["slack:U0AAAA1111"])
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["u0aaaa1111@work.com"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 1
+    assert len(result["skipped"]) == 0
+    merged_names = {m["drop_name"] for m in result["merges"]}
+    assert "U0AAAA1111" in merged_names
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+
+
+def test_dedup_shared_slack_id_extra_email_goes_to_review(db_conn):
+    _insert_entity_raw(
+        db_conn,
+        "e1",
+        "user_a",
+        aliases=["slack:U0AAAA1111"],
+    )
+    _insert_entity_raw(
+        db_conn,
+        "e2",
+        "U0AAAA1111",
+        aliases=["slack:U0AAAA1111", "bob@elsewhere.com"],
+    )
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["u0aaaa1111@work.com"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 0
+    assert len(result["skipped"]) == 0
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "U0AAAA1111" in review_names
+
+
 # ── prune_non_person_entities ────────────────────────────────
 
 
