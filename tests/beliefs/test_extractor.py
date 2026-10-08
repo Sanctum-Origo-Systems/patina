@@ -1002,6 +1002,31 @@ class TestSingleTokenNameResolution:
         assert "Sam" not in entity_names
         conn.close()
 
+    def test_single_token_resolves_to_unambiguous_full_name(self, db_conn):
+        """'Dana' resolves to existing 'Dana Brook' when unambiguous (#404)."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Dana Brook"))
+        entity_id, _ = _upsert_entity(db_conn, "Dana")
+        assert entity_id == "e1"
+
+    def test_single_token_no_resolve_when_ambiguous_full_names(self, db_conn):
+        """'Dana' does not resolve when multiple 'Dana X' entities exist (#404)."""
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Dana Brook"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Dana Kim"))
+        entity_id, _ = _upsert_entity(db_conn, "Dana")
+        assert entity_id == ""
+
+    def test_place_name_single_word_blocked(self, db_conn):
+        """Single-word place names like 'Atlantis' must not create entities (#404)."""
+        entity_id, _ = _upsert_entity(db_conn, "Atlantis")
+        assert entity_id == ""
+        row = db_conn.execute("SELECT * FROM entities WHERE name = 'Atlantis'").fetchone()
+        assert row is None
+
+    def test_multi_token_name_creates_entity(self, db_conn):
+        """Multi-token names like 'Dana Brook' create entities (#404)."""
+        entity_id, _ = _upsert_entity(db_conn, "Dana Brook")
+        assert entity_id != ""
+
     def test_single_token_skipped_with_ambiguous_match(self, db_conn, db_path, tmp_path):
         """Bare 'Sam' is skipped when multiple people named Sam appear in batch."""
         upsert_entity(db_conn, Entity(id="e1", type="person", name="Rivera, Sam"))

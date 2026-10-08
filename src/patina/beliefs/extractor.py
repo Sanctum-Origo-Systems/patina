@@ -321,6 +321,15 @@ def _upsert_entity(
         return existing_id, collisions
 
     if _is_single_token_name(name):
+        token_lower = name.strip().lower()
+        rows = conn.execute("SELECT id, name FROM entities WHERE is_owner = 0").fetchall()
+        candidates = []
+        for r in rows:
+            parts = normalize_name(r["name"]).split()
+            if parts and parts[0] == token_lower:
+                candidates.append(r["id"])
+        if len(candidates) == 1:
+            return candidates[0], 0
         return "", 0
 
     collisions = 0
