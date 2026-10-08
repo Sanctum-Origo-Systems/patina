@@ -1210,6 +1210,55 @@ def entity_retype_cmd(
         conn.close()
 
 
+@entity_app.command("fix-senders")
+def entity_fix_senders_cmd(
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Apply changes (preview only without this flag)"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Merge or retype junk sender entities (legacy DNs and raw emails)."""
+    from patina.maintenance import backup_store, fix_junk_senders
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if confirm:
+            backup_path = backup_store(db_path)
+            typer.echo(f"Backup: {backup_path}")
+
+        result = fix_junk_senders(conn, dry_run=not confirm)
+
+        merged = result["merged"]
+        retyped = result["retyped"]
+
+        if not merged and not retyped:
+            typer.echo("No junk sender entities found.")
+            return
+
+        mode = "Applied" if confirm else "Would apply"
+
+        if merged:
+            typer.echo(f"{mode} {len(merged)} merge(s):")
+            for m in merged:
+                typer.echo(f"  {m['junk_name']} → {m['target_name']}")
+
+        if retyped:
+            typer.echo(f"{mode} {len(retyped)} retype(s):")
+            for r in retyped:
+                typer.echo(f"  {r['name']} → reference")
+
+        if not confirm and (merged or retyped):
+            n = len(merged) + len(retyped)
+            typer.echo(f"{n} fix(es) proposed — re-run with --confirm to apply")
+    finally:
+        conn.close()
+
+
 @entity_app.command("list")
 def entity_list_cmd(
     entity_type: str = typer.Option(

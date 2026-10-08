@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from patina.graph import normalize_name as _graph_normalize
+from patina.graph import resolve_entity_id
 
 _NON_PERSON_RE = re.compile(
     r"\b("
@@ -283,6 +284,18 @@ def is_organization(name: str) -> bool:
         return False
     last = words[-1].lower().rstrip(".,;!?")
     return last in _ORG_SUFFIX_WORDS or last in _ROLE_NOUNS
+
+
+_LEGACY_DN_RE = re.compile(r"^/[Oo]=")
+_BARE_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _is_junk_sender_name(name: str) -> bool:
+    if _LEGACY_DN_RE.match(name):
+        return True
+    if _BARE_EMAIL_RE.match(name):
+        return True
+    return False
 
 
 def _normalize_for_dedup(name: str) -> str:
@@ -926,6 +939,107 @@ def retype_organization_entities(
 
     conn.commit()
     return result
+
+
+def fix_junk_senders(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Merge or retype junk sender entities (legacy DNs and raw emails).
+
+    Finds person entities that are active senders but named by a legacy
+    Exchange DN or a bare email address.  For each, tries to resolve the
+    entity's SMTP address or aliases to an existing proper person entity
+    and merges into it.  Unmatched entities are retyped as ``reference``
+    so they no longer pollute the person list.  Observations are never
+    deleted.
+    """
+    rows = conn.execute(
+        "SELECT e.id, e.name, e.aliases FROM entities e "
+        "WHERE e.is_owner = 0 AND e.type = 'person' "
+        "AND e.id IN ("
+        "  SELECT DISTINCT sender_entity_id FROM observations "
+        "  WHERE sender_entity_id IS NOT NULL"
+        ")"
+    ).fetchall()
+
+    junk_ids: set[str] = set()
+    junk: list[sqlite3.Row] = []
+    for r in rows:
+        if _is_junk_sender_name(r["name"]):
+            junk.append(r)
+            junk_ids.add(r["id"])
+
+    if not junk:
+        return {"merged": [], "retyped": []}
+
+    all_entities = conn.execute(
+        "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+    ).fetchall()
+
+    norm_lookup: dict[str, str] = {}
+    for ent in all_entities:
+        if ent["id"] in junk_ids:
+            continue
+        norm = _normalize_for_dedup(ent["name"])
+        if norm and len(norm) > 2:
+            norm_lookup.setdefault(norm, ent["id"])
+        for alias in json.loads(ent["aliases"] or "[]"):
+            anorm = _normalize_for_dedup(alias)
+            if anorm and len(anorm) > 2:
+                norm_lookup.setdefault(anorm, ent["id"])
+
+    merged: list[dict] = []
+    retyped: list[dict] = []
+
+    for r in junk:
+        aliases = json.loads(r["aliases"] or "[]")
+        target_id: str | None = None
+
+        for ident in [r["name"]] + aliases:
+            if ident.startswith("/O=") or ident.startswith("/o="):
+                continue
+            if ident.startswith("slack:"):
+                continue
+
+            tid = resolve_entity_id(conn, ident)
+            if tid and tid != r["id"] and tid not in junk_ids:
+                target_id = tid
+                break
+
+            norm = _normalize_for_dedup(ident)
+            if norm and len(norm) > 2 and norm in norm_lookup:
+                tid = norm_lookup[norm]
+                if tid != r["id"]:
+                    target_id = tid
+                    break
+
+        if target_id:
+            result = merge_entities(conn, target_id, r["id"], dry_run=dry_run)
+            merged.append(
+                {
+                    "junk_id": r["id"],
+                    "junk_name": r["name"],
+                    "target_id": target_id,
+                    "target_name": result["keep_name"],
+                }
+            )
+        else:
+            if not dry_run:
+                conn.execute(
+                    "UPDATE entities SET type = 'reference' WHERE id = ?",
+                    (r["id"],),
+                )
+                conn.commit()
+            retyped.append(
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                }
+            )
+
+    return {"merged": merged, "retyped": retyped}
 
 
 def reprocess_observations(
