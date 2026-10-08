@@ -370,6 +370,7 @@ def extract_beliefs(
         "errors": 0,
         "skipped_unresolved": 0,
         "alias_collisions": 0,
+        "empty_skipped": 0,
     }
 
     try:
@@ -400,6 +401,14 @@ def extract_beliefs(
                     if normalized:
                         owner_match_names.add(normalized)
             owner_match_names.discard("")
+
+        empty_skipped = conn.execute(
+            "UPDATE observations SET processed = 1"
+            " WHERE processed = 0 AND (text IS NULL OR text = '')"
+        ).rowcount
+        if empty_skipped:
+            conn.commit()
+            stats["empty_skipped"] = empty_skipped
 
         rows = conn.execute(
             """SELECT o.id, o.text, o.sender_entity_id, o.source, o.timestamp,

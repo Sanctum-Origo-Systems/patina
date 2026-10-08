@@ -69,6 +69,38 @@ def test_extract_beliefs_no_observations(tmp_path):
     assert stats["observations_processed"] == 0
 
 
+def test_empty_text_observations_skipped(db_conn, db_path, tmp_path):
+    from patina.store import connect, get_db_path
+
+    for obs_id, text in [("empty1", ""), ("empty2", None), ("has-text", "hello")]:
+        insert_observation(
+            db_conn,
+            Observation(
+                id=obs_id,
+                source="slack",
+                channel_id="C1",
+                thread_id=None,
+                timestamp=1.0,
+                sender_entity_id=None,
+                text=text,
+            ),
+        )
+    db_conn.close()
+
+    stats = extract_beliefs(home=tmp_path, dry_run=True, batch_size=5)
+    assert stats["empty_skipped"] == 2
+    assert stats["observations_processed"] == 1
+
+    conn = connect(get_db_path(tmp_path))
+    unprocessed = conn.execute("SELECT COUNT(*) FROM observations WHERE processed = 0").fetchone()[
+        0
+    ]
+    assert unprocessed == 1
+    still_pending = conn.execute("SELECT id FROM observations WHERE processed = 0").fetchone()
+    assert still_pending["id"] == "has-text"
+    conn.close()
+
+
 def test_extract_beliefs_dry_run(db_conn, db_path, tmp_path):
     upsert_entity(db_conn, Entity(id="e1", type="person", name="Alice"))
     obs = Observation(
