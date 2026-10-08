@@ -13,6 +13,7 @@ from patina.maintenance import (
     backup_store,
     dedup_entities,
     find_dedup_candidates,
+    find_id_named_entities,
     is_non_person,
     is_plausible_person_name,
     merge_entities,
@@ -631,6 +632,45 @@ def test_dedup_reports_skipped_in_result(db_conn):
     assert len(result["skipped"]) == 1
     assert result["skipped"][0]["reason"] == "alias collision"
     assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
+
+
+def test_dedup_shared_slack_id_overrides_alias_collision(db_conn):
+    _insert_entity_raw(db_conn, "e1", "user_a", aliases=["slack:U0AAAA1111"])
+    _insert_entity_raw(db_conn, "e2", "U0AAAA1111", aliases=["slack:U0AAAA1111"])
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["u0aaaa1111@work.com"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 1
+    assert len(result["skipped"]) == 0
+    merged_names = {m["drop_name"] for m in result["merges"]}
+    assert "U0AAAA1111" in merged_names
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+
+
+def test_dedup_shared_slack_id_extra_email_goes_to_review(db_conn):
+    _insert_entity_raw(
+        db_conn,
+        "e1",
+        "user_a",
+        aliases=["slack:U0AAAA1111"],
+    )
+    _insert_entity_raw(
+        db_conn,
+        "e2",
+        "U0AAAA1111",
+        aliases=["slack:U0AAAA1111", "bob@elsewhere.com"],
+    )
+    _insert_entity_raw(db_conn, "e3", "Quinn Farrow", aliases=["u0aaaa1111@work.com"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 0
+    assert len(result["skipped"]) == 0
+    review_names = {r["name"] for r in result["needs_review"]}
+    assert "U0AAAA1111" in review_names
 
 
 # ── prune_non_person_entities ────────────────────────────────
@@ -1488,3 +1528,43 @@ def test_cli_entity_cleanup_nulls_sender_entity_id(db_path):
     dangling = find_dangling_references(conn)
     assert dangling.get("senders", 0) == 0
     conn.close()
+
+
+def test_find_id_named_entities(db_conn):
+    _insert_entity_raw(db_conn, "e_id1", "W0EXAMPLE9", aliases=["W0EXAMPLE9", "slack:W0EXAMPLE9"])
+    _insert_entity_raw(db_conn, "e_id2", "U0TESTID01", aliases=["U0TESTID01", "slack:U0TESTID01"])
+    _insert_entity_raw(db_conn, "e_named", "Dana Brook", aliases=["W0NAMED01", "slack:W0NAMED01"])
+    _insert_entity_raw(db_conn, "e_handle", "dbrook", aliases=[])
+
+    results = find_id_named_entities(db_conn)
+    ids = {r["name"] for r in results}
+    assert "W0EXAMPLE9" in ids
+    assert "U0TESTID01" in ids
+    assert "Dana Brook" not in ids
+    assert "dbrook" not in ids
+
+
+def test_find_id_named_entities_skips_owner(db_conn):
+    _insert_entity_raw(db_conn, "e_owner", "W0OWNER001", aliases=["W0OWNER001"], is_owner=1)
+    results = find_id_named_entities(db_conn)
+    assert len(results) == 0
+
+
+def test_cli_entity_resolve_names_dry_run(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e_id1", "W0EXAMPLE9", aliases=["W0EXAMPLE9", "slack:W0EXAMPLE9"])
+    _insert_entity_raw(conn, "e_named", "Dana Brook", aliases=["W0NAMED01"])
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "resolve-names", "--dry-run", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "1 entity(ies)" in result.output
+    assert "W0EXAMPLE9" in result.output
+    assert "Dana Brook" not in result.output

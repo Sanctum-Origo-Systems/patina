@@ -660,16 +660,28 @@ def dedup_entities(
         match_id = group.get("match_identifier", "")
         for drop in group["drop"]:
             if _merge_aliases_collide(conn, keep["id"], drop["id"]):
-                result["skipped"].append(
-                    {
-                        "keep_id": keep["id"],
-                        "keep_name": keep["name"],
-                        "drop_id": drop["id"],
-                        "drop_name": drop["name"],
-                        "reason": "alias collision",
-                    }
-                )
-                continue
+                keep_tokens = [keep["name"]] + keep.get("aliases", [])
+                drop_tokens = [drop["name"]] + drop.get("aliases", [])
+                shared_slacks = _collect_slack_ids(keep_tokens) & _collect_slack_ids(drop_tokens)
+                if shared_slacks:
+                    keep_emails = _collect_emails(keep_tokens)
+                    drop_emails = _collect_emails(drop_tokens)
+                    extra_keep = keep_emails - drop_emails
+                    extra_drop = drop_emails - keep_emails
+                    if extra_keep or extra_drop:
+                        result["needs_review"].append({**drop, "reason": "alias collision"})
+                        continue
+                else:
+                    result["skipped"].append(
+                        {
+                            "keep_id": keep["id"],
+                            "keep_name": keep["name"],
+                            "drop_id": drop["id"],
+                            "drop_name": drop["name"],
+                            "reason": "alias collision",
+                        }
+                    )
+                    continue
             merge_result = merge_entities(conn, keep["id"], drop["id"], dry_run=dry_run)
             merge_result["match_identifier"] = match_id
             result["merges"].append(merge_result)
@@ -784,6 +796,24 @@ def prune_slack_link_entities(
 
     conn.commit()
     return result
+
+
+def find_id_named_entities(conn: sqlite3.Connection) -> list[dict]:
+    """Find person entities whose name is a raw Slack ID."""
+    rows = conn.execute(
+        "SELECT id, name, aliases FROM entities WHERE type = 'person' AND is_owner = 0"
+    ).fetchall()
+    results = []
+    for r in rows:
+        if _SLACK_ID_RE.match(r["name"]):
+            results.append(
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "aliases": json.loads(r["aliases"] or "[]"),
+                }
+            )
+    return results
 
 
 def reprocess_observations(
