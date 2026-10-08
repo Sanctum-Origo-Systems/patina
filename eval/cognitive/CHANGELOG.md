@@ -1,3 +1,8 @@
+## v0.23.1 (2026-10-08)
+- #401: Fix: Outlook adapter creates junk sender entities ($2.68)
+- #400: Fix: ingest overwrites merged entities' name and aliases ($1.71)
+Total: 2 PRs, $4.39
+
 ## v0.23.0 (2026-10-06)
 - #394: Fix: entity cleanup nulls dangling sender_entity_id refs ($1.20)
 - #393: Fix: route handle-alias merge to REVIEW when target has no Slack ID ($3.53)
