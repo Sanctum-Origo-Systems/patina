@@ -13,6 +13,7 @@ from patina.maintenance import (
     backup_store,
     dedup_entities,
     find_dedup_candidates,
+    find_id_named_entities,
     is_non_person,
     is_plausible_person_name,
     merge_entities,
@@ -1527,3 +1528,43 @@ def test_cli_entity_cleanup_nulls_sender_entity_id(db_path):
     dangling = find_dangling_references(conn)
     assert dangling.get("senders", 0) == 0
     conn.close()
+
+
+def test_find_id_named_entities(db_conn):
+    _insert_entity_raw(db_conn, "e_id1", "W0EXAMPLE9", aliases=["W0EXAMPLE9", "slack:W0EXAMPLE9"])
+    _insert_entity_raw(db_conn, "e_id2", "U0TESTID01", aliases=["U0TESTID01", "slack:U0TESTID01"])
+    _insert_entity_raw(db_conn, "e_named", "Dana Brook", aliases=["W0NAMED01", "slack:W0NAMED01"])
+    _insert_entity_raw(db_conn, "e_handle", "dbrook", aliases=[])
+
+    results = find_id_named_entities(db_conn)
+    ids = {r["name"] for r in results}
+    assert "W0EXAMPLE9" in ids
+    assert "U0TESTID01" in ids
+    assert "Dana Brook" not in ids
+    assert "dbrook" not in ids
+
+
+def test_find_id_named_entities_skips_owner(db_conn):
+    _insert_entity_raw(db_conn, "e_owner", "W0OWNER001", aliases=["W0OWNER001"], is_owner=1)
+    results = find_id_named_entities(db_conn)
+    assert len(results) == 0
+
+
+def test_cli_entity_resolve_names_dry_run(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e_id1", "W0EXAMPLE9", aliases=["W0EXAMPLE9", "slack:W0EXAMPLE9"])
+    _insert_entity_raw(conn, "e_named", "Dana Brook", aliases=["W0NAMED01"])
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "resolve-names", "--dry-run", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "1 entity(ies)" in result.output
+    assert "W0EXAMPLE9" in result.output
+    assert "Dana Brook" not in result.output

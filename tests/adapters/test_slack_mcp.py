@@ -759,6 +759,149 @@ class TestExtractDisplayName:
         assert _extract_display_name(raw) == "Anya Petrova"
 
 
+class TestFailedLookupRetry:
+    def test_failed_lookup_not_cached_across_sessions(self):
+        messages = json.dumps(
+            [
+                {
+                    "user": "W0RETRYTST",
+                    "text": "First attempt",
+                    "ts": "1781900000.111111",
+                    "channel_id": "C001",
+                }
+            ]
+        )
+        bridge1 = MagicMock()
+
+        def call_tool_fail(name, arguments=None, **kwargs):
+            if name == "get_user_profile":
+                raise Exception("API error")
+            if name == "get_messages":
+                return SimpleNamespace(isError=False, content=[SimpleNamespace(text=messages)])
+            return SimpleNamespace(isError=False, content=[SimpleNamespace(text="[]")])
+
+        bridge1.call_tool = MagicMock(side_effect=call_tool_fail)
+        adapter1 = SlackMcpAdapter(bridge1)
+        msgs1 = adapter1.list_channel_messages("C001", since=0.0)
+        assert msgs1[0].user_name is None
+
+        profile_response = json.dumps({"real_name": "Dana Brook"})
+        bridge2 = _make_bridge({"get_messages": messages, "get_user_profile": profile_response})
+        adapter2 = SlackMcpAdapter(bridge2)
+        msgs2 = adapter2.list_channel_messages("C001", since=0.0)
+        assert msgs2[0].user_name == "Dana Brook"
+
+    def test_failed_lookup_skipped_within_session(self):
+        messages = json.dumps(
+            [
+                {
+                    "user": "W0SKIPTEST",
+                    "text": "First message",
+                    "ts": "1781900000.111111",
+                    "channel_id": "C001",
+                },
+                {
+                    "user": "W0SKIPTEST",
+                    "text": "Second message",
+                    "ts": "1781900001.222222",
+                    "channel_id": "C001",
+                },
+            ]
+        )
+        bridge = MagicMock()
+
+        def call_tool(name, arguments=None, **kwargs):
+            if name == "get_user_profile":
+                raise Exception("API error")
+            if name == "get_messages":
+                return SimpleNamespace(isError=False, content=[SimpleNamespace(text=messages)])
+            return SimpleNamespace(isError=False, content=[SimpleNamespace(text="[]")])
+
+        bridge.call_tool = MagicMock(side_effect=call_tool)
+        adapter = SlackMcpAdapter(bridge)
+        msgs = adapter.list_channel_messages("C001", since=0.0)
+        assert len(msgs) == 2
+        assert msgs[0].user_name is None
+        assert msgs[1].user_name is None
+        profile_calls = [
+            c for c in bridge.call_tool.call_args_list if c[0][0] == "get_user_profile"
+        ]
+        assert len(profile_calls) == 1
+
+    def test_successful_lookup_only_caches_name(self):
+        profile_response = json.dumps({"real_name": "Suki Harmon"})
+        messages = json.dumps(
+            [
+                {
+                    "user": "W0CACHETEST",
+                    "text": "Hello",
+                    "ts": "1781900000.111111",
+                    "channel_id": "C001",
+                },
+            ]
+        )
+        bridge = _make_bridge({"get_messages": messages, "get_user_profile": profile_response})
+        adapter = SlackMcpAdapter(bridge)
+        adapter.list_channel_messages("C001", since=0.0)
+        assert "W0CACHETEST" in adapter._user_cache
+        assert adapter._user_cache["W0CACHETEST"] == "Suki Harmon"
+        assert "W0CACHETEST" not in adapter._failed_ids
+
+
+class TestUserProfileFallback:
+    def test_user_profile_field_provides_name(self):
+        raw = {
+            "user": "W0FALLBACK1",
+            "text": "Message with embedded profile",
+            "ts": "1781900000.111111",
+            "channel_id": "C001",
+            "user_profile": {
+                "real_name": "Mika Ashworth",
+                "display_name": "mika",
+            },
+        }
+        msg = _msg_from_raw(raw)
+        assert msg.user_id == "W0FALLBACK1"
+        assert msg.user_name == "Mika Ashworth"
+
+    def test_user_profile_display_name_fallback(self):
+        raw = {
+            "user": "W0FALLBACK2",
+            "text": "Another message",
+            "ts": "1781900000.111111",
+            "channel_id": "C001",
+            "user_profile": {
+                "display_name": "Jorin",
+            },
+        }
+        msg = _msg_from_raw(raw)
+        assert msg.user_name == "Jorin"
+
+    def test_user_profile_not_used_when_name_already_set(self):
+        raw = {
+            "user": {"id": "W0FALLBACK3", "real_name": "Original Name"},
+            "text": "Already named",
+            "ts": "1781900000.111111",
+            "channel_id": "C001",
+            "user_profile": {
+                "real_name": "Different Name",
+            },
+        }
+        msg = _msg_from_raw(raw)
+        assert msg.user_name == "Original Name"
+
+    def test_user_profile_ignored_when_not_dict(self):
+        raw = {
+            "user": "W0FALLBACK4",
+            "text": "Message",
+            "ts": "1781900000.111111",
+            "channel_id": "C001",
+            "user_profile": "not-a-dict",
+        }
+        msg = _msg_from_raw(raw)
+        assert msg.user_name is None
+
+
 FIXTURES_DMS = json.dumps(
     [
         {

@@ -798,6 +798,24 @@ def prune_slack_link_entities(
     return result
 
 
+def find_id_named_entities(conn: sqlite3.Connection) -> list[dict]:
+    """Find person entities whose name is a raw Slack ID."""
+    rows = conn.execute(
+        "SELECT id, name, aliases FROM entities WHERE type = 'person' AND is_owner = 0"
+    ).fetchall()
+    results = []
+    for r in rows:
+        if _SLACK_ID_RE.match(r["name"]):
+            results.append(
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "aliases": json.loads(r["aliases"] or "[]"),
+                }
+            )
+    return results
+
+
 def reprocess_observations(
     conn: sqlite3.Connection,
     *,

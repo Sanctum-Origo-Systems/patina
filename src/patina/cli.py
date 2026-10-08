@@ -1207,6 +1207,83 @@ def entity_list_cmd(
         conn.close()
 
 
+@entity_app.command("resolve-names")
+def entity_resolve_names_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="List ID-named entities without resolving"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Resolve entities still named by a raw Slack ID."""
+    from patina.maintenance import find_id_named_entities
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        id_named = find_id_named_entities(conn)
+        if not id_named:
+            typer.echo("No ID-named entities found.")
+            return
+
+        if dry_run:
+            typer.echo(f"Found {len(id_named)} entity(ies) named by raw Slack ID:")
+            for ent in id_named:
+                typer.echo(f"  {ent['id'][:8]} {ent['name']}")
+            return
+
+        from patina.extraction import extract_sender_entity
+        from patina.graph import upsert_entity as do_upsert
+        from patina.ingest import _load_adapters
+
+        adapters = _load_adapters(home)
+        slack_adapter = None
+        for _name, port in adapters:
+            if hasattr(port, "_resolve_user_name"):
+                slack_adapter = port
+                break
+
+        if not slack_adapter:
+            typer.echo(
+                "No Slack adapter configured. Add one to config.yaml first.",
+                err=True,
+            )
+            for _, port in adapters:
+                if hasattr(port, "close"):
+                    try:
+                        port.close()
+                    except Exception:
+                        pass
+            raise typer.Exit(1)
+
+        try:
+            resolved = 0
+            failed = 0
+            for ent in id_named:
+                name = slack_adapter._resolve_user_name(ent["name"])
+                if name:
+                    entity = extract_sender_entity(ent["name"], name)
+                    entity.id = ent["id"]
+                    do_upsert(conn, entity)
+                    resolved += 1
+                    typer.echo(f"  {ent['name']} -> {name}")
+                else:
+                    failed += 1
+            typer.echo(f"Resolved {resolved}, failed {failed} of {len(id_named)}.")
+        finally:
+            for _, port in adapters:
+                if hasattr(port, "close"):
+                    try:
+                        port.close()
+                    except Exception:
+                        pass
+    finally:
+        conn.close()
+
+
 @entity_app.command("cleanup")
 def entity_cleanup_cmd(
     dry_run: bool = typer.Option(

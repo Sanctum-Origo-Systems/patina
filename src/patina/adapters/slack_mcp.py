@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 
@@ -11,11 +12,14 @@ from patina.adapters._mcp_client import (
 )
 from patina.models import ChatMessage, DmChannel
 
+logger = logging.getLogger(__name__)
+
 
 class SlackMcpAdapter:
     def __init__(self, bridge: McpSyncBridge) -> None:
         self._bridge = bridge
-        self._user_cache: dict[str, str | None] = {}
+        self._user_cache: dict[str, str] = {}
+        self._failed_ids: set[str] = set()
 
     @property
     def platform(self) -> str:
@@ -29,14 +33,18 @@ class SlackMcpAdapter:
             return None
         if user_id in self._user_cache:
             return self._user_cache[user_id]
+        if user_id in self._failed_ids:
+            return None
         try:
             result = self._bridge.call_tool("get_user_profile", {"user_id": user_id})
             raw = parse_json_content(result)
             name = _extract_display_name(raw)
-            self._user_cache[user_id] = name
+            if name:
+                self._user_cache[user_id] = name
             return name
         except Exception:
-            self._user_cache[user_id] = None
+            logger.debug("Profile lookup failed for %s, will retry next session", user_id)
+            self._failed_ids.add(user_id)
             return None
 
     def _resolve_message_names(self, msgs: list[ChatMessage]) -> list[ChatMessage]:
@@ -244,6 +252,11 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
     else:
         user_id = str(user_raw) if user_raw else ""
         user_name = raw.get("username") or raw.get("user_name")
+
+    if not user_name:
+        up = raw.get("user_profile")
+        if isinstance(up, dict):
+            user_name = up.get("real_name") or up.get("display_name") or up.get("name")
 
     ts = str(raw.get("ts", ""))
     text = raw.get("text", "")
