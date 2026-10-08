@@ -195,3 +195,25 @@ def test_sender_entity_email_as_user_id_no_name():
     e = extract_sender_entity("dbrook@example.com", None)
     assert e.name == "dbrook@example.com"
     assert "dbrook@example.com" in e.aliases
+
+
+def test_sender_entity_organization_type():
+    e = extract_sender_entity("U001", "Acme Field Research")
+    assert e.type == "organization"
+    assert e.name == "Acme Field Research"
+
+
+def test_sender_entity_organization_events():
+    e = extract_sender_entity("U001", "Acme Events")
+    assert e.type == "organization"
+
+
+def test_sender_entity_person_stays_person():
+    e = extract_sender_entity("U001", "Dana Brook")
+    assert e.type == "person"
+
+
+def test_sender_entity_org_id_stable():
+    e_org = extract_sender_entity("U001", "Acme Events")
+    e_person = extract_sender_entity("U001", "Alice Chen")
+    assert e_org.id == e_person.id

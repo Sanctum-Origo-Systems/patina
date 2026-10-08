@@ -342,11 +342,16 @@ def status(
     try:
         obs = count_observations(conn)
         people = count_entities(conn, "person")
+        orgs = count_entities(conn, "organization")
         topics = count_entities(conn, "topic")
         refs = count_entities(conn, "reference")
         total = count_entities(conn)
         typer.echo(f"Observations: {obs}")
-        typer.echo(f"Entities: {total} ({people} people, {topics} topics, {refs} references)")
+        parts = [f"{people} people"]
+        if orgs:
+            parts.append(f"{orgs} organizations")
+        parts.extend([f"{topics} topics", f"{refs} references"])
+        typer.echo(f"Entities: {total} ({', '.join(parts)})")
     finally:
         conn.close()
 
@@ -1172,10 +1177,43 @@ def entity_prune_links_cmd(
         conn.close()
 
 
+@entity_app.command("retype")
+def entity_retype_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="List candidates without changing them"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Retype person entities that look like organizations."""
+    from patina.maintenance import backup_store, retype_organization_entities
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if not dry_run:
+            backup_path = backup_store(db_path)
+            typer.echo(f"Backup: {backup_path}")
+
+        result = retype_organization_entities(conn, dry_run=dry_run)
+
+        if result["retyped"] == 0:
+            typer.echo("No person entities to retype as organization.")
+            return
+
+        mode = "Would retype" if dry_run else "Retyped"
+        typer.echo(f"{mode} {result['retyped']} entity(ies) to organization:")
+        for ent in result["entities"]:
+            typer.echo(f"  {ent['name']}")
+    finally:
+        conn.close()
+
+
 @entity_app.command("list")
 def entity_list_cmd(
     entity_type: str = typer.Option(
-        "all", "--type", help="Filter: person, topic, reference, or all"
+        "all", "--type", help="Filter: person, topic, reference, organization, or all"
     ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:

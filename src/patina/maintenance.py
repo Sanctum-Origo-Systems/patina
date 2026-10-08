@@ -29,6 +29,76 @@ _NON_PERSON_RE = re.compile(
     r")\b"
 )
 
+_ORG_SUFFIX_WORDS = frozenset(
+    {
+        "newsletter",
+        "events",
+        "research",
+        "services",
+        "office",
+        "department",
+        "committee",
+        "foundation",
+        "institute",
+        "association",
+        "corporation",
+        "corp",
+        "inc",
+        "llc",
+        "ltd",
+        "center",
+        "centre",
+        "bureau",
+        "agency",
+        "academy",
+        "council",
+        "society",
+        "network",
+        "solutions",
+        "technologies",
+        "labs",
+        "consulting",
+        "advisory",
+        "media",
+        "press",
+        "publishing",
+        "ventures",
+        "capital",
+        "holdings",
+        "studio",
+        "partners",
+        "operations",
+        "logistics",
+        "analytics",
+        "communications",
+        "engagement",
+        "outreach",
+    }
+)
+
+_ROLE_NOUNS = frozenset(
+    {
+        "manager",
+        "director",
+        "coordinator",
+        "specialist",
+        "consultant",
+        "advisor",
+        "representative",
+        "administrator",
+        "supervisor",
+        "officer",
+        "lead",
+        "head",
+        "chief",
+        "president",
+        "executive",
+        "architect",
+        "planner",
+        "strategist",
+    }
+)
+
 _NON_PERSON_SUFFIXES = (
     " bot",
     " Bot",
@@ -203,6 +273,16 @@ def is_non_person(name: str) -> bool:
         if _NON_PERSON_RE.search(local):
             return True
     return False
+
+
+def is_organization(name: str) -> bool:
+    if not name or len(name) < 2:
+        return False
+    words = name.split()
+    if len(words) < 2:
+        return False
+    last = words[-1].lower().rstrip(".,;!?")
+    return last in _ORG_SUFFIX_WORDS or last in _ROLE_NOUNS
 
 
 def _normalize_for_dedup(name: str) -> str:
@@ -814,6 +894,38 @@ def find_id_named_entities(conn: sqlite3.Connection) -> list[dict]:
                 }
             )
     return results
+
+
+def retype_organization_entities(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    rows = conn.execute(
+        "SELECT id, name FROM entities WHERE type = 'person' AND is_owner = 0"
+    ).fetchall()
+
+    to_retype = []
+    for r in rows:
+        if is_organization(r["name"]):
+            to_retype.append({"id": r["id"], "name": r["name"]})
+
+    result = {
+        "retyped": len(to_retype),
+        "entities": to_retype,
+    }
+
+    if dry_run or not to_retype:
+        return result
+
+    for ent in to_retype:
+        conn.execute(
+            "UPDATE entities SET type = 'organization' WHERE id = ?",
+            (ent["id"],),
+        )
+
+    conn.commit()
+    return result
 
 
 def reprocess_observations(

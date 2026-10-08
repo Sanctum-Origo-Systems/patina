@@ -15,11 +15,13 @@ from patina.maintenance import (
     find_dedup_candidates,
     find_id_named_entities,
     is_non_person,
+    is_organization,
     is_plausible_person_name,
     merge_entities,
     prune_non_person_entities,
     prune_slack_link_entities,
     reprocess_observations,
+    retype_organization_entities,
     rewire_entity_references,
 )
 from patina.models import Claim, Entity, Observation, Relationship
@@ -141,6 +143,55 @@ def test_is_non_person_donotreply():
     assert is_non_person("donotreply@example.com") is True
     assert is_non_person("do-not-reply@example.com") is True
     assert is_non_person("do_not_reply@example.com") is True
+
+
+# ── is_organization ─────────────────────────────────────────
+
+
+def test_is_organization_field_research():
+    assert is_organization("Acme Field Research") is True
+
+
+def test_is_organization_events():
+    assert is_organization("Acme Events") is True
+
+
+def test_is_organization_newsletter():
+    assert is_organization("Weekly Newsletter") is True
+
+
+def test_is_organization_role_title():
+    assert is_organization("Acme Engagement Manager") is True
+
+
+def test_is_organization_person_name():
+    assert is_organization("Dana Brook") is False
+    assert is_organization("Sam Rivera") is False
+    assert is_organization("Alice Chen") is False
+
+
+def test_is_organization_single_word():
+    assert is_organization("Newsletter") is False
+    assert is_organization("Research") is False
+
+
+def test_is_organization_empty():
+    assert is_organization("") is False
+
+
+def test_is_organization_various_suffixes():
+    assert is_organization("Acme Services") is True
+    assert is_organization("Regional Office") is True
+    assert is_organization("Product Solutions") is True
+    assert is_organization("Global Consulting") is True
+    assert is_organization("Acme Labs") is True
+    assert is_organization("Corporate Communications") is True
+
+
+def test_is_organization_role_nouns():
+    assert is_organization("Sales Director") is True
+    assert is_organization("VP Operations Coordinator") is True
+    assert is_organization("Acme Specialist") is True
 
 
 # ── is_plausible_person_name ────────────────────────────────
@@ -827,6 +878,55 @@ def test_prune_slack_link_entities_dry_run(db_conn):
     assert len(remaining) == 1
 
 
+# ── retype_organization_entities ─────────────────────────────
+
+
+def test_retype_retypes_orgs(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Acme Field Research")
+    _insert_entity_raw(db_conn, "e2", "Dana Brook")
+    _insert_entity_raw(db_conn, "e3", "Acme Events")
+
+    result = retype_organization_entities(db_conn)
+
+    assert result["retyped"] == 2
+    row1 = db_conn.execute("SELECT type FROM entities WHERE id = 'e1'").fetchone()
+    assert row1["type"] == "organization"
+    row2 = db_conn.execute("SELECT type FROM entities WHERE id = 'e2'").fetchone()
+    assert row2["type"] == "person"
+    row3 = db_conn.execute("SELECT type FROM entities WHERE id = 'e3'").fetchone()
+    assert row3["type"] == "organization"
+
+
+def test_retype_dry_run(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Acme Field Research")
+
+    result = retype_organization_entities(db_conn, dry_run=True)
+
+    assert result["retyped"] == 1
+    row = db_conn.execute("SELECT type FROM entities WHERE id = 'e1'").fetchone()
+    assert row["type"] == "person"
+
+
+def test_retype_skips_owner(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Acme Research", is_owner=1)
+
+    result = retype_organization_entities(db_conn)
+    assert result["retyped"] == 0
+
+
+def test_retype_skips_already_organization(db_conn):
+    db_conn.execute(
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata,"
+        "  first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES ('e1', 'organization', 'Acme Research', '[]', '{}', '', '', 0.02, 0)"
+    )
+    db_conn.commit()
+
+    result = retype_organization_entities(db_conn)
+    assert result["retyped"] == 0
+
+
 # ── reprocess_observations ───────────────────────────────────
 
 
@@ -1176,6 +1276,55 @@ def test_cli_entity_list(db_path):
     result = runner.invoke(app, ["entity", "list", "--home", str(home)])
     assert result.exit_code == 0
     assert "Alice Tran" in result.output
+
+
+def test_cli_entity_retype_dry_run(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e1aabbcc", "Acme Field Research")
+    _insert_entity_raw(conn, "e2ddeeff", "Dana Brook")
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "retype", "--dry-run", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Would retype" in result.output
+    assert "Acme Field Research" in result.output
+    assert "Dana Brook" not in result.output
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT type FROM entities WHERE id = 'e1aabbcc'").fetchone()
+    conn.close()
+    assert row["type"] == "person"
+
+
+def test_cli_entity_retype_applies(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "e1aabbcc", "Acme Events")
+    _insert_entity_raw(conn, "e2ddeeff", "Dana Brook")
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+    result = runner.invoke(app, ["entity", "retype", "--home", str(home)])
+    assert result.exit_code == 0
+    assert "Retyped" in result.output
+    assert "Acme Events" in result.output
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT type FROM entities WHERE id = 'e1aabbcc'").fetchone()
+    conn.close()
+    assert row["type"] == "organization"
 
 
 def test_cli_extract_reprocess_dry_run(db_path):
