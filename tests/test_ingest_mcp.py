@@ -533,3 +533,128 @@ def test_mcp_ingest_resolves_owner_entity(tmp_path):
     assert row["sender_entity_id"] == owner_id
     assert row["sender_entity_id"] == get_owner_entity_id(conn)
     conn.close()
+
+
+def test_id_named_entity_renamed_on_retry(tmp_path):
+    """AC: entity created with Slack ID name gets renamed when profile resolves."""
+    import json
+
+    from patina.store import connect as db_connect
+    from patina.store import get_db_path
+
+    home = tmp_path / "patina_home"
+
+    class FailingPort:
+        @property
+        def platform(self):
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return [
+                ChatMessage(
+                    user_id="W0EXAMPLE9",
+                    text="Message from unresolved user",
+                    timestamp=1781900000.111111,
+                    channel_id="D00000DM099",
+                    user_name=None,
+                ),
+            ]
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+    result1 = ingest_live(port=FailingPort(), source="slack_mcp", home=home)
+    assert result1["messages_inserted"] == 1
+
+    conn = db_connect(get_db_path(home))
+    entity_row = conn.execute(
+        "SELECT name, aliases FROM entities WHERE type = 'person' AND name LIKE 'W0EXAMPLE%'"
+    ).fetchone()
+    assert entity_row is not None
+    assert entity_row["name"] == "W0EXAMPLE9"
+    conn.close()
+
+    class ResolvedPort:
+        @property
+        def platform(self):
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return [
+                ChatMessage(
+                    user_id="W0EXAMPLE9",
+                    text="New message after profile resolved",
+                    timestamp=1781900001.222222,
+                    channel_id="D00000DM099",
+                    user_name="Dana Brook",
+                ),
+            ]
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+    result2 = ingest_live(port=ResolvedPort(), source="slack_mcp", home=home)
+    assert result2["messages_inserted"] == 1
+
+    conn = db_connect(get_db_path(home))
+    entity_row = conn.execute(
+        "SELECT name, aliases FROM entities WHERE type = 'person' AND aliases LIKE '%W0EXAMPLE9%'"
+    ).fetchone()
+    assert entity_row is not None
+    assert entity_row["name"] == "Dana Brook"
+    aliases = json.loads(entity_row["aliases"])
+    assert "W0EXAMPLE9" in aliases
+    conn.close()
+
+
+def test_still_failing_lookup_leaves_entity_unchanged(tmp_path):
+    """AC: a still-failing lookup leaves the entity name as the Slack ID."""
+    home = tmp_path / "patina_home"
+
+    class FailingPort:
+        @property
+        def platform(self):
+            return "slack_mcp"
+
+        def list_dm_messages(self, since):
+            return [
+                ChatMessage(
+                    user_id="W0NOPROF01",
+                    text="Message from unresolved user",
+                    timestamp=1781900000.111111,
+                    channel_id="D00000DM098",
+                    user_name=None,
+                ),
+            ]
+
+        def list_mentions(self, since):
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+    ingest_live(port=FailingPort(), source="slack_mcp", home=home)
+    ingest_live(port=FailingPort(), source="slack_mcp", home=home)
+
+    conn = connect(get_db_path(home))
+    entity_row = conn.execute(
+        "SELECT name FROM entities WHERE type = 'person' AND name = 'W0NOPROF01'"
+    ).fetchone()
+    assert entity_row is not None
+    assert entity_row["name"] == "W0NOPROF01"
+    conn.close()
