@@ -403,12 +403,16 @@ def extract_beliefs(
             owner_match_names.discard("")
 
         empty_skipped = conn.execute(
-            "UPDATE observations SET processed = 1"
-            " WHERE processed = 0 AND (text IS NULL OR text = '')"
-        ).rowcount
+            "SELECT COUNT(*) FROM observations WHERE processed = 0 AND (text IS NULL OR text = '')"
+        ).fetchone()[0]
         if empty_skipped:
-            conn.commit()
             stats["empty_skipped"] = empty_skipped
+            if not dry_run:
+                conn.execute(
+                    "UPDATE observations SET processed = 1"
+                    " WHERE processed = 0 AND (text IS NULL OR text = '')"
+                )
+                conn.commit()
 
         rows = conn.execute(
             """SELECT o.id, o.text, o.sender_entity_id, o.source, o.timestamp,
