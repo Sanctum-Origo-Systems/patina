@@ -769,6 +769,65 @@ def test_dedup_three_entity_shared_slack_id_group(db_conn):
     assert claim["subject_id"] == "e1"
 
 
+def test_dedup_three_entity_dry_run_matches_confirm(db_conn):
+    """Dry-run merge list must equal --confirm merge list (#428)."""
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook", "Brook, Dana"])
+    _insert_entity_raw(
+        db_conn,
+        "e2",
+        "dbrook",
+        aliases=["dbrook", "slack:U0AAAA1111", "U0AAAA1111"],
+    )
+    _insert_entity_raw(db_conn, "e3", "U0AAAA1111", aliases=["U0AAAA1111"])
+    insert_observation(db_conn, _obs("o1", "e2"))
+    insert_observation(db_conn, _obs("o2", "e3", ts=1001.0))
+    insert_claim(db_conn, _claim("c1", "e3"))
+
+    result = dedup_entities(db_conn, dry_run=True)
+
+    assert result["entities_merged"] == 2
+    assert len(result["skipped"]) == 0
+
+    merge_pairs = [(m["keep_name"], m["drop_name"]) for m in result["merges"]]
+    assert ("dbrook", "U0AAAA1111") in merge_pairs
+    assert ("Dana Brook", "dbrook") in merge_pairs
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e1'").fetchone() is not None
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is not None
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e3'").fetchone() is not None
+
+
+def test_dedup_unrelated_slack_collision_skips_both_modes(db_conn):
+    """2-entity group whose drop holds an ID that an unrelated entity also holds (#428).
+
+    e1 and e2 share slack:U0AAAA1111 → grouped.
+    e3 has a different Slack ID (U0BBBB2222) so it stays out of the group,
+    but e3 holds e2's email alias → collision blocks the merge in both modes.
+    """
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U0AAAA1111"])
+    _insert_entity_raw(
+        db_conn,
+        "e2",
+        "Rivera, Sam",
+        aliases=["slack:U0AAAA1111", "sam.rivera@work.com"],
+    )
+    _insert_entity_raw(
+        db_conn,
+        "e3",
+        "Quinn Farrow",
+        aliases=["sam.rivera@work.com", "slack:U0BBBB2222"],
+    )
+    insert_observation(db_conn, _obs("o1", "e1"))
+
+    dry = dedup_entities(db_conn, dry_run=True)
+    assert dry["entities_merged"] == 0
+    assert len(dry["skipped"]) > 0 or len(dry["needs_review"]) > 0
+
+    live = dedup_entities(db_conn)
+    assert live["entities_merged"] == 0
+    assert len(live["skipped"]) > 0 or len(live["needs_review"]) > 0
+
+
 def test_dedup_multiple_slack_ids_goes_to_review(db_conn):
     _insert_entity_raw(
         db_conn,

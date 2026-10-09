@@ -717,17 +717,32 @@ def _merge_aliases_collide(
     conn: sqlite3.Connection,
     keep_id: str,
     drop_id: str,
+    *,
+    extra_exclude_ids: set[str] | None = None,
+    drop_override: dict | None = None,
 ) -> bool:
     keep = conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (keep_id,)).fetchone()
-    drop = conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (drop_id,)).fetchone()
-    if not keep or not drop:
+    if not keep:
         return False
 
+    if drop_override:
+        drop_name = drop_override["name"]
+        drop_aliases = set(drop_override.get("aliases", []))
+    else:
+        drop = conn.execute(
+            "SELECT name, aliases FROM entities WHERE id = ?", (drop_id,)
+        ).fetchone()
+        if not drop:
+            return False
+        drop_name = drop["name"]
+        drop_aliases = set(json.loads(drop["aliases"] or "[]"))
+
     keep_aliases = set(json.loads(keep["aliases"] or "[]"))
-    drop_aliases = set(json.loads(drop["aliases"] or "[]"))
-    new_aliases = (drop_aliases | {drop["name"]}) - keep_aliases - {keep["name"]}
+    new_aliases = (drop_aliases | {drop_name}) - keep_aliases - {keep["name"]}
 
     exclude_ids = {keep_id, drop_id}
+    if extra_exclude_ids:
+        exclude_ids |= extra_exclude_ids
     rows = conn.execute("SELECT id, name, aliases FROM entities").fetchall()
     for alias in new_aliases:
         norm = _normalize_for_dedup(alias)
@@ -749,16 +764,20 @@ def _pre_merge_slack_drops(
     drops: list[dict],
     result: dict,
     match_id: str,
-) -> list[dict]:
+    *,
+    dry_run: bool = False,
+) -> tuple[list[dict], set[str]]:
     """Merge drop entities that share a Slack ID with each other.
 
     When a dedup group has multiple drops sharing a Slack ID, merge them
     first (handle-named entity wins over ID-named one) so the subsequent
     keep-vs-drop merge sees only one drop holding that Slack ID and the
     alias collision with the now-deleted entity disappears.
+
+    Returns (remaining_drops, folded_entity_ids).
     """
     if len(drops) < 2:
-        return drops
+        return drops, set()
 
     drop_slack_ids: list[set[str]] = []
     for d in drops:
@@ -787,6 +806,7 @@ def _pre_merge_slack_drops(
         groups.setdefault(_find(i), []).append(i)
 
     remaining: list[dict] = []
+    folded_ids: set[str] = set()
     for indices in groups.values():
         if len(indices) == 1:
             remaining.append(drops[indices[0]])
@@ -807,24 +827,38 @@ def _pre_merge_slack_drops(
         sub_keep = sorted_drops[0]
 
         for sub_drop in sorted_drops[1:]:
-            mr = merge_entities(conn, sub_keep["id"], sub_drop["id"])
+            mr = merge_entities(conn, sub_keep["id"], sub_drop["id"], dry_run=dry_run)
             mr["match_identifier"] = match_id
             result["merges"].append(mr)
             result["entities_merged"] += 1
+            folded_ids.add(sub_drop["id"])
 
-        row = conn.execute(
-            "SELECT id, name, aliases FROM entities WHERE id = ?", (sub_keep["id"],)
-        ).fetchone()
-        if row:
+        if dry_run:
+            merged_aliases = set(sub_keep.get("aliases", []))
+            for sub_drop in sorted_drops[1:]:
+                merged_aliases |= set(sub_drop.get("aliases", []))
+                merged_aliases.add(sub_drop["name"])
             remaining.append(
                 {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "aliases": json.loads(row["aliases"] or "[]"),
+                    "id": sub_keep["id"],
+                    "name": sub_keep["name"],
+                    "aliases": list(merged_aliases),
                 }
             )
+        else:
+            row = conn.execute(
+                "SELECT id, name, aliases FROM entities WHERE id = ?", (sub_keep["id"],)
+            ).fetchone()
+            if row:
+                remaining.append(
+                    {
+                        "id": row["id"],
+                        "name": row["name"],
+                        "aliases": json.loads(row["aliases"] or "[]"),
+                    }
+                )
 
-    return remaining
+    return remaining, folded_ids
 
 
 def dedup_entities(
@@ -848,8 +882,7 @@ def dedup_entities(
         match_id = group.get("match_identifier", "")
         drops = list(group["drop"])
 
-        if not dry_run:
-            drops = _pre_merge_slack_drops(conn, drops, result, match_id)
+        drops, folded_ids = _pre_merge_slack_drops(conn, drops, result, match_id, dry_run=dry_run)
 
         for drop in drops:
             if not dry_run:
@@ -865,7 +898,13 @@ def dedup_entities(
                     "aliases": json.loads(drop_row["aliases"] or "[]"),
                 }
 
-            if _merge_aliases_collide(conn, keep["id"], drop["id"]):
+            collide_kw: dict = {}
+            if folded_ids:
+                collide_kw["extra_exclude_ids"] = folded_ids
+                if dry_run:
+                    collide_kw["drop_override"] = drop
+
+            if _merge_aliases_collide(conn, keep["id"], drop["id"], **collide_kw):
                 keep_tokens = [keep["name"]] + keep.get("aliases", [])
                 drop_tokens = [drop["name"]] + drop.get("aliases", [])
                 shared_slacks = _collect_slack_ids(keep_tokens) & _collect_slack_ids(drop_tokens)
