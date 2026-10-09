@@ -726,6 +726,64 @@ def test_dedup_shared_slack_id_extra_email_goes_to_review(db_conn):
     assert "U0AAAA1111" in review_names
 
 
+def test_dedup_three_entity_shared_slack_id_group(db_conn):
+    """3-entity group: full name ← handle ← bare Slack ID.
+
+    The handle and bare-ID drops share a Slack ID that the keep (full name)
+    does not have.  Pre-merging the drops first removes the alias collision
+    so all three collapse into one entity.
+    """
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook", "Brook, Dana"])
+    _insert_entity_raw(
+        db_conn,
+        "e2",
+        "dbrook",
+        aliases=["dbrook", "slack:U0AAAA1111", "U0AAAA1111"],
+    )
+    _insert_entity_raw(db_conn, "e3", "U0AAAA1111", aliases=["U0AAAA1111"])
+    insert_observation(db_conn, _obs("o1", "e2"))
+    insert_observation(db_conn, _obs("o2", "e3", ts=1001.0))
+    insert_claim(db_conn, _claim("c1", "e3"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 2
+    assert len(result["skipped"]) == 0
+
+    keep = db_conn.execute("SELECT * FROM entities WHERE id = 'e1'").fetchone()
+    assert keep is not None
+    aliases = json.loads(keep["aliases"])
+    assert "dbrook" in aliases
+    assert "slack:U0AAAA1111" in aliases or "U0AAAA1111" in aliases
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is None
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e3'").fetchone() is None
+
+    obs1 = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
+    assert obs1["sender_entity_id"] == "e1"
+    obs2 = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o2'").fetchone()
+    assert obs2["sender_entity_id"] == "e1"
+
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c1'").fetchone()
+    assert claim["subject_id"] == "e1"
+
+
+def test_dedup_multiple_slack_ids_goes_to_review(db_conn):
+    _insert_entity_raw(
+        db_conn,
+        "e1",
+        "user_a",
+        aliases=["slack:U0AAAA1111", "slack:U0BBBB2222"],
+    )
+
+    result = dedup_entities(db_conn)
+
+    review_ids = {r["id"] for r in result["needs_review"]}
+    assert "e1" in review_ids
+    review_reasons = {r["reason"] for r in result["needs_review"] if r["id"] == "e1"}
+    assert "multiple Slack IDs" in review_reasons
+
+
 # ── prune_non_person_entities ────────────────────────────────
 
 
