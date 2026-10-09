@@ -298,6 +298,18 @@ def _is_junk_sender_name(name: str) -> bool:
     return False
 
 
+_DN_HANDLE_RE = re.compile(
+    r"/cn=[0-9a-f]{8}(?:-?[0-9a-f]{4}){3}-?[0-9a-f]{12}-(?P<handle>[^/=,]+)$",
+    re.IGNORECASE,
+)
+
+
+def _dn_trailing_handle(dn: str) -> str | None:
+    """Return the handle after the GUID in an Exchange DN, e.g. ...CN=<guid>-DBROOK."""
+    m = _DN_HANDLE_RE.search(dn.strip())
+    return m.group("handle") if m else None
+
+
 def _normalize_for_dedup(name: str) -> str:
     norm = _graph_normalize(name)
     norm = re.sub(r"[._\-]", " ", norm)
@@ -975,9 +987,10 @@ def fix_junk_senders(
         return {"merged": [], "retyped": []}
 
     all_entities = conn.execute(
-        "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+        "SELECT id, name, aliases, type FROM entities WHERE is_owner = 0"
     ).fetchall()
 
+    alias_lookup: dict[str, set[str]] = {}
     norm_lookup: dict[str, str] = {}
     for ent in all_entities:
         if ent["id"] in junk_ids:
@@ -989,16 +1002,23 @@ def fix_junk_senders(
             anorm = _normalize_for_dedup(alias)
             if anorm and len(anorm) > 2:
                 norm_lookup.setdefault(anorm, ent["id"])
+                if ent["type"] == "person":
+                    alias_lookup.setdefault(anorm, set()).add(ent["id"])
 
     merged: list[dict] = []
     retyped: list[dict] = []
-
     for r in junk:
         aliases = json.loads(r["aliases"] or "[]")
         target_id: str | None = None
 
         for ident in [r["name"]] + aliases:
             if ident.startswith("/O=") or ident.startswith("/o="):
+                handle = _dn_trailing_handle(ident)
+                if handle:
+                    hits = alias_lookup.get(_normalize_for_dedup(handle), set())
+                    if len(hits) == 1:
+                        target_id = next(iter(hits))
+                        break
                 continue
             if ident.startswith("slack:"):
                 continue

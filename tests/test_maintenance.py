@@ -1967,3 +1967,67 @@ def test_cli_entity_resolve_names_dry_run(db_path):
     assert "1 entity(ies)" in result.output
     assert "W0EXAMPLE9" in result.output
     assert "Dana Brook" not in result.output
+
+
+_DN_PREFIX = "/O=EXAMPLEORG/OU=EXCHANGE ADMINISTRATIVE GROUP (FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN="
+_GUID = "0123456789abcdef0123456789abcdef"
+
+
+def _add_person(conn, eid, name, aliases=None):
+    now = "2025-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata, first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0.02, 0)",
+        (eid, name, json.dumps(aliases or []), now, now),
+    )
+
+
+def _add_dn_sender(conn, handle):
+    _add_person(conn, "dn-1", f"{_DN_PREFIX}{_GUID}-{handle}")
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, processed, ingested_at)"
+        " VALUES ('obs-dn-1', 'slack_export', 'C001', 1000.0, 'dn-1', 'The quick brown fox', 1,"
+        " '2025-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+
+
+def test_dn_handle_merges_into_alias_holder(db_conn):
+    _add_person(db_conn, "p-dana", "Dana Brook", ["dbrook"])
+    _add_dn_sender(db_conn, "DBROOK")
+    result = fix_junk_senders(db_conn, dry_run=True)
+    assert [m["target_id"] for m in result["merged"]] == ["p-dana"]
+    assert result["retyped"] == []
+
+
+def test_dn_handle_match_is_case_insensitive(db_conn):
+    _add_person(db_conn, "p-dana", "Dana Brook", ["dbrook"])
+    _add_dn_sender(db_conn, "DbRoOk")
+    result = fix_junk_senders(db_conn, dry_run=True)
+    assert [m["target_id"] for m in result["merged"]] == ["p-dana"]
+
+
+def test_dn_hex_tail_still_retypes(db_conn):
+    _add_person(db_conn, "p-dana", "Dana Brook", ["dbrook"])
+    _add_dn_sender(db_conn, "A1B2C3D4")
+    result = fix_junk_senders(db_conn, dry_run=True)
+    assert result["merged"] == []
+    assert [r["id"] for r in result["retyped"]] == ["dn-1"]
+
+
+def test_dn_handle_without_alias_retypes(db_conn):
+    _add_dn_sender(db_conn, "ZZTOP")
+    result = fix_junk_senders(db_conn, dry_run=True)
+    assert result["merged"] == []
+    assert [r["id"] for r in result["retyped"]] == ["dn-1"]
+
+
+def test_dn_handle_with_ambiguous_alias_retypes(db_conn):
+    _add_person(db_conn, "p-a", "Dana Brook", ["dbrook"])
+    _add_person(db_conn, "p-b", "Dale Brook", ["dbrook"])
+    _add_dn_sender(db_conn, "DBROOK")
+    result = fix_junk_senders(db_conn, dry_run=True)
+    assert result["merged"] == []
+    assert [r["id"] for r in result["retyped"]] == ["dn-1"]
