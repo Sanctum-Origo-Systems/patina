@@ -726,6 +726,64 @@ def test_dedup_shared_slack_id_extra_email_goes_to_review(db_conn):
     assert "U0AAAA1111" in review_names
 
 
+def test_dedup_three_entity_shared_slack_id_group(db_conn):
+    """3-entity group: full name ← handle ← bare Slack ID.
+
+    The handle and bare-ID drops share a Slack ID that the keep (full name)
+    does not have.  Pre-merging the drops first removes the alias collision
+    so all three collapse into one entity.
+    """
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", aliases=["dbrook", "Brook, Dana"])
+    _insert_entity_raw(
+        db_conn,
+        "e2",
+        "dbrook",
+        aliases=["dbrook", "slack:U0AAAA1111", "U0AAAA1111"],
+    )
+    _insert_entity_raw(db_conn, "e3", "U0AAAA1111", aliases=["U0AAAA1111"])
+    insert_observation(db_conn, _obs("o1", "e2"))
+    insert_observation(db_conn, _obs("o2", "e3", ts=1001.0))
+    insert_claim(db_conn, _claim("c1", "e3"))
+
+    result = dedup_entities(db_conn)
+
+    assert result["entities_merged"] == 2
+    assert len(result["skipped"]) == 0
+
+    keep = db_conn.execute("SELECT * FROM entities WHERE id = 'e1'").fetchone()
+    assert keep is not None
+    aliases = json.loads(keep["aliases"])
+    assert "dbrook" in aliases
+    assert "slack:U0AAAA1111" in aliases or "U0AAAA1111" in aliases
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e2'").fetchone() is None
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e3'").fetchone() is None
+
+    obs1 = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o1'").fetchone()
+    assert obs1["sender_entity_id"] == "e1"
+    obs2 = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'o2'").fetchone()
+    assert obs2["sender_entity_id"] == "e1"
+
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c1'").fetchone()
+    assert claim["subject_id"] == "e1"
+
+
+def test_dedup_multiple_slack_ids_goes_to_review(db_conn):
+    _insert_entity_raw(
+        db_conn,
+        "e1",
+        "user_a",
+        aliases=["slack:U0AAAA1111", "slack:U0BBBB2222"],
+    )
+
+    result = dedup_entities(db_conn)
+
+    review_ids = {r["id"] for r in result["needs_review"]}
+    assert "e1" in review_ids
+    review_reasons = {r["reason"] for r in result["needs_review"] if r["id"] == "e1"}
+    assert "multiple Slack IDs" in review_reasons
+
+
 # ── prune_non_person_entities ────────────────────────────────
 
 
@@ -1950,7 +2008,8 @@ def test_find_id_named_entities_skips_owner(db_conn):
     assert len(results) == 0
 
 
-def test_cli_entity_resolve_names_dry_run(db_path):
+def test_cli_entity_resolve_names_preview_default(db_path):
+    """Without --confirm, resolve-names previews and makes no writes."""
     from typer.testing import CliRunner
 
     from patina.cli import app
@@ -1959,15 +2018,146 @@ def test_cli_entity_resolve_names_dry_run(db_path):
     conn = connect(db_path)
     _insert_entity_raw(conn, "e_id1", "W0EXAMPLE9", aliases=["W0EXAMPLE9", "slack:W0EXAMPLE9"])
     _insert_entity_raw(conn, "e_named", "Dana Brook", aliases=["W0NAMED01"])
+    before_count = conn.execute("SELECT COUNT(*) AS c FROM entities").fetchone()["c"]
     conn.close()
 
     runner = CliRunner()
     home = db_path.parent
-    result = runner.invoke(app, ["entity", "resolve-names", "--dry-run", "--home", str(home)])
+    result = runner.invoke(app, ["entity", "resolve-names", "--home", str(home)])
     assert result.exit_code == 0
     assert "1 entity(ies)" in result.output
     assert "W0EXAMPLE9" in result.output
     assert "Dana Brook" not in result.output
+    assert "re-run with --confirm" in result.output
+
+    conn = connect(db_path)
+    after_count = conn.execute("SELECT COUNT(*) AS c FROM entities").fetchone()["c"]
+    conn.close()
+    assert before_count == after_count
+
+
+def test_resolve_names_simple_rename(db_conn):
+    """With A alone (no B), renames A in place and keeps A.id."""
+    from patina.extraction import extract_sender_entity
+    from patina.graph import resolve_entity_id
+
+    _insert_entity_raw(db_conn, "e_a", "U0EXAMPLE1", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"])
+
+    entity = extract_sender_entity("U0EXAMPLE1", "Dana Brook")
+    entity.id = "e_a"
+
+    target_id = resolve_entity_id(db_conn, entity.name, entity.aliases)
+    assert target_id is None or target_id == "e_a"
+
+    upsert_entity(db_conn, entity)
+
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'e_a'").fetchone()
+    assert row["name"] == "Dana Brook"
+    aliases = json.loads(row["aliases"])
+    assert "U0EXAMPLE1" in aliases
+    assert "slack:U0EXAMPLE1" in aliases
+
+
+def test_resolve_names_merge_duplicate(db_conn):
+    """With A + B, merge A into B: one entity named 'Dana Brook' holds U0EXAMPLE1."""
+    from patina.extraction import extract_sender_entity
+    from patina.graph import resolve_entity_id
+
+    _insert_entity_raw(db_conn, "e_a", "U0EXAMPLE1", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"])
+    _insert_entity_raw(db_conn, "e_b", "Dana Brook", aliases=["W0NAMED01"])
+
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, processed, ingested_at)"
+        " VALUES ('obs-a', 'slack_export', 'C001', 1000.0, 'e_a', 'The quick brown fox', 1,"
+        " '2025-01-01T00:00:00+00:00')"
+    )
+    db_conn.execute(
+        "INSERT INTO claims"
+        " (id, subject_id, predicate, object, confidence,"
+        "  first_asserted, last_confirmed, decay_rate)"
+        " VALUES ('claim-a', 'e_a', 'role', 'engineer', 0.5,"
+        " '2025-01-01T00:00:00+00:00', '2025-01-01T00:00:00+00:00', 0.02)"
+    )
+    db_conn.commit()
+
+    entity = extract_sender_entity("U0EXAMPLE1", "Dana Brook")
+    entity.id = "e_a"
+
+    target_id = resolve_entity_id(db_conn, entity.name, entity.aliases)
+    assert target_id == "e_b"
+
+    merge_entities(db_conn, keep_id=target_id, drop_id="e_a")
+    existing = db_conn.execute("SELECT aliases FROM entities WHERE id = ?", (target_id,)).fetchone()
+    existing_aliases = json.loads(existing["aliases"] or "[]")
+    final_aliases = list(set(existing_aliases + entity.aliases))
+    db_conn.execute(
+        "UPDATE entities SET aliases = ? WHERE id = ?",
+        (json.dumps(final_aliases), target_id),
+    )
+    db_conn.commit()
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e_a'").fetchone() is None
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'e_b'").fetchone()
+    assert row["name"] == "Dana Brook"
+    aliases = json.loads(row["aliases"])
+    assert "U0EXAMPLE1" in aliases
+    assert "slack:U0EXAMPLE1" in aliases
+
+    obs = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'obs-a'").fetchone()
+    assert obs["sender_entity_id"] == "e_b"
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'claim-a'").fetchone()
+    assert claim["subject_id"] == "e_b"
+
+
+def test_upsert_entity_merges_orphan_on_ingest(db_conn):
+    """Ingest-time retry: upsert_entity merges orphaned entity A into B."""
+    _insert_entity_raw(db_conn, "e_a", "U0EXAMPLE1", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"])
+    _insert_entity_raw(db_conn, "e_b", "Dana Brook", aliases=["W0NAMED01"])
+
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, processed, ingested_at)"
+        " VALUES ('obs-a', 'slack_export', 'C001', 1000.0, 'e_a', 'The quick brown fox', 1,"
+        " '2025-01-01T00:00:00+00:00')"
+    )
+    db_conn.commit()
+
+    entity = _entity("e_a", "Dana Brook", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1", "Dana Brook"])
+    upsert_entity(db_conn, entity)
+
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e_a'").fetchone() is None
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'e_b'").fetchone()
+    assert row["name"] == "Dana Brook"
+    aliases = json.loads(row["aliases"])
+    assert "U0EXAMPLE1" in aliases
+    assert "slack:U0EXAMPLE1" in aliases
+
+    obs = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'obs-a'").fetchone()
+    assert obs["sender_entity_id"] == "e_b"
+    assert entity.id == "e_b"
+
+
+def test_no_shared_slack_ids_after_upsert_merge(db_conn):
+    """After upsert merge, no Slack ID is held by more than one entity."""
+    import re
+
+    _insert_entity_raw(db_conn, "e_a", "U0EXAMPLE1", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"])
+    _insert_entity_raw(db_conn, "e_b", "Dana Brook", aliases=["W0NAMED01"])
+
+    entity = _entity("e_a", "Dana Brook", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1", "Dana Brook"])
+    upsert_entity(db_conn, entity)
+
+    slack_re = re.compile(r"^[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}$")
+    id_holders: dict[str, set[str]] = {}
+    rows = db_conn.execute("SELECT id, aliases FROM entities").fetchall()
+    for r in rows:
+        for alias in json.loads(r["aliases"] or "[]"):
+            if slack_re.match(alias):
+                id_holders.setdefault(alias, set()).add(r["id"])
+
+    for sid, holders in id_holders.items():
+        assert len(holders) <= 1, f"Slack ID {sid} held by {holders}"
 
 
 _DN_PREFIX = "/O=EXAMPLEORG/OU=EXCHANGE ADMINISTRATIVE GROUP (FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN="

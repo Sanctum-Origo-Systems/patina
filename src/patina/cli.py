@@ -1300,12 +1300,14 @@ def entity_list_cmd(
 
 @entity_app.command("resolve-names")
 def entity_resolve_names_cmd(
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="List ID-named entities without resolving"
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Execute resolution (preview only without this flag)"
     ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Resolve entities still named by a raw Slack ID."""
+    import json
+
     from patina.maintenance import find_id_named_entities
 
     db_path = get_db_path(home)
@@ -1320,15 +1322,21 @@ def entity_resolve_names_cmd(
             typer.echo("No ID-named entities found.")
             return
 
-        if dry_run:
+        if not confirm:
             typer.echo(f"Found {len(id_named)} entity(ies) named by raw Slack ID:")
             for ent in id_named:
                 typer.echo(f"  {ent['id'][:8]} {ent['name']}")
+            typer.echo(f"{len(id_named)} entity(ies) to resolve — re-run with --confirm to apply")
             return
 
         from patina.extraction import extract_sender_entity
+        from patina.graph import resolve_entity_id
         from patina.graph import upsert_entity as do_upsert
         from patina.ingest import _load_adapters
+        from patina.maintenance import backup_store, merge_entities
+
+        backup_path = backup_store(db_path)
+        typer.echo(f"Backup: {backup_path}")
 
         adapters = _load_adapters(home)
         slack_adapter = None
@@ -1351,19 +1359,39 @@ def entity_resolve_names_cmd(
             raise typer.Exit(1)
 
         try:
-            resolved = 0
+            renamed = 0
+            merged = 0
             failed = 0
             for ent in id_named:
                 name = slack_adapter._resolve_user_name(ent["name"])
-                if name:
-                    entity = extract_sender_entity(ent["name"], name)
-                    entity.id = ent["id"]
-                    do_upsert(conn, entity)
-                    resolved += 1
-                    typer.echo(f"  {ent['name']} -> {name}")
-                else:
+                if not name:
                     failed += 1
-            typer.echo(f"Resolved {resolved}, failed {failed} of {len(id_named)}.")
+                    typer.echo(f"  {ent['name']}: lookup failed")
+                    continue
+
+                entity = extract_sender_entity(ent["name"], name)
+                entity.id = ent["id"]
+
+                target_id = resolve_entity_id(conn, entity.name, entity.aliases)
+                if target_id and target_id != ent["id"]:
+                    merge_entities(conn, keep_id=target_id, drop_id=ent["id"])
+                    existing = conn.execute(
+                        "SELECT aliases FROM entities WHERE id = ?", (target_id,)
+                    ).fetchone()
+                    existing_aliases = json.loads(existing["aliases"] or "[]")
+                    final_aliases = list(set(existing_aliases + entity.aliases))
+                    conn.execute(
+                        "UPDATE entities SET aliases = ? WHERE id = ?",
+                        (json.dumps(final_aliases), target_id),
+                    )
+                    conn.commit()
+                    merged += 1
+                    typer.echo(f"  {ent['name']} -> {name} (merged into {target_id[:8]})")
+                else:
+                    do_upsert(conn, entity)
+                    renamed += 1
+                    typer.echo(f"  {ent['name']} -> {name}")
+            typer.echo(f"Renamed {renamed}, merged {merged}, failed {failed} of {len(id_named)}.")
         finally:
             for _, port in adapters:
                 if hasattr(port, "close"):
