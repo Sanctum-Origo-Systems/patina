@@ -217,3 +217,21 @@ def test_sender_entity_org_id_stable():
     e_org = extract_sender_entity("U001", "Acme Events")
     e_person = extract_sender_entity("U001", "Alice Chen")
     assert e_org.id == e_person.id
+
+
+def test_sender_entity_outlook_no_slack_alias():
+    e = extract_sender_entity("Dana Brook", "Dana Brook", source_family="outlook")
+    assert e.name == "Dana Brook"
+    assert "Dana Brook" in e.aliases
+    assert not any(a.startswith("slack:") for a in e.aliases)
+
+
+def test_sender_entity_slack_gets_slack_alias():
+    e = extract_sender_entity("U0EXAMPLE1", "Dana Brook", source_family="slack")
+    assert "slack:U0EXAMPLE1" in e.aliases
+    assert "U0EXAMPLE1" in e.aliases
+
+
+def test_sender_entity_default_source_is_slack():
+    e = extract_sender_entity("U0EXAMPLE1", "Dana Brook")
+    assert "slack:U0EXAMPLE1" in e.aliases

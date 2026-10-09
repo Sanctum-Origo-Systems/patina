@@ -149,6 +149,7 @@ def _ingest_messages(
     skipped = 0
     non_person_skipped = 0
     entity_ids_seen: set[str] = set()
+    family = _source_family(source)
 
     owner_identifiers = get_owner_identifiers(home)
     owner_entity_id = get_owner_entity_id(conn)
@@ -186,7 +187,7 @@ def _ingest_messages(
         if is_owner_match and owner_entity_id:
             sender_id = owner_entity_id
         else:
-            sender = extract_sender_entity(msg.user_id, msg.user_name)
+            sender = extract_sender_entity(msg.user_id, msg.user_name, source_family=family)
             upsert_entity(conn, sender)
             sender_id = sender.id
 

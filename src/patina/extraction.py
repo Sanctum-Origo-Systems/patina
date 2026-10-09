@@ -70,10 +70,14 @@ def is_non_person_sender(user_id: str, user_name: str | None = None) -> bool:
     return False
 
 
-def extract_sender_entity(user_id: str, user_name: str | None = None) -> Entity:
+def extract_sender_entity(
+    user_id: str, user_name: str | None = None, *, source_family: str = "slack"
+) -> Entity:
     from patina.maintenance import is_organization
 
-    aliases = [user_id, f"slack:{user_id}"]
+    aliases = [user_id]
+    if source_family == "slack":
+        aliases.append(f"slack:{user_id}")
 
     if user_name:
         cleaned = user_name.split("(", 1)[0].strip()
