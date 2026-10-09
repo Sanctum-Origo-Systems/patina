@@ -15,7 +15,6 @@ from patina.graph import (
     count_entities,
     count_observations,
     insert_observation,
-    resolve_entity_id,
     upsert_entity,
 )
 from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation
@@ -188,9 +187,6 @@ def _ingest_messages(
             sender_id = owner_entity_id
         else:
             sender = extract_sender_entity(msg.user_id, msg.user_name)
-            existing_id = resolve_entity_id(conn, sender.name, sender.aliases)
-            if existing_id:
-                sender.id = existing_id
             upsert_entity(conn, sender)
             sender_id = sender.id
 
