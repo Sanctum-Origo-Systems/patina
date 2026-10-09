@@ -30,7 +30,7 @@
 ```mermaid
 xychart-beta
     title "Auto-Merge Confidence by Action Zone"
-    x-axis ["<0.35", "0.35-0.65", ">=0.65"]
+    x-axis ["Act: reject (below 0.35)", "Pipeline (0.35-0.65)", "Act: merge (0.65+)"]
     y-axis "Count" 0 --> 46
     bar [8, 45, 21]
 ```
@@ -46,7 +46,7 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Auto-Merge Confidence by Action Zone"
-    x-axis ["<0.35", "0.35-0.65", ">=0.65"]
+    x-axis ["Act: reject (below 0.35)", "Pipeline (0.35-0.65)", "Act: merge (0.65+)"]
     y-axis "Count" 0 --> 13
     bar [0, 0, 12]
 ```
