@@ -1528,7 +1528,7 @@ def test_cli_entity_list(db_path):
     assert "Alice Tran" in result.output
 
 
-def test_cli_entity_retype_dry_run(db_path):
+def test_cli_entity_retype_preview_default(db_path):
     from typer.testing import CliRunner
 
     from patina.cli import app
@@ -1541,11 +1541,12 @@ def test_cli_entity_retype_dry_run(db_path):
 
     runner = CliRunner()
     home = db_path.parent
-    result = runner.invoke(app, ["entity", "retype", "--dry-run", "--home", str(home)])
+    result = runner.invoke(app, ["entity", "retype", "--home", str(home)])
     assert result.exit_code == 0
     assert "Would retype" in result.output
     assert "Acme Field Research" in result.output
     assert "Dana Brook" not in result.output
+    assert "--confirm" in result.output
 
     conn = connect(db_path)
     row = conn.execute("SELECT type FROM entities WHERE id = 'e1aabbcc'").fetchone()
@@ -1553,7 +1554,7 @@ def test_cli_entity_retype_dry_run(db_path):
     assert row["type"] == "person"
 
 
-def test_cli_entity_retype_applies(db_path):
+def test_cli_entity_retype_applies_with_confirm(db_path):
     from typer.testing import CliRunner
 
     from patina.cli import app
@@ -1566,7 +1567,7 @@ def test_cli_entity_retype_applies(db_path):
 
     runner = CliRunner()
     home = db_path.parent
-    result = runner.invoke(app, ["entity", "retype", "--home", str(home)])
+    result = runner.invoke(app, ["entity", "retype", "--confirm", "--home", str(home)])
     assert result.exit_code == 0
     assert "Retyped" in result.output
     assert "Acme Events" in result.output

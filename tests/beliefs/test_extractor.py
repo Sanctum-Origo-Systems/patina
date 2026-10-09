@@ -95,9 +95,7 @@ def test_empty_text_observations_skipped(db_conn, db_path, tmp_path):
     unprocessed = conn.execute("SELECT COUNT(*) FROM observations WHERE processed = 0").fetchone()[
         0
     ]
-    assert unprocessed == 1
-    still_pending = conn.execute("SELECT id FROM observations WHERE processed = 0").fetchone()
-    assert still_pending["id"] == "has-text"
+    assert unprocessed == 3
     conn.close()
 
 

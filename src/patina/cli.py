@@ -1179,7 +1179,9 @@ def entity_prune_links_cmd(
 
 @entity_app.command("retype")
 def entity_retype_cmd(
-    dry_run: bool = typer.Option(False, "--dry-run", help="List candidates without changing them"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Apply changes (preview only without this flag)"
+    ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Retype person entities that look like organizations."""
@@ -1192,20 +1194,22 @@ def entity_retype_cmd(
 
     conn = connect(db_path)
     try:
-        if not dry_run:
+        if confirm:
             backup_path = backup_store(db_path)
             typer.echo(f"Backup: {backup_path}")
 
-        result = retype_organization_entities(conn, dry_run=dry_run)
+        result = retype_organization_entities(conn, dry_run=not confirm)
 
         if result["retyped"] == 0:
             typer.echo("No person entities to retype as organization.")
             return
 
-        mode = "Would retype" if dry_run else "Retyped"
+        mode = "Retyped" if confirm else "Would retype"
         typer.echo(f"{mode} {result['retyped']} entity(ies) to organization:")
         for ent in result["entities"]:
             typer.echo(f"  {ent['name']}")
+        if not confirm:
+            typer.echo(f"{result['retyped']} retype(s) proposed — re-run with --confirm to apply")
     finally:
         conn.close()
 
