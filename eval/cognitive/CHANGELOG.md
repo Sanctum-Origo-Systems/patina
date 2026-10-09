@@ -1,3 +1,10 @@
+## v0.25.0 (2026-10-09)
+- #425: Fix: entity resolve-names writes by default and misses duplicates ($3.02)
+- #424: Fix: entity retype and extract --dry-run write without asking ($0.82)
+- #423: Fix: shared Slack ID dedup misses 3-entity group shape ($2.68)
+- #420: Fix: merge DN senders by trailing handle alias ($0.00)
+Total: 4 PRs, $6.52
+
 ## v0.24.0 (2026-10-08)
 - #414: Fix: empty-text Slack messages never leave unprocessed ($1.15)
 - #410: Fix: pre-#399 junk senders remain in store ($2.17)
@@ -78,10 +85,4 @@ Total: 1 PRs, $0.00
 - #314: Fix: Normalize alias prefixes and extend owner identifier config ($1.44)
 - #313: Feat: Migrate autonomy_state schema to domain-keyed and update cor ($2.21)
 Total: 7 PRs, $16.18
-
-## v0.18.3 (2026-09-24)
-- #296: Fix: backfill eval snapshots with PR-based implementations ($0.00)
-- #299: Chore: regenerate EVAL.md with corrected metrics ($0.00)
-- #300: Chore: set auto-merge promotion level to repo ($0.00)
-Total: 3 PRs, $0.00
 
