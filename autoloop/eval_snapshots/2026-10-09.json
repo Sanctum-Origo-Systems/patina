@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-09",
+  "total_implementations": 94,
+  "first_attempt_rate": 0.76,
+  "avg_cost_usd": 0.81,
+  "avg_duration_seconds": 284,
+  "attempt_distribution": {
+    "1": 72,
+    "2": 13,
+    "3+": 9
+  },
+  "human_edit_rate": 0.3,
+  "human_edit_count": 27,
+  "merged_pr_count": 91,
+  "closed_without_merge": 2,
+  "modules": {
+    "other": {
+      "implementations": 11,
+      "first_attempt_rate": 0.45,
+      "avg_cost_usd": 0.79,
+      "human_edit_rate": 0.45,
+      "merged_clean_count": 6
+    },
+    "src/patina/": {
+      "implementations": 53,
+      "first_attempt_rate": 0.34,
+      "avg_cost_usd": 0.76,
+      "human_edit_rate": 0.45,
+      "merged_clean_count": 27
+    },
+    "src/patina/adapters/": {
+      "implementations": 14,
+      "first_attempt_rate": 0.36,
+      "avg_cost_usd": 0.39,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 14
+    },
+    "src/patina/autonomy/": {
+      "implementations": 3,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 1.38,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 3
+    },
+    "src/patina/beliefs/": {
+      "implementations": 8,
+      "first_attempt_rate": 0.0,
+      "avg_cost_usd": 0.0,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 7
+    },
+    "src/patina/mcp/": {
+      "implementations": 6,
+      "first_attempt_rate": 0.67,
+      "avg_cost_usd": 0.4,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 6
+    },
+    "src/patina/priority/": {
+      "implementations": 1,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 1.91,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 1
+    }
+  },
+  "period_first_attempt_rate": null,
+  "period_avg_cost_usd": null,
+  "period_human_edit_rate": null
+}
