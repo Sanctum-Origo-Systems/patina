@@ -12,6 +12,7 @@ from patina.maintenance import (
     _collect_slack_ids,
     _is_junk_sender_name,
     backup_store,
+    clean_bogus_slack_aliases,
     dedup_entities,
     find_dedup_candidates,
     find_id_named_entities,
@@ -2222,3 +2223,57 @@ def test_dn_handle_with_ambiguous_alias_retypes(db_conn):
     result = fix_junk_senders(db_conn, dry_run=True)
     assert result["merged"] == []
     assert [r["id"] for r in result["retyped"]] == ["dn-1"]
+
+
+# ── clean_bogus_slack_aliases ──────────────────────────────────
+
+
+def test_clean_bogus_slack_aliases_removes_display_name(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", ["Dana Brook", "slack:Dana Brook"])
+    result = clean_bogus_slack_aliases(db_conn)
+    assert result["cleaned"] == 1
+    assert result["entities"][0]["removed"] == ["slack:Dana Brook"]
+
+    row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e1'").fetchone()
+    aliases = json.loads(row["aliases"])
+    assert "slack:Dana Brook" not in aliases
+    assert "Dana Brook" in aliases
+
+
+def test_clean_bogus_slack_aliases_keeps_valid_id(db_conn):
+    _insert_entity_raw(
+        db_conn, "e1", "Dana Brook", ["U0EXAMPLE1", "slack:U0EXAMPLE1", "Dana Brook"]
+    )
+    result = clean_bogus_slack_aliases(db_conn)
+    assert result["cleaned"] == 0
+
+    row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e1'").fetchone()
+    aliases = json.loads(row["aliases"])
+    assert "slack:U0EXAMPLE1" in aliases
+
+
+def test_clean_bogus_slack_aliases_dry_run(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", ["Dana Brook", "slack:Dana Brook"])
+    result = clean_bogus_slack_aliases(db_conn, dry_run=True)
+    assert result["cleaned"] == 1
+
+    row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e1'").fetchone()
+    aliases = json.loads(row["aliases"])
+    assert "slack:Dana Brook" in aliases
+
+
+def test_clean_bogus_slack_aliases_confirm_removes_all(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Dana Brook", ["slack:Dana Brook", "Dana Brook"])
+    _insert_entity_raw(db_conn, "e2", "Alex Cho", ["slack:Alex Cho", "Alex Cho"])
+    _insert_entity_raw(db_conn, "e3", "Pat Quinn", ["slack:U0GOODID01", "Pat Quinn"])
+    result = clean_bogus_slack_aliases(db_conn)
+    assert result["cleaned"] == 2
+
+    for eid in ("e1", "e2"):
+        row = db_conn.execute("SELECT aliases FROM entities WHERE id = ?", (eid,)).fetchone()
+        aliases = json.loads(row["aliases"])
+        assert not any(a.startswith("slack:") for a in aliases)
+
+    row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e3'").fetchone()
+    aliases = json.loads(row["aliases"])
+    assert "slack:U0GOODID01" in aliases

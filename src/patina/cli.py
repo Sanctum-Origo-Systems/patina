@@ -1263,6 +1263,44 @@ def entity_fix_senders_cmd(
         conn.close()
 
 
+@entity_app.command("clean-slack-aliases")
+def entity_clean_slack_aliases_cmd(
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Apply changes (preview only without this flag)"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Remove slack: aliases that are not valid Slack IDs."""
+    from patina.maintenance import backup_store, clean_bogus_slack_aliases
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if confirm:
+            backup_path = backup_store(db_path)
+            typer.echo(f"Backup: {backup_path}")
+
+        result = clean_bogus_slack_aliases(conn, dry_run=not confirm)
+
+        if result["cleaned"] == 0:
+            typer.echo("No bogus slack: aliases found.")
+            return
+
+        mode = "Removed" if confirm else "Would remove"
+        typer.echo(f"{mode} bogus slack: alias(es) from {result['cleaned']} entity(ies):")
+        for ent in result["entities"]:
+            for alias in ent["removed"]:
+                typer.echo(f"  {ent['name']}: {alias}")
+        if not confirm:
+            typer.echo(f"{result['cleaned']} entity(ies) affected — re-run with --confirm to apply")
+    finally:
+        conn.close()
+
+
 @entity_app.command("list")
 def entity_list_cmd(
     entity_type: str = typer.Option(
@@ -1369,7 +1407,7 @@ def entity_resolve_names_cmd(
                     typer.echo(f"  {ent['name']}: lookup failed")
                     continue
 
-                entity = extract_sender_entity(ent["name"], name)
+                entity = extract_sender_entity(ent["name"], name, source_family="slack")
                 entity.id = ent["id"]
 
                 target_id = resolve_entity_id(conn, entity.name, entity.aliases)

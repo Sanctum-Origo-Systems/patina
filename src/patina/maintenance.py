@@ -1211,3 +1211,39 @@ def reprocess_observations(
     )
     conn.commit()
     return result
+
+
+def clean_bogus_slack_aliases(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """Remove ``slack:`` aliases whose value is not a valid Slack ID."""
+    rows = conn.execute("SELECT id, name, aliases FROM entities").fetchall()
+
+    cleaned: list[dict] = []
+    for r in rows:
+        aliases = json.loads(r["aliases"] or "[]")
+        kept: list[str] = []
+        removed: list[str] = []
+        for a in aliases:
+            if a.startswith("slack:"):
+                suffix = a[len("slack:") :]
+                if _SLACK_ID_RE.match(suffix.upper()):
+                    kept.append(a)
+                else:
+                    removed.append(a)
+            else:
+                kept.append(a)
+        if removed:
+            cleaned.append({"id": r["id"], "name": r["name"], "removed": removed, "kept": kept})
+
+    if not dry_run and cleaned:
+        for c in cleaned:
+            conn.execute(
+                "UPDATE entities SET aliases = ? WHERE id = ?",
+                (json.dumps(c["kept"]), c["id"]),
+            )
+        conn.commit()
+
+    return {"cleaned": len(cleaned), "entities": cleaned}
