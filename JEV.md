@@ -7,30 +7,46 @@
 - **Backfilled entries:** 27
 - **Date range:** 2026-07-03 to 2026-10-06
 
-## Triage Calibration
+## Triage Agreement
 
-- **Agreement rate:** 15.8%
-- **Uncertainty rate:** 84.2%
+- **Agreed:** 3 of 19
+- **Disagreed:** 0 of 19
+- **Uncertain (fell back):** 16 of 19
+- **When confident, agreed:** 3 of 3 (100.0%)
 
-## Auto-Merge Calibration
+### Weekly Trends
 
-- **Mean confidence:** 0.600
-- **Median confidence:** 0.580
-- **Agreement with outcome:** 100.0%
+| Week | Agreed | Uncertain | n |
+|------|--------|-----------|---|
+| 9/28 | 2 | 9 | 11 |
+| 10/5 | 1 | 7 | 8 |
+
+## Auto-Merge Agreement
+
+- **Mean confidence:** 0.569 (n=74)
+- **Median confidence:** 0.560 (n=74)
+- **Agreement with incumbent decision:** 100.0% (3/3)
 
 ```mermaid
 xychart-beta
-    title "Auto-Merge Confidence Distribution"
-    x-axis ["0.0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0"]
-    y-axis "Count" 0 --> 33
-    bar [0, 13, 32, 24, 17]
+    title "Auto-Merge Confidence by Action Zone"
+    x-axis ["<0.35", "0.35-0.65", ">=0.65"]
+    y-axis "Count" 0 --> 46
+    bar [8, 45, 21]
 ```
 
+## Backfill
+
+### Backfill Auto-Merge Agreement
+
+- **Mean confidence:** 0.790 (n=12)
+- **Median confidence:** 0.805 (n=12)
+- **Agreement with incumbent decision:** 0.0% (0/0)
+
 ```mermaid
 xychart-beta
-    title "Weekly Agreement & Uncertainty Trends"
-    x-axis ["9/28", "10/5"]
-    y-axis "%" 0 --> 100
-    line [18, 12]
-    line [82, 88]
+    title "Auto-Merge Confidence by Action Zone"
+    x-axis ["<0.35", "0.35-0.65", ">=0.65"]
+    y-axis "Count" 0 --> 13
+    bar [0, 0, 12]
 ```
