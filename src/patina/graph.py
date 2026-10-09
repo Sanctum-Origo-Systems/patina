@@ -90,6 +90,12 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
     existing_id = resolve_entity_id(conn, entity.name, entity.aliases)
 
     if existing_id and existing_id != entity.id:
+        source = conn.execute("SELECT 1 FROM entities WHERE id = ?", (entity.id,)).fetchone()
+        if source:
+            from patina.maintenance import merge_entities
+
+            merge_entities(conn, keep_id=existing_id, drop_id=entity.id)
+
         existing = conn.execute(
             "SELECT aliases FROM entities WHERE id = ?", (existing_id,)
         ).fetchone()
