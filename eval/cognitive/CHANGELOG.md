@@ -1,6 +1,9 @@
-## v0.24.1 (2026-10-09)
+## v0.25.0 (2026-10-09)
+- #425: Fix: entity resolve-names writes by default and misses duplicates ($3.02)
+- #424: Fix: entity retype and extract --dry-run write without asking ($0.82)
+- #423: Fix: shared Slack ID dedup misses 3-entity group shape ($2.68)
 - #420: Fix: merge DN senders by trailing handle alias ($0.00)
-Total: 1 PRs, $0.00
+Total: 4 PRs, $6.52
 
 ## v0.24.0 (2026-10-08)
 - #414: Fix: empty-text Slack messages never leave unprocessed ($1.15)
