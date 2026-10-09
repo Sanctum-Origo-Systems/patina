@@ -1,3 +1,14 @@
+## v0.24.0 (2026-10-08)
+- #414: Fix: empty-text Slack messages never leave unprocessed ($1.15)
+- #410: Fix: pre-#399 junk senders remain in store ($2.17)
+- #411: Fix: organizations, lists and roles saved as people ($3.08)
+- #412: Fix: extraction creates single-word people — places and first names ($1.43)
+- #413: Fix: duplicates that share a Slack ID are stuck in SKIP ($2.57)
+- #409: Fix: people stay named by a raw Slack ID ($3.38)
+- #401: Fix: Outlook adapter creates junk sender entities ($2.68)
+- #400: Fix: ingest overwrites merged entities' name and aliases ($1.71)
+Total: 8 PRs, $18.17
+
 ## v0.23.0 (2026-10-06)
 - #394: Fix: entity cleanup nulls dangling sender_entity_id refs ($1.20)
 - #393: Fix: route handle-alias merge to REVIEW when target has no Slack ID ($3.53)
