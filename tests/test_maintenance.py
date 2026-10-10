@@ -197,6 +197,14 @@ def test_is_organization_role_nouns():
     assert is_organization("Acme Specialist") is True
 
 
+def test_is_organization_bot_and_service_names():
+    assert is_organization("Acme Security Bot") is True
+    assert is_organization("Example Notify Service") is True
+    assert is_organization("System Notifications") is True
+    assert is_organization("Pipeline Automation") is True
+    assert is_organization("Dana Brook") is False
+
+
 # ── is_plausible_person_name ────────────────────────────────
 
 

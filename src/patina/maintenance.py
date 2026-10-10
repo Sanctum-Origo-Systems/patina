@@ -74,6 +74,10 @@ _ORG_SUFFIX_WORDS = frozenset(
         "communications",
         "engagement",
         "outreach",
+        "bot",
+        "service",
+        "notifications",
+        "automation",
     }
 )
 
