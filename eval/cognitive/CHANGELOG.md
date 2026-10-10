@@ -1,3 +1,9 @@
+## v0.25.1 (2026-10-10)
+- #432: Fix: pin CI to Python 3.13 ($0.00)
+- #431: Fix: Outlook senders get a fake slack: alias ($1.83)
+- #430: Fix: dedup preview doesn't show what --confirm will do after #417 ($8.38)
+Total: 3 PRs, $10.21
+
 ## v0.25.0 (2026-10-09)
 - #425: Fix: entity resolve-names writes by default and misses duplicates ($3.02)
 - #424: Fix: entity retype and extract --dry-run write without asking ($0.82)
