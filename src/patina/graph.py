@@ -40,6 +40,7 @@ def resolve_entity_id(
     if not name or not name.strip():
         return None
 
+    # --- Phase 1: Exact name match ---
     row = conn.execute(
         "SELECT id FROM entities WHERE name = ? AND is_owner = 0 LIMIT 1",
         (name,),
@@ -47,23 +48,35 @@ def resolve_entity_id(
     if row:
         return row["id"]
 
-    name = normalize_alias(name)
-    normalized = normalize_name(name)
+    # --- Phase 2: Normalized name / alias match (ambiguity-safe) ---
+    name_clean = normalize_alias(name)
+    normalized = normalize_name(name_clean)
     non_owner_rows = None
 
     if normalized and len(normalized) > 2:
         non_owner_rows = conn.execute(
             "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
         ).fetchall()
+
+        name_matches: set[str] = set()
         for r in non_owner_rows:
             if normalize_name(r["name"]) == normalized:
-                return r["id"]
-        for r in non_owner_rows:
-            for alias in json.loads(r["aliases"] or "[]"):
-                clean = normalize_alias(alias)
-                if normalize_name(clean) == normalized:
-                    return r["id"]
+                name_matches.add(r["id"])
+        if len(name_matches) == 1:
+            return name_matches.pop()
 
+        if not name_matches:
+            alias_matches: set[str] = set()
+            for r in non_owner_rows:
+                for alias in json.loads(r["aliases"] or "[]"):
+                    clean = normalize_alias(alias)
+                    if normalize_name(clean) == normalized:
+                        alias_matches.add(r["id"])
+                        break
+            if len(alias_matches) == 1:
+                return alias_matches.pop()
+
+    # --- Phase 3: Slack ID lookup (tiebreaker for ambiguous name/alias) ---
     if aliases:
         if non_owner_rows is None:
             non_owner_rows = conn.execute(
@@ -73,17 +86,67 @@ def resolve_entity_id(
             if not alias:
                 continue
             stripped = normalize_alias(alias)
+            if not _SLACK_ID_PAT.match(stripped):
+                continue
             for r in non_owner_rows:
                 for stored_alias in json.loads(r["aliases"] or "[]"):
                     if normalize_alias(stored_alias) == stripped:
                         return r["id"]
+
+    # --- Phase 4: Provided non-Slack-ID aliases (ambiguity-safe) ---
+    if aliases:
+        if non_owner_rows is None:
+            non_owner_rows = conn.execute(
+                "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+            ).fetchall()
+        for alias in aliases:
+            if not alias:
+                continue
+            stripped = normalize_alias(alias)
+            if _SLACK_ID_PAT.match(stripped):
+                continue
+            matches: set[str] = set()
+            for r in non_owner_rows:
+                for stored_alias in json.loads(r["aliases"] or "[]"):
+                    if normalize_alias(stored_alias) == stripped:
+                        matches.add(r["id"])
+                        break
+            if len(matches) == 1:
+                return matches.pop()
+            if matches:
+                continue
             norm_alias = normalize_name(stripped)
             if norm_alias and len(norm_alias) > 2:
+                name_matches_2: set[str] = set()
                 for r in non_owner_rows:
                     if normalize_name(r["name"]) == norm_alias:
-                        return r["id"]
+                        name_matches_2.add(r["id"])
+                if len(name_matches_2) == 1:
+                    return name_matches_2.pop()
 
     return None
+
+
+def _strip_foreign_slack_ids(
+    conn: sqlite3.Connection,
+    aliases: list[str],
+    target_id: str,
+) -> list[str]:
+    """Remove Slack ID aliases already held by a different entity."""
+    result = []
+    for alias in aliases:
+        stripped = normalize_alias(alias)
+        if not _SLACK_ID_PAT.match(stripped):
+            result.append(alias)
+            continue
+        row = conn.execute(
+            "SELECT id FROM entities WHERE id != ? AND is_owner = 0"
+            " AND (aliases LIKE ? OR aliases LIKE ?)",
+            (target_id, f'%"{stripped}"%', f'%"slack:{stripped}"%'),
+        ).fetchone()
+        if row is None:
+            result.append(alias)
+    return result
 
 
 def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
@@ -100,7 +163,8 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
             "SELECT aliases FROM entities WHERE id = ?", (existing_id,)
         ).fetchone()
         existing_aliases = json.loads(existing["aliases"] or "[]")
-        merged_aliases = list(set(existing_aliases + entity.aliases))
+        new_aliases = _strip_foreign_slack_ids(conn, entity.aliases, existing_id)
+        merged_aliases = list(set(existing_aliases + new_aliases))
         conn.execute(
             "UPDATE entities SET aliases = ?, last_seen = ? WHERE id = ?",
             (json.dumps(merged_aliases), entity.last_seen, existing_id),
@@ -115,7 +179,8 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
 
     if existing:
         existing_aliases = json.loads(existing["aliases"] or "[]")
-        merged_aliases = list(set(existing_aliases + entity.aliases))
+        new_aliases = _strip_foreign_slack_ids(conn, entity.aliases, entity.id)
+        merged_aliases = list(set(existing_aliases + new_aliases))
         name = (
             existing["name"]
             if _name_type_rank(existing["name"]) < _name_type_rank(entity.name)
@@ -126,6 +191,7 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
             (name, json.dumps(merged_aliases), entity.last_seen, entity.id),
         )
     else:
+        safe_aliases = _strip_foreign_slack_ids(conn, entity.aliases, entity.id)
         conn.execute(
             """INSERT INTO entities
                    (id, type, name, aliases, metadata, first_seen, last_seen,
@@ -135,7 +201,7 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
                 entity.id,
                 entity.type,
                 entity.name,
-                json.dumps(entity.aliases),
+                json.dumps(safe_aliases),
                 json.dumps(entity.metadata),
                 entity.first_seen,
                 entity.last_seen,
