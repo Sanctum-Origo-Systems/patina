@@ -219,6 +219,23 @@ def test_sender_entity_org_id_stable():
     assert e_org.id == e_person.id
 
 
+def test_sender_entity_outlook_bot_not_person():
+    e = extract_sender_entity("Acme Security Bot", "Acme Security Bot", source_family="outlook")
+    assert e.type == "organization"
+
+
+def test_sender_entity_outlook_service_not_person():
+    e = extract_sender_entity(
+        "Example Notify Service", "Example Notify Service", source_family="outlook"
+    )
+    assert e.type == "organization"
+
+
+def test_sender_entity_outlook_person_stays_person():
+    e = extract_sender_entity("Dana Brook", "Dana Brook", source_family="outlook")
+    assert e.type == "person"
+
+
 def test_sender_entity_outlook_no_slack_alias():
     e = extract_sender_entity("Dana Brook", "Dana Brook", source_family="outlook")
     assert e.name == "Dana Brook"
