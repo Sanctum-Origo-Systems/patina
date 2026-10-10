@@ -550,3 +550,164 @@ class TestResolveEntityIdCrossMatch:
         assert count_entities(db_conn, "person") == 1
         ent = get_entity(db_conn, "e1")
         assert "dchen@corp.com" in ent.aliases
+
+
+def _raw_insert_entity(conn, eid, etype, name, aliases=None, is_owner=0):
+    """Direct SQL insert bypassing upsert merge logic (for test fixtures)."""
+    import json as _json
+
+    conn.execute(
+        """INSERT INTO entities
+           (id, type, name, aliases, metadata, first_seen, last_seen,
+            decay_rate, is_owner)
+           VALUES (?, ?, ?, ?, '{}', '2024-01-01', '2024-01-01', 0.02, ?)""",
+        (eid, etype, name, _json.dumps(aliases or []), is_owner),
+    )
+    conn.commit()
+
+
+class TestResolveEntityIdSlackPriority:
+    """#434: Slack ID in aliases must win over ambiguous handle matches."""
+
+    def test_slack_id_routes_to_correct_entity(self, db_conn):
+        """Repro from #434: handle_r is an alias on both A and B.
+        Incoming Slack ID U0EXAMPLE1 belongs to B — should land on B."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["handle_m", "U0EXAMPLE2", "handle_r"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["handle_r", "U0EXAMPLE1"],
+        )
+        result = resolve_entity_id(db_conn, "handle_r", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"])
+        assert result == "eB"
+
+    def test_slack_id_prevents_alias_contamination(self, db_conn):
+        """After correct resolution, A's aliases must not gain B's Slack ID."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["handle_m", "U0EXAMPLE2", "handle_r"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["handle_r", "U0EXAMPLE1"],
+        )
+        incoming = Entity(
+            id="eNEW",
+            type="person",
+            name="handle_r",
+            aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+        )
+        upsert_entity(db_conn, incoming)
+        assert incoming.id == "eB"
+        ent_a = get_entity(db_conn, "eA")
+        assert "U0EXAMPLE1" not in ent_a.aliases
+        assert "slack:U0EXAMPLE1" not in ent_a.aliases
+
+    def test_shared_handle_no_slack_id_returns_none(self, db_conn):
+        """A handle alias on two entities with no Slack ID must not pick one."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["handle_r"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["handle_r"],
+        )
+        assert resolve_entity_id(db_conn, "handle_r") is None
+
+    def test_slack_id_prefixed_also_wins(self, db_conn):
+        """slack:U0EXAMPLE1 in aliases should match stored U0EXAMPLE1."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["handle_r"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["handle_r", "U0EXAMPLE1"],
+        )
+        result = resolve_entity_id(db_conn, "handle_r", aliases=["slack:U0EXAMPLE1"])
+        assert result == "eB"
+
+
+class TestSlackIdUniquenessInvariant:
+    """#434: No Slack ID alias may be held by more than one entity."""
+
+    def test_upsert_does_not_duplicate_slack_id(self, db_conn):
+        """Same-id update must not steal a Slack ID held by another entity."""
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["U0EXAMPLE1"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["U0EXAMPLE2"],
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="eA",
+                type="person",
+                name="handle_m",
+                aliases=["U0EXAMPLE2", "U0EXAMPLE1"],
+            ),
+        )
+        ent_a = get_entity(db_conn, "eA")
+        assert "U0EXAMPLE2" in ent_a.aliases
+        assert "U0EXAMPLE1" not in ent_a.aliases
+        ent_b = get_entity(db_conn, "eB")
+        assert "U0EXAMPLE1" in ent_b.aliases
+
+    def test_upsert_allows_slack_id_on_same_entity(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="eA",
+                type="person",
+                name="Dana Brook",
+                aliases=["U0EXAMPLE1"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="eA",
+                type="person",
+                name="Dana Brook",
+                aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+            ),
+        )
+        ent = get_entity(db_conn, "eA")
+        assert "U0EXAMPLE1" in ent.aliases
+        assert "slack:U0EXAMPLE1" in ent.aliases
