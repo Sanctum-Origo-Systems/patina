@@ -110,6 +110,8 @@ The observer maintains two belief graphs: beliefs about the world it watches, an
 
 **[View live builder performance dashboard (EVAL.md)](EVAL.md)** — first-attempt success rate, cost trends, and per-module breakdown. Updated daily.
 
+**[View the decision-model shadow report (JEV.md)](JEV.md)** — how often Jev agrees with triage and auto-merge decisions, and whether it's ready to act. Updated daily.
+
 ## What Makes This Different
 
 1. **Cognitive framework, not an assistant** — an architecture for systems that form, hold, and act on beliefs
