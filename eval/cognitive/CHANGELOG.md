@@ -1,3 +1,9 @@
+## v0.25.2 (2026-10-11)
+- #439: Docs: link JEV.md from README ($0.00)
+- #437: Fix: automated Outlook senders still typed as person ($0.92)
+- #436: Fix: Slack message routed to wrong person via stale handle alias ($2.75)
+Total: 3 PRs, $3.67
+
 ## v0.25.1 (2026-10-10)
 - #432: Fix: pin CI to Python 3.13 ($0.00)
 - #431: Fix: Outlook senders get a fake slack: alias ($1.83)
