@@ -676,9 +676,7 @@ class TestResolveEntityIdDuplicateSlackId:
             "Dana Brook",
             aliases=["handle_r", "U0EXAMPLE1"],
         )
-        result = resolve_entity_id(
-            db_conn, "handle_r", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"]
-        )
+        result = resolve_entity_id(db_conn, "handle_r", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"])
         assert result != "eA"
         assert result == "eB"
 
@@ -699,9 +697,7 @@ class TestResolveEntityIdDuplicateSlackId:
             "Dana Brook",
             aliases=["U0EXAMPLE1"],
         )
-        result = resolve_entity_id(
-            db_conn, "handle_r", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"]
-        )
+        result = resolve_entity_id(db_conn, "handle_r", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"])
         assert result == "eB"
 
     def test_upsert_no_alias_leak_to_contaminated_entity(self, db_conn):
@@ -775,9 +771,7 @@ class TestResolveEntityIdDuplicateSlackId:
             "Dana Brook",
             aliases=["U0EXAMPLE1"],
         )
-        result = resolve_entity_id(
-            db_conn, "handle_r", aliases=["U0EXAMPLE1"]
-        )
+        result = resolve_entity_id(db_conn, "handle_r", aliases=["U0EXAMPLE1"])
         assert result is None
 
 
