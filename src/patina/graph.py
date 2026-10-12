@@ -198,6 +198,11 @@ def _strip_foreign_slack_ids(
 def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
     existing_id = resolve_entity_id(conn, entity.name, entity.aliases)
 
+    if existing_id and existing_id == entity.id:
+        name_id = resolve_entity_id(conn, entity.name)
+        if name_id and name_id != entity.id:
+            existing_id = name_id
+
     if existing_id and existing_id != entity.id:
         source = conn.execute("SELECT 1 FROM entities WHERE id = ?", (entity.id,)).fetchone()
         if source:
