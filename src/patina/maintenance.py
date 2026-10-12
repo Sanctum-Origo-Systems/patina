@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -11,6 +12,29 @@ from pathlib import Path
 
 from patina.graph import normalize_name as _graph_normalize
 from patina.graph import resolve_entity_id
+
+
+class StaleSnapshotError(Exception):
+    """The store was modified between preview and confirm runs."""
+
+
+def store_snapshot_token(conn: sqlite3.Connection) -> str:
+    """Compute a fingerprint of entity-relevant tables for stale-plan detection."""
+    rows = conn.execute("SELECT id, type, name, aliases FROM entities ORDER BY id").fetchall()
+    h = hashlib.sha256()
+    for r in rows:
+        h.update(f"{r['id']}|{r['type']}|{r['name']}|{r['aliases']}".encode())
+    return h.hexdigest()[:16]
+
+
+def _check_snapshot_token(conn: sqlite3.Connection, token: str | None) -> None:
+    if token is not None:
+        current = store_snapshot_token(conn)
+        if current != token:
+            raise StaleSnapshotError(
+                f"Store changed since preview (expected {token}, got {current})"
+            )
+
 
 _NON_PERSON_RE = re.compile(
     r"\b("
@@ -869,7 +893,10 @@ def dedup_entities(
     conn: sqlite3.Connection,
     *,
     dry_run: bool = False,
+    snapshot_token: str | None = None,
 ) -> dict:
+    if not dry_run:
+        _check_snapshot_token(conn, snapshot_token)
     dedup_result = find_dedup_candidates(conn)
     candidates = dedup_result["candidates"]
 
@@ -952,7 +979,10 @@ def prune_non_person_entities(
     conn: sqlite3.Connection,
     *,
     dry_run: bool = False,
+    snapshot_token: str | None = None,
 ) -> dict:
+    if not dry_run:
+        _check_snapshot_token(conn, snapshot_token)
     rows = conn.execute("SELECT id, name, type FROM entities WHERE is_owner = 0").fetchall()
 
     sender_ids = {
@@ -1028,7 +1058,10 @@ def prune_slack_link_entities(
     conn: sqlite3.Connection,
     *,
     dry_run: bool = False,
+    snapshot_token: str | None = None,
 ) -> dict:
+    if not dry_run:
+        _check_snapshot_token(conn, snapshot_token)
     rows = conn.execute("SELECT id, name FROM entities WHERE type = 'reference'").fetchall()
 
     pipe_re = re.compile(r"\|")
@@ -1078,7 +1111,10 @@ def retype_organization_entities(
     conn: sqlite3.Connection,
     *,
     dry_run: bool = False,
+    snapshot_token: str | None = None,
 ) -> dict:
+    if not dry_run:
+        _check_snapshot_token(conn, snapshot_token)
     rows = conn.execute(
         "SELECT id, name FROM entities WHERE type = 'person' AND is_owner = 0"
     ).fetchall()

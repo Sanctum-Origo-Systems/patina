@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from patina.graph import (
     insert_claim,
     insert_observation,
@@ -9,6 +11,7 @@ from patina.graph import (
     upsert_relationship,
 )
 from patina.maintenance import (
+    StaleSnapshotError,
     _collect_slack_ids,
     _is_junk_sender_name,
     backup_store,
@@ -26,6 +29,7 @@ from patina.maintenance import (
     reprocess_observations,
     retype_organization_entities,
     rewire_entity_references,
+    store_snapshot_token,
 )
 from patina.models import Claim, Entity, Observation, Relationship
 
@@ -2344,3 +2348,281 @@ def test_clean_bogus_slack_aliases_confirm_removes_all(db_conn):
     row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e3'").fetchone()
     aliases = json.loads(row["aliases"])
     assert "slack:U0GOODID01" in aliases
+
+
+# ── preview/commit equivalence invariant (#445) ────────────
+
+
+def _count_all_entities(conn):
+    return conn.execute("SELECT COUNT(*) AS c FROM entities").fetchone()["c"]
+
+
+def _snapshot_entities(conn):
+    return [
+        dict(r) for r in conn.execute("SELECT id, type, name, aliases FROM entities ORDER BY id")
+    ]
+
+
+def test_snapshot_token_stable(db_conn):
+    """Same store state produces the same token."""
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
+    t1 = store_snapshot_token(db_conn)
+    t2 = store_snapshot_token(db_conn)
+    assert t1 == t2
+
+
+def test_snapshot_token_changes_on_insert(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
+    t1 = store_snapshot_token(db_conn)
+    _insert_entity_raw(db_conn, "e2", "Alex Cho")
+    t2 = store_snapshot_token(db_conn)
+    assert t1 != t2
+
+
+def test_snapshot_token_changes_on_update(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
+    t1 = store_snapshot_token(db_conn)
+    db_conn.execute("UPDATE entities SET name = 'Rivera, Sam' WHERE id = 'e1'")
+    db_conn.commit()
+    t2 = store_snapshot_token(db_conn)
+    assert t1 != t2
+
+
+def test_snapshot_token_changes_on_delete(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera")
+    _insert_entity_raw(db_conn, "e2", "Alex Cho")
+    t1 = store_snapshot_token(db_conn)
+    db_conn.execute("DELETE FROM entities WHERE id = 'e2'")
+    db_conn.commit()
+    t2 = store_snapshot_token(db_conn)
+    assert t1 != t2
+
+
+# -- dedup: equivalence --
+
+
+def test_dedup_dry_run_writes_nothing(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
+    insert_observation(db_conn, _obs("o1", "e1"))
+    before = _snapshot_entities(db_conn)
+
+    dedup_entities(db_conn, dry_run=True)
+
+    after = _snapshot_entities(db_conn)
+    assert before == after
+
+
+def test_dedup_equivalence(tmp_path):
+    """dry_run plan matches confirm plan on unchanged store (#445)."""
+    from patina.store import connect, get_db_path, init_db
+
+    def _setup(db_path):
+        init_db(db_path)
+        c = connect(db_path)
+        _insert_entity_raw(c, "e1", "Sam Rivera", aliases=["slack:U001"])
+        _insert_entity_raw(c, "e2", "Rivera, Sam", aliases=["slack:U001"])
+        insert_observation(c, _obs("o1", "e1"))
+        insert_observation(c, _obs("o2", "e2"))
+        return c
+
+    path_dry = get_db_path(tmp_path / "dry")
+    path_live = get_db_path(tmp_path / "live")
+    conn_dry = _setup(path_dry)
+    conn_live = _setup(path_live)
+
+    token = store_snapshot_token(conn_live)
+    dry = dedup_entities(conn_dry, dry_run=True)
+    live = dedup_entities(conn_live, snapshot_token=token)
+
+    conn_dry.close()
+    conn_live.close()
+
+    dry_plan = [(m["keep_name"], m["drop_name"]) for m in dry["merges"]]
+    live_plan = [(m["keep_name"], m["drop_name"]) for m in live["merges"]]
+    assert dry_plan == live_plan
+    assert dry["entities_merged"] == live["entities_merged"]
+
+
+def test_dedup_stale_snapshot_raises(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
+    token = store_snapshot_token(db_conn)
+
+    _insert_entity_raw(db_conn, "e3", "Alex Cho")
+
+    with pytest.raises(StaleSnapshotError):
+        dedup_entities(db_conn, snapshot_token=token)
+
+
+# -- prune_non_person: equivalence --
+
+
+def test_prune_dry_run_writes_nothing(db_conn):
+    upsert_entity(db_conn, _entity("e1", "Deploy Bot"))
+    upsert_entity(db_conn, _entity("e2", "Alice Tran"))
+    insert_claim(db_conn, _claim("c1", "e1"))
+    before = _snapshot_entities(db_conn)
+    claims_before = db_conn.execute("SELECT COUNT(*) AS c FROM claims").fetchone()["c"]
+
+    prune_non_person_entities(db_conn, dry_run=True)
+
+    after = _snapshot_entities(db_conn)
+    claims_after = db_conn.execute("SELECT COUNT(*) AS c FROM claims").fetchone()["c"]
+    assert before == after
+    assert claims_before == claims_after
+
+
+def test_prune_equivalence(db_conn):
+    """dry_run prune list matches confirm prune list (#445)."""
+    upsert_entity(db_conn, _entity("e1", "Deploy Bot"))
+    upsert_entity(db_conn, _entity("e2", "Alice Tran"))
+    insert_claim(db_conn, _claim("c1", "e1"))
+
+    token = store_snapshot_token(db_conn)
+    dry = prune_non_person_entities(db_conn, dry_run=True)
+    live = prune_non_person_entities(db_conn, snapshot_token=token)
+
+    dry_ids = {e["id"] for e in dry["entities"]}
+    live_ids = {e["id"] for e in live["entities"]}
+    assert dry_ids == live_ids
+    assert dry["pruned"] == live["pruned"]
+
+
+def test_prune_stale_snapshot_raises(db_conn):
+    upsert_entity(db_conn, _entity("e1", "Deploy Bot"))
+    token = store_snapshot_token(db_conn)
+
+    upsert_entity(db_conn, _entity("e2", "Build Bot"))
+
+    with pytest.raises(StaleSnapshotError):
+        prune_non_person_entities(db_conn, snapshot_token=token)
+
+
+# -- prune_slack_link: equivalence --
+
+
+def test_prune_links_dry_run_writes_nothing(db_conn):
+    junk = Entity(
+        id="junk1",
+        type="reference",
+        name="https://github.com/org/repo|link",
+        aliases=[],
+    )
+    clean = Entity(
+        id="clean1",
+        type="reference",
+        name="https://example.com/page",
+        aliases=[],
+    )
+    upsert_entity(db_conn, junk)
+    upsert_entity(db_conn, clean)
+    before = _snapshot_entities(db_conn)
+
+    prune_slack_link_entities(db_conn, dry_run=True)
+
+    after = _snapshot_entities(db_conn)
+    assert before == after
+
+
+def test_prune_links_equivalence(db_conn):
+    """dry_run plan matches confirm plan (#445)."""
+    junk = Entity(
+        id="junk1",
+        type="reference",
+        name="https://github.com/org/repo|link",
+        aliases=[],
+    )
+    clean = Entity(
+        id="clean1",
+        type="reference",
+        name="https://example.com/page",
+        aliases=[],
+    )
+    upsert_entity(db_conn, junk)
+    upsert_entity(db_conn, clean)
+
+    token = store_snapshot_token(db_conn)
+    dry = prune_slack_link_entities(db_conn, dry_run=True)
+    live = prune_slack_link_entities(db_conn, snapshot_token=token)
+
+    dry_ids = {e["id"] for e in dry["entities"]}
+    live_ids = {e["id"] for e in live["entities"]}
+    assert dry_ids == live_ids
+    assert dry["pruned"] == live["pruned"]
+
+
+def test_prune_links_stale_snapshot_raises(db_conn):
+    junk = Entity(
+        id="junk1",
+        type="reference",
+        name="https://github.com/org/repo|link",
+        aliases=[],
+    )
+    upsert_entity(db_conn, junk)
+    token = store_snapshot_token(db_conn)
+
+    upsert_entity(
+        db_conn,
+        Entity(id="junk2", type="reference", name="http://foo|bar", aliases=[]),
+    )
+
+    with pytest.raises(StaleSnapshotError):
+        prune_slack_link_entities(db_conn, snapshot_token=token)
+
+
+# -- retype_organization: equivalence --
+
+
+def test_retype_dry_run_writes_nothing(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Acme Field Research")
+    _insert_entity_raw(db_conn, "e2", "Dana Brook")
+    before = _snapshot_entities(db_conn)
+
+    retype_organization_entities(db_conn, dry_run=True)
+
+    after = _snapshot_entities(db_conn)
+    assert before == after
+
+
+def test_retype_equivalence(db_conn):
+    """dry_run retype list matches confirm retype list (#445)."""
+    _insert_entity_raw(db_conn, "e1", "Acme Field Research")
+    _insert_entity_raw(db_conn, "e2", "Dana Brook")
+    _insert_entity_raw(db_conn, "e3", "Acme Events")
+
+    token = store_snapshot_token(db_conn)
+    dry = retype_organization_entities(db_conn, dry_run=True)
+    live = retype_organization_entities(db_conn, snapshot_token=token)
+
+    dry_ids = {e["id"] for e in dry["entities"]}
+    live_ids = {e["id"] for e in live["entities"]}
+    assert dry_ids == live_ids
+    assert dry["retyped"] == live["retyped"]
+
+
+def test_retype_stale_snapshot_raises(db_conn):
+    _insert_entity_raw(db_conn, "e1", "Acme Field Research")
+    token = store_snapshot_token(db_conn)
+
+    _insert_entity_raw(db_conn, "e2", "Acme Events")
+
+    with pytest.raises(StaleSnapshotError):
+        retype_organization_entities(db_conn, snapshot_token=token)
+
+
+# -- snapshot_token ignored on dry_run --
+
+
+def test_snapshot_token_ignored_on_dry_run(db_conn):
+    """Passing a stale token with dry_run=True should not raise."""
+    _insert_entity_raw(db_conn, "e1", "Sam Rivera", aliases=["slack:U001"])
+    _insert_entity_raw(db_conn, "e2", "Rivera, Sam", aliases=["slack:U001"])
+    token = store_snapshot_token(db_conn)
+
+    _insert_entity_raw(db_conn, "e3", "Alex Cho")
+
+    dedup_entities(db_conn, dry_run=True, snapshot_token=token)
+    prune_non_person_entities(db_conn, dry_run=True, snapshot_token=token)
+    prune_slack_link_entities(db_conn, dry_run=True, snapshot_token=token)
+    retype_organization_entities(db_conn, dry_run=True, snapshot_token=token)
