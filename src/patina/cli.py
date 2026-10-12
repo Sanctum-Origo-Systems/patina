@@ -1072,10 +1072,15 @@ def entity_dedup_cmd(
     conn = connect(db_path)
     try:
         if confirm:
+            from patina.maintenance import store_snapshot_token
+
             backup_path = backup_store(db_path)
             typer.echo(f"Backup: {backup_path}")
+            token = store_snapshot_token(conn)
+        else:
+            token = None
 
-        result = dedup_entities(conn, dry_run=not confirm)
+        result = dedup_entities(conn, dry_run=not confirm, snapshot_token=token)
 
         needs_review = result.get("needs_review", [])
 
@@ -1124,10 +1129,15 @@ def entity_prune_cmd(
     conn = connect(db_path)
     try:
         if confirm:
+            from patina.maintenance import store_snapshot_token
+
             backup_path = backup_store(db_path)
             typer.echo(f"Backup: {backup_path}")
+            token = store_snapshot_token(conn)
+        else:
+            token = None
 
-        result = prune_non_person_entities(conn, dry_run=not confirm)
+        result = prune_non_person_entities(conn, dry_run=not confirm, snapshot_token=token)
 
         if result["pruned"] == 0:
             typer.echo("No non-person entities found.")
@@ -1160,10 +1170,15 @@ def entity_prune_links_cmd(
     conn = connect(db_path)
     try:
         if not dry_run:
+            from patina.maintenance import store_snapshot_token
+
             backup_path = backup_store(db_path)
             typer.echo(f"Backup: {backup_path}")
+            token = store_snapshot_token(conn)
+        else:
+            token = None
 
-        result = prune_slack_link_entities(conn, dry_run=dry_run)
+        result = prune_slack_link_entities(conn, dry_run=dry_run, snapshot_token=token)
 
         if result["pruned"] == 0:
             typer.echo("No link-markup entities found.")
@@ -1195,10 +1210,15 @@ def entity_retype_cmd(
     conn = connect(db_path)
     try:
         if confirm:
+            from patina.maintenance import store_snapshot_token
+
             backup_path = backup_store(db_path)
             typer.echo(f"Backup: {backup_path}")
+            token = store_snapshot_token(conn)
+        else:
+            token = None
 
-        result = retype_organization_entities(conn, dry_run=not confirm)
+        result = retype_organization_entities(conn, dry_run=not confirm, snapshot_token=token)
 
         if result["retyped"] == 0:
             typer.echo("No person entities to retype as organization.")
