@@ -38,6 +38,74 @@ def _seed_entity(conn, eid, etype, name, aliases=None, is_owner=0):
     )
 
 
+def _seed_identity_entity(conn, eid, name, aliases=None):
+    """Seed a non-owner person entity for identity resolution fixtures."""
+    now = "2025-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata, first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0.02, 0)",
+        (eid, name, json.dumps(aliases or []), now, now),
+    )
+
+
+@pytest.fixture
+def slack_id_wins(db_conn):
+    """Entity A has a Slack ID; entity B shares the display name but has none."""
+    _seed_identity_entity(db_conn, "sid-a", "Kai Tanaka", aliases=["U0KAITANA"])
+    _seed_identity_entity(db_conn, "sid-b", "Kai Tanaka")
+    db_conn.commit()
+    return {
+        "conn": db_conn,
+        "entity_with_slack": "sid-a",
+        "entity_with_name": "sid-b",
+        "slack_id": "U0KAITANA",
+        "shared_name": "Kai Tanaka",
+    }
+
+
+@pytest.fixture
+def ambiguous_name(db_conn):
+    """Two entities whose names normalise identically; neither has a Slack ID."""
+    _seed_identity_entity(db_conn, "amb-a", "Riku Endo")
+    _seed_identity_entity(db_conn, "amb-b", "Endo, Riku")
+    db_conn.commit()
+    return {
+        "conn": db_conn,
+        "entity_a": "amb-a",
+        "entity_b": "amb-b",
+        "shared_normalized": "riku endo",
+    }
+
+
+@pytest.fixture
+def conflicting_id(db_conn):
+    """Two entities with different Slack IDs and overlapping normalised names."""
+    _seed_identity_entity(db_conn, "cid-a", "Yui Sato", aliases=["U0YUISAT1"])
+    _seed_identity_entity(db_conn, "cid-b", "Sato, Yui", aliases=["U0YUISAT2"])
+    db_conn.commit()
+    return {
+        "conn": db_conn,
+        "entity_a": "cid-a",
+        "entity_b": "cid-b",
+        "slack_id_a": "U0YUISAT1",
+        "slack_id_b": "U0YUISAT2",
+    }
+
+
+@pytest.fixture
+def clean_merge(db_conn):
+    """Single entity that should cleanly merge with incoming data."""
+    _seed_identity_entity(db_conn, "cm-a", "Hana Kimura", aliases=["hkimura"])
+    db_conn.commit()
+    return {
+        "conn": db_conn,
+        "entity_id": "cm-a",
+        "name": "Hana Kimura",
+        "alias": "hkimura",
+    }
+
+
 def _seed_claim(conn, cid, subject_id, predicate="role", obj="engineer"):
     now = "2025-01-01T00:00:00+00:00"
     conn.execute(

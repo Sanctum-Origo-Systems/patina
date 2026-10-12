@@ -42,13 +42,11 @@ def resolve_entity_id(
 
     non_owner_rows = None
 
-    # --- Phase 1: Exact name match ---
-    row = conn.execute(
-        "SELECT id FROM entities WHERE name = ? AND is_owner = 0 LIMIT 1",
+    # --- Phase 1: Exact name match (ambiguity-safe) ---
+    rows = conn.execute(
+        "SELECT id FROM entities WHERE name = ? AND is_owner = 0",
         (name,),
-    ).fetchone()
-    if row:
-        return row["id"]
+    ).fetchall()
 
     # --- Phase 2: Slack ID priority lookup (ambiguity-safe) ---
     if aliases:
@@ -101,10 +99,22 @@ def resolve_entity_id(
                             return clean[0]["id"]
                         return None
 
-    # --- Phase 3: Normalized name / alias match (ambiguity-safe) ---
+    # --- Phase 3: Exact name match ambiguity check ---
     name_clean = normalize_alias(name)
     normalized = normalize_name(name_clean)
 
+    if len(rows) == 1:
+        if not (normalized and len(normalized) > 2):
+            return rows[0]["id"]
+        if non_owner_rows is None:
+            non_owner_rows = conn.execute(
+                "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+            ).fetchall()
+        norm_count = sum(1 for r in non_owner_rows if normalize_name(r["name"]) == normalized)
+        if norm_count <= 1:
+            return rows[0]["id"]
+
+    # --- Phase 4: Normalized name / alias match (ambiguity-safe) ---
     if normalized and len(normalized) > 2:
         if non_owner_rows is None:
             non_owner_rows = conn.execute(
@@ -129,7 +139,7 @@ def resolve_entity_id(
             if len(alias_matches) == 1:
                 return alias_matches.pop()
 
-    # --- Phase 4: Provided non-Slack-ID aliases (ambiguity-safe) ---
+    # --- Phase 5: Provided non-Slack-ID aliases (ambiguity-safe) ---
     if aliases:
         if non_owner_rows is None:
             non_owner_rows = conn.execute(

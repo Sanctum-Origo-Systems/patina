@@ -775,6 +775,65 @@ class TestResolveEntityIdDuplicateSlackId:
         assert result is None
 
 
+class TestSharedIdentityFixtures:
+    """#447: Shared identity fixtures + graph.py Slack ID contract."""
+
+    def test_slack_id_wins_over_display_name(self, slack_id_wins):
+        conn = slack_id_wins["conn"]
+        result = resolve_entity_id(
+            conn,
+            slack_id_wins["shared_name"],
+            aliases=[slack_id_wins["slack_id"]],
+        )
+        assert result == slack_id_wins["entity_with_slack"]
+
+    def test_ambiguous_name_returns_none(self, ambiguous_name):
+        conn = ambiguous_name["conn"]
+        assert resolve_entity_id(conn, "Riku Endo") is None
+        assert resolve_entity_id(conn, "Endo, Riku") is None
+
+    def test_upsert_ambiguous_name_does_not_merge(self, ambiguous_name):
+        conn = ambiguous_name["conn"]
+        incoming = Entity(
+            id="amb-new",
+            type="person",
+            name="Riku Endo",
+            aliases=[],
+        )
+        upsert_entity(conn, incoming)
+        assert get_entity(conn, ambiguous_name["entity_a"]) is not None
+        assert get_entity(conn, ambiguous_name["entity_b"]) is not None
+
+    def test_conflicting_id_resolves_by_slack(self, conflicting_id):
+        conn = conflicting_id["conn"]
+        assert (
+            resolve_entity_id(conn, "Yui Sato", aliases=[conflicting_id["slack_id_a"]])
+            == conflicting_id["entity_a"]
+        )
+        assert (
+            resolve_entity_id(conn, "Sato, Yui", aliases=[conflicting_id["slack_id_b"]])
+            == conflicting_id["entity_b"]
+        )
+
+    def test_conflicting_id_no_slack_returns_none(self, conflicting_id):
+        conn = conflicting_id["conn"]
+        assert resolve_entity_id(conn, "Yui Sato") is None
+
+    def test_clean_merge(self, clean_merge):
+        conn = clean_merge["conn"]
+        assert resolve_entity_id(conn, clean_merge["name"]) == clean_merge["entity_id"]
+        assert resolve_entity_id(conn, clean_merge["alias"]) == clean_merge["entity_id"]
+        incoming = Entity(
+            id="cm-new",
+            type="person",
+            name="Hana Kimura",
+            aliases=["hkimura"],
+        )
+        upsert_entity(conn, incoming)
+        assert incoming.id == clean_merge["entity_id"]
+        assert count_entities(conn, "person") == 1
+
+
 class TestSlackIdUniquenessInvariant:
     """#434: No Slack ID alias may be held by more than one entity."""
 
