@@ -655,6 +655,132 @@ class TestResolveEntityIdSlackPriority:
         assert result == "eB"
 
 
+class TestResolveEntityIdDuplicateSlackId:
+    """#446: resolve_entity_id must not return wrong entity when
+    duplicate Slack ID exists from prior misroute contamination."""
+
+    def test_contaminated_entity_does_not_win(self, db_conn):
+        """A (lower rowid) holds B's Slack ID from misroute.
+        Resolution must return B, never A."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["handle_m", "U0EXAMPLE2", "handle_r", "U0EXAMPLE1", "slack:U0EXAMPLE1"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["handle_r", "U0EXAMPLE1"],
+        )
+        result = resolve_entity_id(
+            db_conn, "handle_r", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"]
+        )
+        assert result != "eA"
+        assert result == "eB"
+
+    def test_slack_id_beats_unique_handle_alias(self, db_conn):
+        """A uniquely holds handle_r, B holds only the Slack ID.
+        Message carrying B's ID must resolve to B, not A."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["handle_m", "handle_r"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["U0EXAMPLE1"],
+        )
+        result = resolve_entity_id(
+            db_conn, "handle_r", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"]
+        )
+        assert result == "eB"
+
+    def test_upsert_no_alias_leak_to_contaminated_entity(self, db_conn):
+        """After upsert with contaminated shape, A must not gain new aliases."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["handle_m", "U0EXAMPLE2", "handle_r", "U0EXAMPLE1", "slack:U0EXAMPLE1"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["handle_r", "U0EXAMPLE1"],
+        )
+        a_before = get_entity(db_conn, "eA")
+        incoming = Entity(
+            id="eNEW",
+            type="person",
+            name="handle_r",
+            aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+        )
+        upsert_entity(db_conn, incoming)
+        a_after = get_entity(db_conn, "eA")
+        assert set(a_after.aliases) == set(a_before.aliases)
+
+    def test_upsert_no_alias_leak_unique_handle(self, db_conn):
+        """After upsert where B resolves via Slack ID, A gains nothing."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["handle_m", "handle_r"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["U0EXAMPLE1"],
+        )
+        a_before = get_entity(db_conn, "eA")
+        incoming = Entity(
+            id="eNEW",
+            type="person",
+            name="handle_r",
+            aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+        )
+        upsert_entity(db_conn, incoming)
+        a_after = get_entity(db_conn, "eA")
+        assert set(a_after.aliases) == set(a_before.aliases)
+
+    def test_both_single_slack_id_returns_none(self, db_conn):
+        """Both entities hold the same Slack ID as their only one.
+        Tiebreak cannot resolve — must return None."""
+        _raw_insert_entity(
+            db_conn,
+            "eA",
+            "person",
+            "handle_m",
+            aliases=["U0EXAMPLE1"],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "eB",
+            "person",
+            "Dana Brook",
+            aliases=["U0EXAMPLE1"],
+        )
+        result = resolve_entity_id(
+            db_conn, "handle_r", aliases=["U0EXAMPLE1"]
+        )
+        assert result is None
+
+
 class TestSlackIdUniquenessInvariant:
     """#434: No Slack ID alias may be held by more than one entity."""
 

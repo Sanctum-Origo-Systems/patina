@@ -40,6 +40,8 @@ def resolve_entity_id(
     if not name or not name.strip():
         return None
 
+    non_owner_rows = None
+
     # --- Phase 1: Exact name match ---
     row = conn.execute(
         "SELECT id FROM entities WHERE name = ? AND is_owner = 0 LIMIT 1",
@@ -48,15 +50,66 @@ def resolve_entity_id(
     if row:
         return row["id"]
 
-    # --- Phase 2: Normalized name / alias match (ambiguity-safe) ---
+    # --- Phase 2: Slack ID priority lookup (ambiguity-safe) ---
+    if aliases:
+        incoming_slack_ids = set()
+        for alias in aliases:
+            if not alias:
+                continue
+            stripped = normalize_alias(alias)
+            if _SLACK_ID_PAT.match(stripped):
+                incoming_slack_ids.add(stripped)
+
+        if incoming_slack_ids:
+            non_owner_rows = conn.execute(
+                "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+            ).fetchall()
+
+            all_holders: dict[str, list[sqlite3.Row]] = {}
+            for slack_id in incoming_slack_ids:
+                holders: list[sqlite3.Row] = []
+                for r in non_owner_rows:
+                    for stored_alias in json.loads(r["aliases"] or "[]"):
+                        if normalize_alias(stored_alias) == slack_id:
+                            holders.append(r)
+                            break
+                if holders:
+                    all_holders[slack_id] = holders
+
+            if all_holders:
+                all_entity_ids = set()
+                for holders in all_holders.values():
+                    for r in holders:
+                        all_entity_ids.add(r["id"])
+
+                if len(all_entity_ids) == 1:
+                    return all_entity_ids.pop()
+
+                for slack_id, holders in all_holders.items():
+                    holder_ids = {r["id"] for r in holders}
+                    if len(holder_ids) > 1:
+                        clean: list[sqlite3.Row] = []
+                        for r in holders:
+                            bare_slack_ids = set()
+                            for sa in json.loads(r["aliases"] or "[]"):
+                                bare = normalize_alias(sa)
+                                if _SLACK_ID_PAT.match(bare):
+                                    bare_slack_ids.add(bare)
+                            if len(bare_slack_ids) == 1:
+                                clean.append(r)
+                        if len(clean) == 1:
+                            return clean[0]["id"]
+                        return None
+
+    # --- Phase 3: Normalized name / alias match (ambiguity-safe) ---
     name_clean = normalize_alias(name)
     normalized = normalize_name(name_clean)
-    non_owner_rows = None
 
     if normalized and len(normalized) > 2:
-        non_owner_rows = conn.execute(
-            "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
-        ).fetchall()
+        if non_owner_rows is None:
+            non_owner_rows = conn.execute(
+                "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
+            ).fetchall()
 
         name_matches: set[str] = set()
         for r in non_owner_rows:
@@ -75,23 +128,6 @@ def resolve_entity_id(
                         break
             if len(alias_matches) == 1:
                 return alias_matches.pop()
-
-    # --- Phase 3: Slack ID lookup (tiebreaker for ambiguous name/alias) ---
-    if aliases:
-        if non_owner_rows is None:
-            non_owner_rows = conn.execute(
-                "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
-            ).fetchall()
-        for alias in aliases:
-            if not alias:
-                continue
-            stripped = normalize_alias(alias)
-            if not _SLACK_ID_PAT.match(stripped):
-                continue
-            for r in non_owner_rows:
-                for stored_alias in json.loads(r["aliases"] or "[]"):
-                    if normalize_alias(stored_alias) == stripped:
-                        return r["id"]
 
     # --- Phase 4: Provided non-Slack-ID aliases (ambiguity-safe) ---
     if aliases:
