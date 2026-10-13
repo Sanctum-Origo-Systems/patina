@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 
 from patina.models import Entity
 
@@ -71,8 +72,12 @@ def is_non_person_sender(user_id: str, user_name: str | None = None) -> bool:
 
 
 def extract_sender_entity(
-    user_id: str, user_name: str | None = None, *, source_family: str = "slack"
-) -> Entity:
+    user_id: str,
+    user_name: str | None = None,
+    *,
+    source_family: str = "slack",
+    conn: sqlite3.Connection | None = None,
+) -> Entity | None:
     from patina.maintenance import is_organization
 
     aliases = [user_id]
@@ -97,8 +102,17 @@ def extract_sender_entity(
 
     entity_type = "organization" if is_organization(canonical_name) else "person"
 
+    entity_id = _make_id("person", user_id)
+
+    if conn is not None:
+        from patina.graph import resolve_entity_id
+
+        resolved = resolve_entity_id(conn, canonical_name, aliases)
+        if resolved is not None:
+            entity_id = resolved
+
     return Entity(
-        id=_make_id("person", user_id),
+        id=entity_id,
         type=entity_type,
         name=canonical_name,
         aliases=list(set(aliases)),

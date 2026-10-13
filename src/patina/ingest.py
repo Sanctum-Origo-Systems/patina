@@ -85,7 +85,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
             if is_non_person_sender(msg.user_id, sender_name):
                 non_person_skipped += 1
             else:
-                sender = extract_sender_entity(msg.user_id, sender_name)
+                sender = extract_sender_entity(msg.user_id, sender_name, conn=conn)
                 upsert_entity(conn, sender)
                 entity_ids_seen.add(sender.id)
 
@@ -187,7 +187,9 @@ def _ingest_messages(
         if is_owner_match and owner_entity_id:
             sender_id = owner_entity_id
         else:
-            sender = extract_sender_entity(msg.user_id, msg.user_name, source_family=family)
+            sender = extract_sender_entity(
+                msg.user_id, msg.user_name, source_family=family, conn=conn
+            )
             upsert_entity(conn, sender)
             sender_id = sender.id
 

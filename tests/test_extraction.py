@@ -252,3 +252,36 @@ def test_sender_entity_slack_gets_slack_alias():
 def test_sender_entity_default_source_is_slack():
     e = extract_sender_entity("U0EXAMPLE1", "Dana Brook")
     assert "slack:U0EXAMPLE1" in e.aliases
+
+
+class TestExtractSenderSlackIdPrecedence:
+    """#448: extract_sender_entity delegates to resolve_entity_id for Slack ID precedence."""
+
+    def test_slack_id_wins_over_display_name(self, slack_id_wins):
+        conn = slack_id_wins["conn"]
+        e = extract_sender_entity(
+            slack_id_wins["slack_id"],
+            slack_id_wins["shared_name"],
+            conn=conn,
+        )
+        assert e.id == slack_id_wins["entity_with_slack"]
+        assert e.id != slack_id_wins["entity_with_name"]
+        assert slack_id_wins["slack_id"] in e.aliases
+
+    def test_ambiguous_name_returns_new_entity(self, ambiguous_name):
+        conn = ambiguous_name["conn"]
+        e = extract_sender_entity("U0NEWID001", "Riku Endo", conn=conn)
+        assert e is not None
+        assert e.id != ambiguous_name["entity_a"]
+        assert e.id != ambiguous_name["entity_b"]
+
+    def test_clean_match_resolves(self, clean_merge):
+        conn = clean_merge["conn"]
+        e = extract_sender_entity("U0NEWID002", "Hana Kimura", conn=conn)
+        assert e.id == clean_merge["entity_id"]
+
+    def test_no_conn_uses_hash_id(self):
+        e = extract_sender_entity("U0KAITANA", "Kai Tanaka")
+        assert e is not None
+        assert e.name == "Kai Tanaka"
+        assert "U0KAITANA" in e.aliases

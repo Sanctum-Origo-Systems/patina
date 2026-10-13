@@ -1482,6 +1482,59 @@ def test_owner_resolution_does_not_pollute_partial_name_match_aliases(tmp_path):
     conn.close()
 
 
+def _seed_raw_entity(conn, eid, name, aliases=None):
+    """Insert entity directly without resolve_entity_id (test seeding helper)."""
+    now = "2025-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata, first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0.02, 0)",
+        (eid, name, json.dumps(aliases or []), now, now),
+    )
+    conn.commit()
+
+
+def test_ingest_slack_id_wins_over_display_name(tmp_path):
+    """#448: ingest_from_export binds sender to Slack-ID-matched entity, not name-matched."""
+    from patina.graph import get_entity
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    home = tmp_path / "sid_home"
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+
+    _seed_raw_entity(conn, "sid-a", "Kai Tanaka", aliases=["U0KAITANA"])
+    _seed_raw_entity(conn, "sid-b", "Kai Tanaka")
+    conn.close()
+
+    zip_path = tmp_path / "export.zip"
+    users = [{"id": "U0KAITANA", "real_name": "Kai Tanaka", "name": "ktanaka"}]
+    channels = [{"id": "C001", "name": "general"}]
+    messages = [
+        {"user": "U0KAITANA", "text": "The quick brown fox", "ts": "1700000100.000"},
+    ]
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("users.json", json.dumps(users))
+        zf.writestr("channels.json", json.dumps(channels))
+        zf.writestr("general/2023-11-15.json", json.dumps(messages))
+
+    ingest_from_export(zip_path, home=home)
+
+    conn = connect(db_path)
+    obs = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = 'The quick brown fox'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "sid-a"
+
+    entity_b_after = get_entity(conn, "sid-b")
+    assert entity_b_after is not None
+    assert entity_b_after.name == "Kai Tanaka"
+    assert "U0KAITANA" not in (entity_b_after.aliases or [])
+    conn.close()
+
+
 def test_mention_path_resolves_owner_no_duplicate(tmp_path):
     """Mention of a secondary owner user_id in message text does not create a duplicate entity.
 
