@@ -2631,3 +2631,51 @@ def test_snapshot_token_ignored_on_dry_run(db_conn):
     prune_non_person_entities(db_conn, dry_run=True, snapshot_token=token)
     prune_slack_link_entities(db_conn, dry_run=True, snapshot_token=token)
     retype_organization_entities(db_conn, dry_run=True, snapshot_token=token)
+
+
+# ── shared fixture: conflicting_id (#449) ─────────────────────
+
+
+def test_find_dedup_conflicting_id_fixture_needs_review(conflicting_id):
+    """Entities with different Slack IDs appear in needs_review, not candidates."""
+    conn = conflicting_id["conn"]
+    result = find_dedup_candidates(conn)
+
+    review_ids = {r["id"] for r in result["needs_review"]}
+    assert conflicting_id["entity_a"] in review_ids
+    assert conflicting_id["entity_b"] in review_ids
+
+    for entry in result["needs_review"]:
+        if entry["id"] in (conflicting_id["entity_a"], conflicting_id["entity_b"]):
+            assert entry["reason"], "reason string must be non-empty"
+
+    candidate_ids = set()
+    for c in result["candidates"]:
+        candidate_ids.add(c["keep"]["id"])
+        for d in c["drop"]:
+            candidate_ids.add(d["id"])
+    assert conflicting_id["entity_a"] not in candidate_ids
+    assert conflicting_id["entity_b"] not in candidate_ids
+
+
+def test_dedup_skips_conflicting_id_fixture(conflicting_id):
+    """dedup_entities does not merge entities with conflicting Slack IDs."""
+    conn = conflicting_id["conn"]
+    result = dedup_entities(conn)
+
+    assert result["entities_merged"] == 0
+    assert (
+        conn.execute(
+            "SELECT 1 FROM entities WHERE id = ?", (conflicting_id["entity_a"],)
+        ).fetchone()
+        is not None
+    )
+    assert (
+        conn.execute(
+            "SELECT 1 FROM entities WHERE id = ?", (conflicting_id["entity_b"],)
+        ).fetchone()
+        is not None
+    )
+    review_ids = {r["id"] for r in result["needs_review"]}
+    assert conflicting_id["entity_a"] in review_ids
+    assert conflicting_id["entity_b"] in review_ids

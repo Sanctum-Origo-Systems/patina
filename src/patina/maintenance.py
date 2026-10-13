@@ -656,10 +656,41 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                 pair_match[pair] = ident
             _union(a, b)
 
+    norm_map: dict[str, list[int]] = {}
+    for i, ent in enumerate(entities):
+        norm = _normalize_for_dedup(ent["name"])
+        if norm and len(norm) >= 2:
+            norm_map.setdefault(norm, []).append(i)
+    for norm_key, indices in norm_map.items():
+        if len(indices) < 2:
+            continue
+        for j in range(1, len(indices)):
+            a, b = indices[0], indices[j]
+            pair = (min(a, b), max(a, b))
+            if pair not in pair_match:
+                pair_match[pair] = norm_key
+            _union(a, b)
+
     groups_map: dict[int, list[int]] = {}
     for i in range(len(entities)):
         root = _find(i)
         groups_map.setdefault(root, []).append(i)
+
+    conflict_flagged_ids: set[str] = set()
+    for a, b in pair_match:
+        ra, rb = _find(a), _find(b)
+        if ra == rb:
+            continue
+        sa, sb = group_slack[ra], group_slack[rb]
+        if not (sa and sb and sa.isdisjoint(sb)):
+            continue
+        for idx, root in ((a, ra), (b, rb)):
+            grp = groups_map.get(root, [])
+            if len(grp) == 1:
+                eid = entities[idx]["id"]
+                if eid not in conflict_flagged_ids:
+                    conflict_flagged_ids.add(eid)
+                    needs_review.append({**entities[idx], "reason": "conflicting Slack IDs"})
 
     candidates = []
     for indices in groups_map.values():

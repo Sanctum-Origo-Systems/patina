@@ -824,3 +824,143 @@ def test_v3_flag_recorded(db_path):
     assert row is not None
     assert row["applied_at"] is not None
     conn.close()
+
+
+# --- entity merge: six-table rewire verification (#449) ---
+
+
+def _seed_drop_entity(conn, drop_id="cm-drop", name="Kimura Hana"):
+    """Create a second entity to merge into the clean_merge fixture's entity."""
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata,"
+        " first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES (?, 'person', ?, '[]', '{}', datetime('now'), datetime('now'), 0.02, 0)",
+        (drop_id, name),
+    )
+    conn.commit()
+
+
+def _seed_all_six_tables(conn, entity_id):
+    """Insert one row referencing entity_id in each of the six reference tables."""
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, ingested_at)"
+        " VALUES (?, 'slack_export', 'C001', 1000.0, ?, 'The quick brown fox', datetime('now'))",
+        (f"obs-{entity_id}", entity_id),
+    )
+    conn.execute(
+        "INSERT INTO claims"
+        " (id, subject_id, predicate, object, confidence,"
+        "  first_asserted, last_confirmed, decay_rate)"
+        " VALUES (?, ?, 'role', 'engineer', 0.5,"
+        " datetime('now'), datetime('now'), 0.02)",
+        (f"claim-{entity_id}", entity_id),
+    )
+    conn.execute(
+        "INSERT INTO relationships"
+        " (id, subject_id, predicate, object_id, confidence,"
+        "  first_seen, last_confirmed)"
+        " VALUES (?, ?, 'works_with', ?, 0.5,"
+        " datetime('now'), datetime('now'))",
+        (f"rel-{entity_id}", entity_id, entity_id),
+    )
+    conn.execute(
+        "INSERT INTO predictions"
+        " (id, entity_id, prediction_type, prediction, confidence, created_at)"
+        " VALUES (?, ?, 'behavior', 'will respond', 0.8, datetime('now'))",
+        (f"pred-{entity_id}", entity_id),
+    )
+    conn.execute(
+        "INSERT INTO style_exemplars"
+        " (id, sender_entity_id, recipient_entity_id, text, source, timestamp)"
+        " VALUES (?, ?, ?, 'example text', 'slack_export', 1000.0)",
+        (f"style-{entity_id}", entity_id, entity_id),
+    )
+    conn.execute(
+        "INSERT INTO action_queue"
+        " (id, action_type, target_entity_id, confidence,"
+        "  status, autonomy_level, created_at)"
+        " VALUES (?, 'draft_reply', ?, 0.9, 'proposed', 1, datetime('now'))",
+        (f"action-{entity_id}", entity_id),
+    )
+    conn.commit()
+
+
+def test_merge_rewires_all_six_tables_to_surviving_entity(clean_merge):
+    """After merge_entities, surviving entity owns all six-table rows."""
+    from patina.maintenance import merge_entities
+
+    conn = clean_merge["conn"]
+    keep_id = clean_merge["entity_id"]
+    drop_id = "cm-drop"
+
+    _seed_drop_entity(conn, drop_id)
+    _seed_all_six_tables(conn, drop_id)
+
+    merge_entities(conn, keep_id, drop_id)
+
+    row = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = ?", (f"obs-{drop_id}",)
+    ).fetchone()
+    assert row["sender_entity_id"] == keep_id
+
+    row = conn.execute(
+        "SELECT subject_id FROM claims WHERE id = ?", (f"claim-{drop_id}",)
+    ).fetchone()
+    assert row["subject_id"] == keep_id
+
+    row = conn.execute(
+        "SELECT entity_id FROM predictions WHERE id = ?", (f"pred-{drop_id}",)
+    ).fetchone()
+    assert row["entity_id"] == keep_id
+
+    row = conn.execute(
+        "SELECT sender_entity_id, recipient_entity_id FROM style_exemplars WHERE id = ?",
+        (f"style-{drop_id}",),
+    ).fetchone()
+    assert row["sender_entity_id"] == keep_id
+    assert row["recipient_entity_id"] == keep_id
+
+    row = conn.execute(
+        "SELECT target_entity_id FROM action_queue WHERE id = ?", (f"action-{drop_id}",)
+    ).fetchone()
+    assert row["target_entity_id"] == keep_id
+
+
+def test_merge_leaves_zero_rows_for_retired_entity(clean_merge):
+    """After merge_entities, no reference table row points to the retired entity."""
+    from patina.maintenance import merge_entities
+
+    conn = clean_merge["conn"]
+    keep_id = clean_merge["entity_id"]
+    drop_id = "cm-drop"
+
+    _seed_drop_entity(conn, drop_id)
+    _seed_all_six_tables(conn, drop_id)
+
+    merge_entities(conn, keep_id, drop_id)
+
+    tables_and_cols = [
+        ("observations", "sender_entity_id"),
+        ("claims", "subject_id"),
+        ("predictions", "entity_id"),
+        ("action_queue", "target_entity_id"),
+    ]
+    for table, col in tables_and_cols:
+        count = conn.execute(
+            f"SELECT COUNT(*) AS c FROM {table} WHERE {col} = ?", (drop_id,)
+        ).fetchone()["c"]
+        assert count == 0, f"{table}.{col} still references retired entity {drop_id}"
+
+    count = conn.execute(
+        "SELECT COUNT(*) AS c FROM relationships WHERE subject_id = ? OR object_id = ?",
+        (drop_id, drop_id),
+    ).fetchone()["c"]
+    assert count == 0, f"relationships still references retired entity {drop_id}"
+
+    count = conn.execute(
+        "SELECT COUNT(*) AS c FROM style_exemplars"
+        " WHERE sender_entity_id = ? OR recipient_entity_id = ?",
+        (drop_id, drop_id),
+    ).fetchone()["c"]
+    assert count == 0, f"style_exemplars still references retired entity {drop_id}"
