@@ -1,7 +1,10 @@
 ## v0.26.1 (2026-10-14)
+- #466: Feat: apply DN rank to maintenance.py and add split command for DN-sink entities ($3.98)
 - #464: Fix: bot sender pattern misses hyphenated -commenter names ($0.67)
+- #463: Feat: rank DNs below handles in _name_type_rank and block truncated-DN matches ($0.75)
+- #458: Chore: enable worktree isolation for patina implement jobs ($0.00)
 - #457: Fix: add external to triage_labels exclusion list ($0.00)
-Total: 2 PRs, $0.67
+Total: 5 PRs, $5.40
 
 ## v0.26.0 (2026-10-13)
 - #454: Feat: extraction.py + ingest.py Slack ID precedence ($1.83)
