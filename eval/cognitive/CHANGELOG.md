@@ -1,3 +1,8 @@
+## v0.26.1 (2026-10-14)
+- #464: Fix: bot sender pattern misses hyphenated -commenter names ($0.67)
+- #457: Fix: add external to triage_labels exclusion list ($0.00)
+Total: 2 PRs, $0.67
+
 ## v0.26.0 (2026-10-13)
 - #454: Feat: extraction.py + ingest.py Slack ID precedence ($1.83)
 - #453: Fix: EVAL.md first-attempt chart plots false zeros for no-outcome weeks ($4.81)
@@ -95,14 +100,4 @@ Total: 5 PRs, $9.27
 ## v0.19.2 (2026-09-30)
 - #326: Fix: replace substring LIKE fallback with owner-aware entity resolution ($0.00)
 Total: 1 PRs, $0.00
-
-## v0.19.0 (2026-09-28)
-- #320: Feat: Update autonomy status CLI and MCP tool to display per-domai ($1.18)
-- #319: Feat: Scope tracker demotion/freeze to domain and map action types ($1.32)
-- #318: Fix: Add owner merge/repair command to fold duplicate self-entiti ($1.49)
-- #317: Fix: Fix _ingest_messages() to resolve owner identity on every in ($1.69)
-- #316: Feat: entity & data maintenance CLI (merge, dedup, prune non-perso ($6.85)
-- #314: Fix: Normalize alias prefixes and extend owner identifier config ($1.44)
-- #313: Feat: Migrate autonomy_state schema to domain-keyed and update cor ($2.21)
-Total: 7 PRs, $16.18
 
