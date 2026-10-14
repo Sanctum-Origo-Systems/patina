@@ -231,6 +231,14 @@ def test_sender_entity_outlook_service_not_person():
     assert e.type == "organization"
 
 
+def test_sender_entity_outlook_hyphenated_commenter_not_person():
+    assert is_non_person_sender("ci-merge-request-commenter") is True
+
+
+def test_sender_entity_outlook_real_person_stays_person():
+    assert is_non_person_sender("Dana Brook", "Brook, Dana") is False
+
+
 def test_sender_entity_outlook_person_stays_person():
     e = extract_sender_entity("Dana Brook", "Dana Brook", source_family="outlook")
     assert e.type == "person"
