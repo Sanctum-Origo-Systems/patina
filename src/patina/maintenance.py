@@ -156,6 +156,14 @@ _NON_PERSON_PREFIXES = (
     "do_not_reply",
 )
 
+_HYPHENATED_SERVICE_SUFFIXES = (
+    "-bot",
+    "-ci",
+    "-noreply",
+    "-commenter",
+    "-automation",
+)
+
 
 _GRAMMAR_WORDS = frozenset(
     {
@@ -301,6 +309,14 @@ def is_non_person(name: str) -> bool:
         local = name.split("@")[0]
         if _NON_PERSON_RE.search(local):
             return True
+    if (
+        "-" in name
+        and " " not in name
+        and "@" not in name
+        and name == name.lower()
+        and any(name.endswith(s) for s in _HYPHENATED_SERVICE_SUFFIXES)
+    ):
+        return True
     return False
 
 

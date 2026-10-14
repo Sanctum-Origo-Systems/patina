@@ -152,6 +152,30 @@ def test_is_non_person_donotreply():
     assert is_non_person("do_not_reply@example.com") is True
 
 
+def test_is_non_person_hyphenated_commenter():
+    assert is_non_person("ci-merge-request-commenter") is True
+
+
+def test_is_non_person_hyphenated_bot():
+    assert is_non_person("deploy-bot") is True
+
+
+def test_is_non_person_hyphenated_ci():
+    assert is_non_person("gitlab-ci") is True
+
+
+def test_is_non_person_hyphenated_noreply():
+    assert is_non_person("jira-noreply") is True
+
+
+def test_is_non_person_hyphenated_automation():
+    assert is_non_person("release-automation") is True
+
+
+def test_is_non_person_real_person_not_hyphenated_service():
+    assert is_non_person("Dana Brook") is False
+
+
 # ── is_organization ─────────────────────────────────────────
 
 
