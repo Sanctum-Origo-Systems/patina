@@ -14,6 +14,7 @@ from patina.maintenance import (
     StaleSnapshotError,
     _collect_slack_ids,
     _is_junk_sender_name,
+    _name_type_rank,
     backup_store,
     clean_bogus_slack_aliases,
     dedup_entities,
@@ -29,6 +30,7 @@ from patina.maintenance import (
     reprocess_observations,
     retype_organization_entities,
     rewire_entity_references,
+    split_dn_sink,
     store_snapshot_token,
 )
 from patina.models import Claim, Entity, Observation, Relationship
@@ -2655,3 +2657,212 @@ def test_snapshot_token_ignored_on_dry_run(db_conn):
     prune_non_person_entities(db_conn, dry_run=True, snapshot_token=token)
     prune_slack_link_entities(db_conn, dry_run=True, snapshot_token=token)
     retype_organization_entities(db_conn, dry_run=True, snapshot_token=token)
+
+
+# ── _name_type_rank: DN rank ──────────────────────────────────
+
+
+def test_name_type_rank_dn_below_handle():
+    """DN rank is strictly higher (worse) than handle rank."""
+    assert _name_type_rank("/O=EXAMPLEORG/OU=X") > _name_type_rank("dbrook")
+
+
+def test_name_type_rank_dn_below_email():
+    """DN rank is strictly higher (worse) than email rank."""
+    assert _name_type_rank("/O=EXAMPLEORG/OU=X") > _name_type_rank("user@example.com")
+
+
+def test_name_type_rank_cn_detected():
+    """Strings containing CN= are ranked as DN."""
+    assert _name_type_rank("/O=ORG/CN=RECIPIENTS/CN=abc") == _name_type_rank("/O=ORG/OU=X")
+
+
+# ── fix_junk_senders: SPLIT-NEEDED ───────────────────────────
+
+
+def test_fix_junk_senders_split_needed_emits_no_merges(db_conn):
+    """Truncated-DN sink whose aliases map to 3+ distinct people emits SPLIT-NEEDED."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+    _add_person(db_conn, "p-b", "Bob Marsh", ["bhandle"])
+    _add_person(db_conn, "p-c", "Carol Dean", ["chandle"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    full_dn_b = f"{_DN_PREFIX}{_GUID}-BHANDLE"
+    full_dn_c = f"{_DN_PREFIX}{_GUID}-CHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a, full_dn_b, full_dn_c])
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-sink', 'outlook_mcp_email', 'C001', 1000.0, 'sink',"
+        "  'The quick brown fox', '{}', '2025-01-01T00:00:00+00:00', 1)"
+    )
+    db_conn.commit()
+
+    result = fix_junk_senders(db_conn, dry_run=True)
+
+    assert len(result["merged"]) == 0
+    assert len(result["split_needed"]) == 1
+    assert result["split_needed"][0]["id"] == "sink"
+    assert result["split_needed"][0]["target_count"] >= 3
+
+
+# ── split_dn_sink ─────────────────────────────────────────────
+
+
+def test_split_dn_sink_dry_run(db_conn):
+    """Dry-run shows 3 routes and leaves database unchanged."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+    _add_person(db_conn, "p-b", "Bob Marsh", ["bhandle"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    full_dn_b = f"{_DN_PREFIX}{_GUID}-BHANDLE"
+    full_dn_c = f"{_DN_PREFIX}{_GUID}-CHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a, full_dn_b, full_dn_c])
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-sink', 'outlook_mcp_email', 'C001', 1000.0, 'sink',"
+        "  'The quick brown fox', '{}', '2025-01-01T00:00:00+00:00', 1)"
+    )
+    db_conn.commit()
+
+    before = _snapshot_entities(db_conn)
+
+    result = split_dn_sink(db_conn, "sink", dry_run=True)
+
+    assert len(result["routes"]) == 3
+    assert sum(1 for r in result["routes"] if r["target_id"]) == 2
+    assert sum(1 for r in result["routes"] if not r["target_id"]) == 1
+
+    after = _snapshot_entities(db_conn)
+    assert before == after
+
+
+def test_split_dn_sink_commit_routes_and_creates_ref(db_conn):
+    """Commit mode routes observations and creates reference entity."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+    _add_person(db_conn, "p-b", "Bob Marsh", ["bhandle"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    full_dn_b = f"{_DN_PREFIX}{_GUID}-BHANDLE"
+    full_dn_c = f"{_DN_PREFIX}{_GUID}-CHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a, full_dn_b, full_dn_c])
+
+    for obs_id, dn, ts in [
+        ("obs-a", full_dn_a, 1000.0),
+        ("obs-b", full_dn_b, 1001.0),
+        ("obs-c", full_dn_c, 1002.0),
+    ]:
+        db_conn.execute(
+            "INSERT INTO observations"
+            " (id, source, channel_id, timestamp, sender_entity_id, text,"
+            "  metadata, ingested_at, processed)"
+            " VALUES (?, 'outlook_mcp_email', 'C001', ?, 'sink',"
+            "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+            (obs_id, ts, json.dumps({"sender_dn": dn})),
+        )
+    db_conn.commit()
+
+    split_dn_sink(db_conn, "sink", dry_run=False)
+
+    obs_a = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-a'"
+    ).fetchone()
+    assert obs_a["sender_entity_id"] == "p-a"
+
+    obs_b = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-b'"
+    ).fetchone()
+    assert obs_b["sender_entity_id"] == "p-b"
+
+    obs_c = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-c'"
+    ).fetchone()
+    assert obs_c["sender_entity_id"] == "sink"
+
+    ref = db_conn.execute("SELECT type FROM entities WHERE name = ?", (full_dn_c,)).fetchone()
+    assert ref is not None
+    assert ref["type"] == "reference"
+
+    p_a = db_conn.execute("SELECT aliases FROM entities WHERE id = 'p-a'").fetchone()
+    assert full_dn_a in json.loads(p_a["aliases"])
+
+    p_b = db_conn.execute("SELECT aliases FROM entities WHERE id = 'p-b'").fetchone()
+    assert full_dn_b in json.loads(p_b["aliases"])
+
+    sink = db_conn.execute("SELECT aliases FROM entities WHERE id = 'sink'").fetchone()
+    sink_aliases = json.loads(sink["aliases"])
+    assert full_dn_a not in sink_aliases
+    assert full_dn_b not in sink_aliases
+    assert full_dn_c not in sink_aliases
+
+
+def test_split_dn_sink_rederives_claims(db_conn):
+    """Commit mode resets processed flag for entities receiving observations."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a])
+
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-existing', 'slack_export', 'C001', 999.0, 'p-a',"
+        "  'The quick brown fox', '{}', '2025-01-01T00:00:00+00:00', 1)"
+    )
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-a', 'outlook_mcp_email', 'C001', 1000.0, 'sink',"
+        "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+        (json.dumps({"sender_dn": full_dn_a}),),
+    )
+    db_conn.commit()
+
+    split_dn_sink(db_conn, "sink", dry_run=False)
+
+    obs_existing = db_conn.execute(
+        "SELECT processed FROM observations WHERE id = 'obs-existing'"
+    ).fetchone()
+    assert obs_existing["processed"] == 0
+
+    obs_a = db_conn.execute("SELECT processed FROM observations WHERE id = 'obs-a'").fetchone()
+    assert obs_a["processed"] == 0
+
+
+def test_split_post_ingest_routes_to_person(db_conn):
+    """After split, resolve_entity_id finds person for full DN, not sink."""
+    from patina.graph import resolve_entity_id
+
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a])
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-a', 'outlook_mcp_email', 'C001', 1000.0, 'sink',"
+        "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+        (json.dumps({"sender_dn": full_dn_a}),),
+    )
+    db_conn.commit()
+
+    split_dn_sink(db_conn, "sink", dry_run=False)
+
+    resolved = resolve_entity_id(db_conn, full_dn_a)
+    assert resolved == "p-a"

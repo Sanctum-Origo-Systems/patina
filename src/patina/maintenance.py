@@ -286,7 +286,10 @@ def is_plausible_person_name(name: str) -> bool:
 
 
 def _name_type_rank(name: str) -> int:
-    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3)."""
+    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3) > DN (4)."""
+    upper = name.upper()
+    if upper.startswith("/O=") or "CN=" in upper:
+        return 4
     if " " in name and is_plausible_person_name(name):
         return 0
     if "@" in name:
@@ -352,6 +355,18 @@ def _dn_trailing_handle(dn: str) -> str | None:
     """Return the handle after the GUID in an Exchange DN, e.g. ...CN=<guid>-DBROOK."""
     m = _DN_HANDLE_RE.search(dn.strip())
     return m.group("handle") if m else None
+
+
+_DN_SMTP_RE = re.compile(
+    r"/cn=(?P<smtp>[^/\s]+@[^/\s]+)$",
+    re.IGNORECASE,
+)
+
+
+def _dn_trailing_smtp(dn: str) -> str | None:
+    """Return the SMTP address from the trailing CN of an Exchange DN."""
+    m = _DN_SMTP_RE.search(dn.strip())
+    return m.group("smtp") if m else None
 
 
 def _normalize_for_dedup(name: str) -> str:
@@ -1212,8 +1227,46 @@ def fix_junk_senders(
 
     merged: list[dict] = []
     retyped: list[dict] = []
+    split_needed: list[dict] = []
     for r in junk:
         aliases = json.loads(r["aliases"] or "[]")
+
+        distinct_targets: set[str] = set()
+        for ident in [r["name"]] + aliases:
+            if ident.startswith("/O=") or ident.startswith("/o="):
+                handle = _dn_trailing_handle(ident)
+                if handle:
+                    hits = alias_lookup.get(_normalize_for_dedup(handle), set())
+                    if len(hits) == 1:
+                        distinct_targets.add(next(iter(hits)))
+                smtp = _dn_trailing_smtp(ident)
+                if smtp:
+                    tid = resolve_entity_id(conn, smtp)
+                    if tid and tid != r["id"] and tid not in junk_ids:
+                        distinct_targets.add(tid)
+                continue
+            if ident.startswith("slack:"):
+                continue
+            tid = resolve_entity_id(conn, ident)
+            if tid and tid != r["id"] and tid not in junk_ids:
+                distinct_targets.add(tid)
+                continue
+            norm = _normalize_for_dedup(ident)
+            if norm and len(norm) > 2 and norm in norm_lookup:
+                tid = norm_lookup[norm]
+                if tid != r["id"]:
+                    distinct_targets.add(tid)
+
+        if len(distinct_targets) > 1:
+            split_needed.append(
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "target_count": len(distinct_targets),
+                }
+            )
+            continue
+
         target_id: str | None = None
 
         for ident in [r["name"]] + aliases:
@@ -1264,7 +1317,157 @@ def fix_junk_senders(
                 }
             )
 
-    return {"merged": merged, "retyped": retyped}
+    return {"merged": merged, "retyped": retyped, "split_needed": split_needed}
+
+
+def split_dn_sink(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    *,
+    dry_run: bool = True,
+) -> dict:
+    """Split a DN-sink entity by routing its full-DN aliases to matched persons.
+
+    For each full-DN alias (one containing a trailing handle or SMTP address):
+    - If the handle/SMTP matches a person entity, route the alias there
+    - Otherwise, create a per-DN reference entity
+
+    In commit mode, routes observations whose metadata contains a matching
+    ``sender_dn`` to the correct person, then re-derives claims for entities
+    that received routed observations by resetting the processed flag.
+    """
+    entity = conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,)).fetchone()
+    if not entity:
+        raise ValueError(f"Entity '{entity_id}' not found")
+
+    aliases = json.loads(entity["aliases"] or "[]")
+
+    all_entities = conn.execute(
+        "SELECT id, name, aliases, type FROM entities WHERE is_owner = 0"
+    ).fetchall()
+
+    person_alias_lookup: dict[str, set[str]] = {}
+    for ent in all_entities:
+        if ent["id"] == entity_id or ent["type"] != "person":
+            continue
+        for alias in json.loads(ent["aliases"] or "[]"):
+            anorm = _normalize_for_dedup(alias)
+            if anorm and len(anorm) > 2:
+                person_alias_lookup.setdefault(anorm, set()).add(ent["id"])
+
+    routes: list[dict] = []
+    for alias in aliases:
+        if not _LEGACY_DN_RE.match(alias):
+            continue
+        handle = _dn_trailing_handle(alias)
+        smtp = _dn_trailing_smtp(alias)
+        if not handle and not smtp:
+            continue
+
+        target_id: str | None = None
+        target_name: str | None = None
+
+        if handle:
+            hits = person_alias_lookup.get(_normalize_for_dedup(handle), set())
+            if len(hits) == 1:
+                target_id = next(iter(hits))
+
+        if not target_id and smtp:
+            tid = resolve_entity_id(conn, smtp)
+            if tid and tid != entity_id:
+                target_id = tid
+
+        if target_id:
+            for ent in all_entities:
+                if ent["id"] == target_id:
+                    target_name = ent["name"]
+                    break
+
+        routes.append(
+            {
+                "dn": alias,
+                "handle": handle,
+                "target_id": target_id,
+                "target_name": target_name,
+            }
+        )
+
+    result: dict = {
+        "entity_id": entity_id,
+        "entity_name": entity["name"],
+        "routes": routes,
+    }
+
+    if dry_run:
+        return result
+
+    affected_entity_ids: set[str] = set()
+    created_references: list[dict] = []
+    routed_dn_set = {r["dn"] for r in routes}
+    remaining_aliases = [a for a in aliases if a not in routed_dn_set]
+
+    for route in routes:
+        dn = route["dn"]
+        if route["target_id"]:
+            target = conn.execute(
+                "SELECT aliases FROM entities WHERE id = ?",
+                (route["target_id"],),
+            ).fetchone()
+            target_aliases = json.loads(target["aliases"] or "[]")
+            if dn not in target_aliases:
+                target_aliases.append(dn)
+            conn.execute(
+                "UPDATE entities SET aliases = ? WHERE id = ?",
+                (json.dumps(target_aliases), route["target_id"]),
+            )
+            affected_entity_ids.add(route["target_id"])
+        else:
+            ref_id = hashlib.sha256(dn.encode()).hexdigest()[:16]
+            now = entity["first_seen"] or datetime.now(UTC).isoformat()
+            conn.execute(
+                "INSERT OR IGNORE INTO entities"
+                " (id, type, name, aliases, metadata,"
+                "  first_seen, last_seen, decay_rate, is_owner)"
+                " VALUES (?, 'reference', ?, '[]', '{}', ?, ?, 0.02, 0)",
+                (ref_id, dn, now, now),
+            )
+            created_references.append({"id": ref_id, "name": dn})
+
+    observations = conn.execute(
+        "SELECT id, metadata FROM observations WHERE sender_entity_id = ?",
+        (entity_id,),
+    ).fetchall()
+
+    dn_to_target = {r["dn"]: r["target_id"] for r in routes if r["target_id"]}
+    routed_obs = 0
+    for obs in observations:
+        meta = json.loads(obs["metadata"] or "{}")
+        sender_dn = meta.get("sender_dn", "")
+        if sender_dn in dn_to_target:
+            conn.execute(
+                "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
+                (dn_to_target[sender_dn], obs["id"]),
+            )
+            routed_obs += 1
+
+    conn.execute(
+        "UPDATE entities SET aliases = ? WHERE id = ?",
+        (json.dumps(remaining_aliases), entity_id),
+    )
+
+    for eid in affected_entity_ids:
+        conn.execute(
+            "UPDATE observations SET processed = 0 WHERE sender_entity_id = ?",
+            (eid,),
+        )
+
+    conn.commit()
+
+    result["created_references"] = created_references
+    result["observations_routed"] = routed_obs
+    result["rederived_entities"] = sorted(affected_entity_ids)
+
+    return result
 
 
 def reprocess_observations(
