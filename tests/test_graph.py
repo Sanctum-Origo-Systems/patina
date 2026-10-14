@@ -283,6 +283,60 @@ class TestNameTypeRank:
         )
 
 
+class TestNameTypeRankDN:
+    def test_truncated_dn_ranks_below_handle(self):
+        assert _name_type_rank("/O=EXAMPLEORG/OU=X") > _name_type_rank("jsmith")
+
+    def test_truncated_dn_ranks_below_display_name(self):
+        assert _name_type_rank("/O=EXAMPLEORG/OU=X") > _name_type_rank("Dana Brook")
+
+    def test_full_dn_ranks_below_handle(self):
+        assert _name_type_rank("/O=EXAMPLEORG/OU=X/CN=Dana Brook") > _name_type_rank("jsmith")
+
+    def test_full_dn_ranks_below_display_name(self):
+        assert _name_type_rank("/O=EXAMPLEORG/OU=X/CN=Dana Brook") > _name_type_rank("Dana Brook")
+
+    def test_dn_ordering(self):
+        assert (
+            _name_type_rank("Dana Brook")
+            < _name_type_rank("jsmith")
+            < _name_type_rank("/O=EXAMPLEORG/OU=X")
+        )
+        assert _name_type_rank("/O=EXAMPLEORG/OU=X") == _name_type_rank(
+            "/O=EXAMPLEORG/OU=X/CN=Dana Brook"
+        )
+
+
+class TestResolveEntityIdTruncatedDN:
+    def test_truncated_dn_does_not_match_by_name(self, db_conn):
+        _raw_insert_entity(
+            db_conn,
+            "e1",
+            "person",
+            "/O=EXAMPLEORG/OU=ADMIN GROUP",
+        )
+        assert resolve_entity_id(db_conn, "/O=EXAMPLEORG/OU=ADMIN GROUP") is None
+
+    def test_truncated_dn_does_not_match_by_alias(self, db_conn):
+        _raw_insert_entity(
+            db_conn,
+            "e1",
+            "person",
+            "Dana Brook",
+            aliases=["/O=EXAMPLEORG/OU=ADMIN GROUP"],
+        )
+        assert resolve_entity_id(db_conn, "/O=EXAMPLEORG/OU=ADMIN GROUP") is None
+
+    def test_full_dn_still_resolvable(self, db_conn):
+        _raw_insert_entity(
+            db_conn,
+            "e1",
+            "person",
+            "/O=EXAMPLEORG/OU=X/CN=Dana Brook",
+        )
+        assert resolve_entity_id(db_conn, "/O=EXAMPLEORG/OU=X/CN=Dana Brook") == "e1"
+
+
 class TestUpsertEntityNoOverwrite:
     """#398: upsert must not overwrite a merged entity's name or aliases."""
 

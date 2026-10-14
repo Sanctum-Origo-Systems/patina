@@ -11,7 +11,10 @@ _SLACK_ID_PAT = re.compile(r"^[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}$")
 
 
 def _name_type_rank(name: str) -> int:
-    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3)."""
+    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3) > DN (4)."""
+    upper = name.upper()
+    if upper.startswith("/O=") or "CN=" in upper:
+        return 4
     if " " in name:
         return 0
     if "@" in name:
@@ -38,6 +41,10 @@ def resolve_entity_id(
     aliases: list[str] | None = None,
 ) -> str | None:
     if not name or not name.strip():
+        return None
+
+    name_upper = name.strip().upper()
+    if name_upper.startswith("/O=") and "CN=" not in name_upper:
         return None
 
     non_owner_rows = None
