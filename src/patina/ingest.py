@@ -157,6 +157,13 @@ def _ingest_messages(
     for msg in messages:
         obs_id = _obs_id(source, msg.channel_id, msg.thread_id, msg.timestamp)
 
+        meta = {
+            "channel_name": msg.channel_name,
+            "reactions": msg.reactions,
+        }
+        if msg.sender_dn:
+            meta["sender_dn"] = msg.sender_dn
+
         obs = Observation(
             id=obs_id,
             source=source,
@@ -165,10 +172,7 @@ def _ingest_messages(
             timestamp=msg.timestamp,
             sender_entity_id=None,
             text=msg.text,
-            metadata={
-                "channel_name": msg.channel_name,
-                "reactions": msg.reactions,
-            },
+            metadata=meta,
         )
 
         if not insert_observation(conn, obs):
@@ -238,6 +242,7 @@ def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
                 channel_id=f"email:{em.conversation_id or em.id}",
                 thread_id=em.conversation_id,
                 user_name=user_name,
+                sender_dn=em.sender_dn,
             )
         )
     return results

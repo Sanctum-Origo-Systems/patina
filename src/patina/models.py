@@ -92,6 +92,7 @@ class ChatMessage:
     channel_name: str | None = None
     reactions: list[dict] = field(default_factory=list)
     is_bot: bool = False
+    sender_dn: str | None = None
 
 
 @dataclass
@@ -111,6 +112,7 @@ class EmailMessage:
     recipients: list[str] = field(default_factory=list)
     conversation_id: str | None = None
     sender_name: str | None = None
+    sender_dn: str | None = None
 
 
 @dataclass

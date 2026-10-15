@@ -1403,13 +1403,30 @@ def split_dn_sink(
             }
         )
 
+    observations = conn.execute(
+        "SELECT id, metadata FROM observations WHERE sender_entity_id = ?",
+        (entity_id,),
+    ).fetchall()
+
+    dn_to_target = {r["dn"]: r["target_id"] for r in routes if r["target_id"]}
+    routable_count = sum(
+        1
+        for obs in observations
+        if json.loads(obs["metadata"] or "{}").get("sender_dn", "") in dn_to_target
+    )
+
     result: dict = {
         "entity_id": entity_id,
         "entity_name": entity["name"],
         "routes": routes,
+        "routable_observations": routable_count,
     }
 
     if dry_run:
+        return result
+
+    if routable_count == 0:
+        result["observations_routed"] = 0
         return result
 
     affected_entity_ids: set[str] = set()
@@ -1444,12 +1461,6 @@ def split_dn_sink(
             )
             created_references.append({"id": ref_id, "name": dn})
 
-    observations = conn.execute(
-        "SELECT id, metadata FROM observations WHERE sender_entity_id = ?",
-        (entity_id,),
-    ).fetchall()
-
-    dn_to_target = {r["dn"]: r["target_id"] for r in routes if r["target_id"]}
     routed_obs = 0
     for obs in observations:
         meta = json.loads(obs["metadata"] or "{}")

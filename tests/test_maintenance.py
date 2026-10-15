@@ -2914,3 +2914,140 @@ def test_full_dn_still_merges(db_conn):
 
     result = find_dedup_candidates(db_conn)
     assert len(result["candidates"]) == 1
+
+
+# ── split_dn_sink: Outlook adapter path (#467) ─────────────────
+
+
+def test_split_dn_sink_outlook_adapter_path(db_conn):
+    """Observations created through the Outlook adapter carry sender_dn
+    and are correctly routed by split_dn_sink."""
+    from patina.adapters.outlook_mcp import _email_from_raw
+    from patina.ingest import _emails_to_chat_messages, _ingest_messages
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    full_dn_b = f"{_DN_PREFIX}{_GUID}-BHANDLE"
+
+    raw_emails = [
+        {
+            "senders": [full_dn_a, "Alice Tran"],
+            "from": {"email": "alice.tran@example.com", "name": "Alice Tran"},
+            "receivedDateTime": "2025-06-01T10:00:00+00:00",
+            "subject": "Status update",
+            "bodyPreview": "The quick brown fox",
+            "conversationId": "conv-a",
+        },
+        {
+            "senders": [full_dn_b, "Bob Marsh"],
+            "from": {"email": "bob.marsh@example.com", "name": "Bob Marsh"},
+            "receivedDateTime": "2025-06-01T11:00:00+00:00",
+            "subject": "Re: Status update",
+            "bodyPreview": "The lazy brown dog",
+            "conversationId": "conv-b",
+        },
+    ]
+
+    emails = [_email_from_raw(r) for r in raw_emails]
+    assert emails[0].sender_dn == full_dn_a
+    assert emails[1].sender_dn == full_dn_b
+
+    messages = _emails_to_chat_messages(emails)
+    assert messages[0].sender_dn == full_dn_a
+    assert messages[1].sender_dn == full_dn_b
+
+    _ingest_messages(db_conn, messages, "outlook_mcp_email")
+
+    obs_rows = db_conn.execute(
+        "SELECT id, metadata FROM observations ORDER BY timestamp"
+    ).fetchall()
+    assert len(obs_rows) == 2
+    meta_a = json.loads(obs_rows[0]["metadata"])
+    meta_b = json.loads(obs_rows[1]["metadata"])
+    assert meta_a["sender_dn"] == full_dn_a
+    assert meta_b["sender_dn"] == full_dn_b
+
+    sink_entity_id = obs_rows[0]["id"][:8]
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+    _add_person(db_conn, sink_entity_id, truncated_dn, [full_dn_a, full_dn_b])
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+    _add_person(db_conn, "p-b", "Bob Marsh", ["bhandle"])
+
+    db_conn.execute(
+        "UPDATE observations SET sender_entity_id = ?",
+        (sink_entity_id,),
+    )
+    db_conn.commit()
+
+    result = split_dn_sink(db_conn, sink_entity_id, dry_run=False)
+
+    assert result["observations_routed"] == 2
+    for obs in obs_rows:
+        row = db_conn.execute(
+            "SELECT sender_entity_id FROM observations WHERE id = ?",
+            (obs["id"],),
+        ).fetchone()
+        assert row["sender_entity_id"] in ("p-a", "p-b")
+
+
+def test_split_dn_sink_dry_run_nonzero_routable(db_conn):
+    """Dry-run against a store with multiple sender DNs reports nonzero routable count."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+    _add_person(db_conn, "p-b", "Bob Marsh", ["bhandle"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    full_dn_b = f"{_DN_PREFIX}{_GUID}-BHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a, full_dn_b])
+
+    for obs_id, dn, ts in [
+        ("obs-a", full_dn_a, 1000.0),
+        ("obs-b", full_dn_b, 1001.0),
+    ]:
+        db_conn.execute(
+            "INSERT INTO observations"
+            " (id, source, channel_id, timestamp, sender_entity_id, text,"
+            "  metadata, ingested_at, processed)"
+            " VALUES (?, 'outlook_mcp_email', 'C001', ?, 'sink',"
+            "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+            (obs_id, ts, json.dumps({"sender_dn": dn})),
+        )
+    db_conn.commit()
+
+    result = split_dn_sink(db_conn, "sink", dry_run=True)
+
+    assert result["routable_observations"] == 2
+    assert len(result["routes"]) == 2
+    assert sum(1 for r in result["routes"] if r["target_id"]) == 2
+
+
+def test_split_dn_sink_zero_routable_no_changes(db_conn):
+    """Split with 0 routable observations exits without writing changes."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a])
+
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-no-dn', 'outlook_mcp_email', 'C001', 1000.0, 'sink',"
+        "  'The quick brown fox', '{}', '2025-01-01T00:00:00+00:00', 1)"
+    )
+    db_conn.commit()
+
+    before = _snapshot_entities(db_conn)
+
+    result = split_dn_sink(db_conn, "sink", dry_run=False)
+
+    assert result["observations_routed"] == 0
+    after = _snapshot_entities(db_conn)
+    assert before == after
+
+    obs = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-no-dn'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "sink"

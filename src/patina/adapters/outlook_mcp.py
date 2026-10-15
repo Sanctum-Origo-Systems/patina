@@ -124,6 +124,11 @@ def _normalize_sender(sender: str) -> str:
 
 def _email_from_raw(raw: dict) -> EmailMessage:
     senders = raw.get("senders", [])
+    sender_dn = None
+    for s in senders:
+        if s and _LEGACY_DN_RE.match(s):
+            sender_dn = s
+            break
     clean_senders = [s for s in (_normalize_sender(s) for s in senders) if s]
     sender = clean_senders[0] if clean_senders else ""
     sender_name = sender if sender else None
@@ -164,6 +169,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
         recipients=recipients,
         conversation_id=raw.get("conversationId"),
         sender_name=sender_name,
+        sender_dn=sender_dn,
     )
 
 
