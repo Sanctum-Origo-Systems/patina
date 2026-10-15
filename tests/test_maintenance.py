@@ -2031,6 +2031,20 @@ def test_find_dedup_two_real_ids_still_needs_review(db_conn):
     assert "user_x" in review_names
 
 
+def test_find_dedup_truncated_dn_not_identifying(db_conn):
+    """Two entities sharing only a truncated DN name must not be merged (#468)."""
+    truncated = "/O=EXAMPLEORG/OU=ADMIN GROUP"
+    full_a = f"{_DN_PREFIX}{_GUID}-USER_A"
+    full_b = f"{_DN_PREFIX}{_GUID}-USER_B"
+    _insert_entity_raw(db_conn, "e1", truncated, aliases=[full_a, truncated])
+    _insert_entity_raw(db_conn, "e2", truncated, aliases=[full_b, truncated])
+    insert_observation(db_conn, _obs("o1", "e1"))
+    insert_observation(db_conn, _obs("o2", "e2"))
+
+    result = find_dedup_candidates(db_conn)
+    assert len(result["candidates"]) == 0
+
+
 def test_cli_entity_cleanup_nulls_sender_entity_id(db_path):
     """Orphaned sender_entity_id is reported in dry-run and nulled after cleanup."""
     from typer.testing import CliRunner

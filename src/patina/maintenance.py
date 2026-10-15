@@ -634,6 +634,8 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
             key = token.strip().lower()
             if key and len(key) >= 2 and key not in seen:
                 seen.add(key)
+                if key.startswith("/o=") and "cn=" not in key:
+                    continue
                 is_foreign_handle = (
                     token != ent["name"]
                     and _HANDLE_RE.match(key)

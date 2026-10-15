@@ -293,3 +293,24 @@ class TestExtractSenderSlackIdPrecedence:
         assert e is not None
         assert e.name == "Kai Tanaka"
         assert "U0KAITANA" in e.aliases
+
+
+_DN_PREFIX = "/O=EXAMPLEORG/OU=EXCHANGE ADMINISTRATIVE GROUP (FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN="
+_GUID = "0123456789abcdef0123456789abcdef"
+
+
+def test_sender_entity_truncated_dn_uses_trailing_handle():
+    """When user_name is a truncated DN, entity is named by the trailing handle (#468)."""
+    full_dn = f"{_DN_PREFIX}{_GUID}-DBROOK"
+    truncated = "/O=EXAMPLEORG/OU=ADMIN GROUP"
+    e = extract_sender_entity(full_dn, truncated, source_family="outlook")
+    assert e.name == "DBROOK"
+    assert truncated not in e.aliases
+
+
+def test_sender_entity_truncated_dn_no_handle_falls_back():
+    """When user_name is a truncated DN and user_id has no trailing handle, fall back to user_id."""
+    truncated = "/O=EXAMPLEORG/OU=ADMIN GROUP"
+    e = extract_sender_entity(truncated, truncated, source_family="outlook")
+    assert e.name == truncated
+    assert truncated in e.aliases

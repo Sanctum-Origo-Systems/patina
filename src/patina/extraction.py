@@ -12,6 +12,16 @@ _SLACK_LINK_RE = re.compile(r"<(https?://[^|>]+)(?:\|([^>]*))?>")
 
 _URL_RE = re.compile(r"https?://[^\s>]+")
 
+_DN_TRAILING_HANDLE_RE = re.compile(
+    r"/cn=[0-9a-f]{8}(?:-?[0-9a-f]{4}){3}-?[0-9a-f]{12}-(?P<handle>[^/=,]+)$",
+    re.IGNORECASE,
+)
+
+
+def _is_truncated_dn(name: str) -> bool:
+    upper = name.upper()
+    return upper.startswith("/O=") and "CN=" not in upper
+
 
 def _make_id(entity_type: str, key: str) -> str:
     return hashlib.sha256(f"{entity_type}:{key}".encode()).hexdigest()[:16]
@@ -88,6 +98,10 @@ def extract_sender_entity(
         cleaned = user_name.split("(", 1)[0].strip()
         if cleaned:
             user_name = cleaned
+
+    if user_name and _is_truncated_dn(user_name):
+        m = _DN_TRAILING_HANDLE_RE.search(user_id)
+        user_name = m.group("handle") if m else None
 
     canonical_name = user_name or user_id
 
