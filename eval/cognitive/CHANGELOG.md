@@ -1,3 +1,8 @@
+## v0.27.0 (2026-10-16)
+- #471: Feat: split_dn_sink routes 0 observations — Outlook adapter never ($2.09)
+- #469: Fix/truncated dn dedup ($0.00)
+Total: 2 PRs, $2.09
+
 ## v0.26.1 (2026-10-14)
 - #466: Feat: apply DN rank to maintenance.py and add split command for DN-sink entities ($3.98)
 - #464: Fix: bot sender pattern misses hyphenated -commenter names ($0.67)
@@ -99,8 +104,4 @@ Total: 5 PRs, $9.27
 - #334: Fix: strip Slack link markup and improve channel_id extraction
 - #341: Feat: add patina entity prune-links CLI command with --dry-run
 - #342: Fix: strip_slack_link_markup preserves label text instead of dropping entire link
-
-## v0.19.2 (2026-09-30)
-- #326: Fix: replace substring LIKE fallback with owner-aware entity resolution ($0.00)
-Total: 1 PRs, $0.00
 

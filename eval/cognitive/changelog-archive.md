@@ -184,3 +184,7 @@ Total: 3 PRs, $0.00
 - #313: Feat: Migrate autonomy_state schema to domain-keyed and update cor ($2.21)
 Total: 7 PRs, $16.18
 
+## v0.19.2 (2026-09-30)
+- #326: Fix: replace substring LIKE fallback with owner-aware entity resolution ($0.00)
+Total: 1 PRs, $0.00
+
