@@ -82,7 +82,7 @@ def ambiguous_name(db_conn):
 def conflicting_id(db_conn):
     """Two entities with different Slack IDs and overlapping normalised names."""
     _seed_identity_entity(db_conn, "cid-a", "Yui Sato", aliases=["U0YUISAT1"])
-    _seed_identity_entity(db_conn, "cid-b", "Sato, Yui", aliases=["U0YUISAT2"])
+    _seed_identity_entity(db_conn, "cid-b", "Yui Sato", aliases=["U0YUISAT2"])
     db_conn.commit()
     return {
         "conn": db_conn,

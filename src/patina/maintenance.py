@@ -666,6 +666,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
     parent = list(range(len(entities)))
     group_slack = [h["slack_ids"].copy() for h in entity_hard_ids]
     group_emails = [h["emails"].copy() for h in entity_hard_ids]
+    blocked_slack_conflict: set[int] = set()
 
     def _find(x: int) -> int:
         while parent[x] != x:
@@ -679,6 +680,8 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
             return
         sa, sb = group_slack[ra], group_slack[rb]
         if sa and sb and sa.isdisjoint(sb):
+            blocked_slack_conflict.add(a)
+            blocked_slack_conflict.add(b)
             return
         ea, eb = group_emails[ra], group_emails[rb]
         if ea and eb and ea.isdisjoint(eb):
@@ -702,6 +705,10 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
     for i in range(len(entities)):
         root = _find(i)
         groups_map.setdefault(root, []).append(i)
+
+    for indices in groups_map.values():
+        if len(indices) == 1 and indices[0] in blocked_slack_conflict:
+            needs_review.append({**entities[indices[0]], "reason": "conflicting Slack IDs"})
 
     candidates = []
     for indices in groups_map.values():

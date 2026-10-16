@@ -824,3 +824,121 @@ def test_v3_flag_recorded(db_path):
     assert row is not None
     assert row["applied_at"] is not None
     conn.close()
+
+
+# --- entity merge: six-table rewire coverage (#449) ---
+
+
+def _seed_reference_rows(conn, entity_id):
+    """Insert rows so every entity FK column in the six tables references *entity_id*."""
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, ingested_at)"
+        " VALUES (?, 'slack', 'C001', 1.0, ?, 'msg', datetime('now'))",
+        (f"obs-{entity_id}", entity_id),
+    )
+    conn.execute(
+        "INSERT INTO claims"
+        " (id, subject_id, predicate, object, confidence,"
+        "  first_asserted, last_confirmed, decay_rate)"
+        " VALUES (?, ?, 'role', 'engineer', 0.5,"
+        "  datetime('now'), datetime('now'), 0.02)",
+        (f"clm-{entity_id}", entity_id),
+    )
+    _insert_entity(conn, f"{entity_id}-peer", name="Ren Takeda")
+    conn.execute(
+        "INSERT INTO relationships"
+        " (id, subject_id, predicate, object_id, confidence,"
+        "  first_seen, last_confirmed)"
+        " VALUES (?, ?, 'works_with', ?, 0.5,"
+        "  datetime('now'), datetime('now'))",
+        (f"rel-subj-{entity_id}", entity_id, f"{entity_id}-peer"),
+    )
+    conn.execute(
+        "INSERT INTO relationships"
+        " (id, subject_id, predicate, object_id, confidence,"
+        "  first_seen, last_confirmed)"
+        " VALUES (?, ?, 'mentors', ?, 0.5,"
+        "  datetime('now'), datetime('now'))",
+        (f"rel-obj-{entity_id}", f"{entity_id}-peer", entity_id),
+    )
+    conn.execute(
+        "INSERT INTO predictions"
+        " (id, entity_id, prediction_type, prediction, confidence, created_at)"
+        " VALUES (?, ?, 'behaviour', 'will reply', 0.8, datetime('now'))",
+        (f"pred-{entity_id}", entity_id),
+    )
+    conn.execute(
+        "INSERT INTO style_exemplars"
+        " (id, sender_entity_id, recipient_entity_id, text, source, timestamp)"
+        " VALUES (?, ?, ?, 'hello', 'slack', 1.0)",
+        (f"se-send-{entity_id}", entity_id, f"{entity_id}-peer"),
+    )
+    conn.execute(
+        "INSERT INTO style_exemplars"
+        " (id, sender_entity_id, recipient_entity_id, text, source, timestamp)"
+        " VALUES (?, ?, ?, 'hi', 'slack', 2.0)",
+        (f"se-recv-{entity_id}", f"{entity_id}-peer", entity_id),
+    )
+    conn.execute(
+        "INSERT INTO action_queue"
+        " (id, action_type, target_entity_id, confidence,"
+        "  status, autonomy_level, created_at)"
+        " VALUES (?, 'nudge', ?, 0.7, 'proposed', 1, datetime('now'))",
+        (f"aq-{entity_id}", entity_id),
+    )
+    conn.commit()
+
+
+_SIX_TABLES = {
+    "observations": ("sender_entity_id",),
+    "claims": ("subject_id",),
+    "relationships": ("subject_id", "object_id"),
+    "predictions": ("entity_id",),
+    "style_exemplars": ("sender_entity_id", "recipient_entity_id"),
+    "action_queue": ("target_entity_id",),
+}
+
+
+def test_merge_rewires_all_six_tables(clean_merge):
+    """After merge, zero rows reference the retired entity in any table (#449)."""
+    from patina.maintenance import merge_entities
+
+    conn = clean_merge["conn"]
+    keep_id = clean_merge["entity_id"]
+    drop_id = "cm-drop"
+
+    _insert_entity(conn, drop_id, name="H. Kimura")
+    _seed_reference_rows(conn, drop_id)
+
+    merge_entities(conn, keep_id, drop_id)
+
+    for table, columns in _SIX_TABLES.items():
+        for col in columns:
+            count = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {table} WHERE {col} = ?",  # noqa: S608
+                (drop_id,),
+            ).fetchone()["c"]
+            assert count == 0, f"{table}.{col} still references retired entity"
+
+
+def test_merge_rewires_surviving_entity_inherits_references(clean_merge):
+    """After merge, the surviving entity owns every reference row (#449)."""
+    from patina.maintenance import merge_entities
+
+    conn = clean_merge["conn"]
+    keep_id = clean_merge["entity_id"]
+    drop_id = "cm-drop2"
+
+    _insert_entity(conn, drop_id, name="Kimura H.")
+    _seed_reference_rows(conn, drop_id)
+
+    merge_entities(conn, keep_id, drop_id)
+
+    for table, columns in _SIX_TABLES.items():
+        for col in columns:
+            count = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {table} WHERE {col} = ?",  # noqa: S608
+                (keep_id,),
+            ).fetchone()["c"]
+            assert count >= 1, f"{table}.{col} missing for surviving entity"

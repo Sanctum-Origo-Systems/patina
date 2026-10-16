@@ -621,7 +621,53 @@ def test_find_dedup_ambiguous_handle_alias_needs_review(db_conn):
         assert "e3" not in all_ids
 
 
+def test_find_dedup_conflicting_id_fixture_needs_review(conflicting_id):
+    """Shared conflicting_id fixture: both entities land in needs_review (#449)."""
+    conn = conflicting_id["conn"]
+    result = find_dedup_candidates(conn)
+
+    review_ids = {r["id"] for r in result["needs_review"]}
+    assert conflicting_id["entity_a"] in review_ids
+    assert conflicting_id["entity_b"] in review_ids
+
+    for entry in result["needs_review"]:
+        if entry["id"] in {conflicting_id["entity_a"], conflicting_id["entity_b"]}:
+            assert entry["reason"], "reason must be non-empty"
+
+    candidate_ids = set()
+    for c in result["candidates"]:
+        candidate_ids.add(c["keep"]["id"])
+        for d in c["drop"]:
+            candidate_ids.add(d["id"])
+    assert conflicting_id["entity_a"] not in candidate_ids
+    assert conflicting_id["entity_b"] not in candidate_ids
+
+
 # ── dedup_entities ───────────────────────────────────────────
+
+
+def test_dedup_conflicting_id_fixture_skips_merge(conflicting_id):
+    """Shared conflicting_id fixture: dedup_entities never merges the pair (#449)."""
+    conn = conflicting_id["conn"]
+    result = dedup_entities(conn)
+
+    assert result["entities_merged"] == 0
+    assert (
+        conn.execute(
+            "SELECT 1 FROM entities WHERE id = ?", (conflicting_id["entity_a"],)
+        ).fetchone()
+        is not None
+    )
+    assert (
+        conn.execute(
+            "SELECT 1 FROM entities WHERE id = ?", (conflicting_id["entity_b"],)
+        ).fetchone()
+        is not None
+    )
+
+    review_ids = {r["id"] for r in result["needs_review"]}
+    assert conflicting_id["entity_a"] in review_ids
+    assert conflicting_id["entity_b"] in review_ids
 
 
 def test_dedup_entities_merges_group(db_conn):
