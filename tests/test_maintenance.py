@@ -3051,3 +3051,142 @@ def test_split_dn_sink_zero_routable_no_changes(db_conn):
         "SELECT sender_entity_id FROM observations WHERE id = 'obs-no-dn'"
     ).fetchone()
     assert obs["sender_entity_id"] == "sink"
+
+
+# ── split_dn_sink: multi-source routing (#475) ──────────────────
+
+
+def test_split_dn_sink_multi_source_dry_run(db_conn):
+    """Dry-run with email, Slack, and calendar obs shows routable counts per source."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle", "slack:U0ALICE01"])
+    _add_person(db_conn, "p-b", "Bob Marsh", ["bhandle", "bob@example.com"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    full_dn_b = f"{_DN_PREFIX}{_GUID}-BHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a, full_dn_b])
+
+    obs_data = [
+        # Post-fix email with sender_dn
+        (
+            "obs-email-a",
+            "outlook_mcp_email",
+            "email:conv-a",
+            1000.0,
+            json.dumps({"sender_dn": full_dn_a}),
+        ),
+        # Pre-fix email without sender_dn (same channel → backfill)
+        ("obs-email-a2", "outlook_mcp_email", "email:conv-a", 1001.0, json.dumps({})),
+        # Slack observation with sender_slack_id
+        ("obs-slack", "slack_mcp", "C001", 1002.0, json.dumps({"sender_slack_id": "U0ALICE01"})),
+        # Calendar observation with organizer_dn
+        (
+            "obs-cal",
+            "outlook_mcp_calendar",
+            "calendar:evt1",
+            1003.0,
+            json.dumps({"organizer_dn": "bob@example.com"}),
+        ),
+        # Unroutable email (no sender_dn, isolated channel)
+        ("obs-unroutable", "outlook_mcp_email", "email:conv-x", 1004.0, json.dumps({})),
+    ]
+
+    for obs_id, source, channel_id, ts, meta in obs_data:
+        db_conn.execute(
+            "INSERT INTO observations"
+            " (id, source, channel_id, timestamp, sender_entity_id, text,"
+            "  metadata, ingested_at, processed)"
+            " VALUES (?, ?, ?, ?, 'sink',"
+            "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+            (obs_id, source, channel_id, ts, meta),
+        )
+    db_conn.commit()
+
+    before = _snapshot_entities(db_conn)
+    result = split_dn_sink(db_conn, "sink", dry_run=True)
+
+    assert result["routable_observations"] == 4
+    assert result["unroutable_by_source"] == {"outlook_mcp_email": 1}
+
+    after = _snapshot_entities(db_conn)
+    assert before == after
+
+
+def test_split_dn_sink_multi_source_commit(db_conn):
+    """Commit mode routes email, Slack, and calendar obs; unroutable stays on sink."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle", "slack:U0ALICE01"])
+    _add_person(db_conn, "p-b", "Bob Marsh", ["bhandle", "bob@example.com"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    full_dn_b = f"{_DN_PREFIX}{_GUID}-BHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a, full_dn_b])
+
+    obs_data = [
+        (
+            "obs-email",
+            "outlook_mcp_email",
+            "email:conv-a",
+            1000.0,
+            json.dumps({"sender_dn": full_dn_a}),
+        ),
+        ("obs-email-bf", "outlook_mcp_email", "email:conv-a", 1001.0, json.dumps({})),
+        ("obs-slack", "slack_mcp", "C001", 1002.0, json.dumps({"sender_slack_id": "U0ALICE01"})),
+        (
+            "obs-cal",
+            "outlook_mcp_calendar",
+            "calendar:evt1",
+            1003.0,
+            json.dumps({"organizer_dn": "bob@example.com"}),
+        ),
+        ("obs-unroutable", "outlook_mcp_email", "email:conv-x", 1004.0, json.dumps({})),
+    ]
+
+    for obs_id, source, channel_id, ts, meta in obs_data:
+        db_conn.execute(
+            "INSERT INTO observations"
+            " (id, source, channel_id, timestamp, sender_entity_id, text,"
+            "  metadata, ingested_at, processed)"
+            " VALUES (?, ?, ?, ?, 'sink',"
+            "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+            (obs_id, source, channel_id, ts, meta),
+        )
+    db_conn.commit()
+
+    result = split_dn_sink(db_conn, "sink", dry_run=False)
+
+    assert result["observations_routed"] == 4
+    assert result["unroutable_by_source"] == {"outlook_mcp_email": 1}
+
+    # Email with sender_dn routed to p-a
+    obs = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-email'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-a"
+
+    # Backfilled email routed to p-a with metadata updated
+    obs = db_conn.execute(
+        "SELECT sender_entity_id, metadata FROM observations WHERE id = 'obs-email-bf'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-a"
+    assert json.loads(obs["metadata"])["sender_dn"] == full_dn_a
+
+    # Slack routed to p-a
+    obs = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-slack'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-a"
+
+    # Calendar routed to p-b
+    obs = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-cal'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-b"
+
+    # Unroutable stays on sink
+    obs = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-unroutable'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "sink"
