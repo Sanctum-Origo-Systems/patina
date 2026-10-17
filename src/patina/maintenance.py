@@ -1338,6 +1338,21 @@ def fix_junk_senders(
     return {"merged": merged, "retyped": retyped, "split_needed": split_needed}
 
 
+def _resolve_key_via_aliases(
+    key: str,
+    person_alias_lookup: dict[str, set[str]],
+    exclude_entity_id: str,
+) -> str | None:
+    """Resolve a non-DN routing key to a unique person entity via alias lookup."""
+    for variant in (key, f"slack:{key}"):
+        norm = _normalize_for_dedup(variant)
+        if norm and len(norm) > 2:
+            hits = person_alias_lookup.get(norm, set()) - {exclude_entity_id}
+            if len(hits) == 1:
+                return next(iter(hits))
+    return None
+
+
 def split_dn_sink(
     conn: sqlite3.Connection,
     entity_id: str,
@@ -1350,9 +1365,14 @@ def split_dn_sink(
     - If the handle/SMTP matches a person entity, route the alias there
     - Otherwise, create a per-DN reference entity
 
-    In commit mode, routes observations whose metadata contains a matching
-    ``sender_dn`` to the correct person, then re-derives claims for entities
-    that received routed observations by resetting the processed flag.
+    Routes observations using source-specific keys:
+    - Email: ``metadata.sender_dn`` (backfilled from channel peers when missing)
+    - Slack: ``metadata.sender_slack_id``
+    - Calendar: ``metadata.organizer_dn``
+
+    In commit mode, routes observations to the correct person, backfills
+    missing ``sender_dn`` metadata for email observations, then re-derives
+    claims for entities that received routed observations.
     """
     entity = conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,)).fetchone()
     if not entity:
@@ -1411,22 +1431,62 @@ def split_dn_sink(
         )
 
     observations = conn.execute(
-        "SELECT id, metadata FROM observations WHERE sender_entity_id = ?",
+        "SELECT id, source, channel_id, metadata FROM observations WHERE sender_entity_id = ?",
         (entity_id,),
     ).fetchall()
 
     dn_to_target = {r["dn"]: r["target_id"] for r in routes if r["target_id"]}
-    routable_count = sum(
-        1
-        for obs in observations
-        if json.loads(obs["metadata"] or "{}").get("sender_dn", "") in dn_to_target
-    )
+
+    # Backfill: collect sender_dn by channel for email observations
+    channel_dn_map: dict[str, str] = {}
+    for obs in observations:
+        meta = json.loads(obs["metadata"] or "{}")
+        dn = meta.get("sender_dn", "")
+        if dn and obs["channel_id"]:
+            channel_dn_map[obs["channel_id"]] = dn
+
+    # Resolve routing target for each observation using source-specific keys
+    obs_routing: list[tuple] = []
+    unroutable_by_source: dict[str, int] = {}
+
+    for obs in observations:
+        meta = json.loads(obs["metadata"] or "{}")
+        source = obs["source"]
+        target_id = None
+        backfilled_dn = None
+
+        # sender_dn (direct or backfilled from channel peers)
+        sender_dn = meta.get("sender_dn", "")
+        if not sender_dn and obs["channel_id"] in channel_dn_map:
+            sender_dn = channel_dn_map[obs["channel_id"]]
+            backfilled_dn = sender_dn
+        if sender_dn and sender_dn in dn_to_target:
+            target_id = dn_to_target[sender_dn]
+
+        # slack_mcp: sender_slack_id
+        if not target_id and source == "slack_mcp":
+            slack_id = meta.get("sender_slack_id", "")
+            if slack_id:
+                target_id = _resolve_key_via_aliases(slack_id, person_alias_lookup, entity_id)
+
+        # calendar: organizer_dn
+        if not target_id and "calendar" in source:
+            org = meta.get("organizer_dn", "")
+            if org:
+                target_id = _resolve_key_via_aliases(org, person_alias_lookup, entity_id)
+
+        obs_routing.append((obs, target_id, backfilled_dn))
+        if not target_id:
+            unroutable_by_source[source] = unroutable_by_source.get(source, 0) + 1
+
+    routable_count = sum(1 for _, t, _ in obs_routing if t)
 
     result: dict = {
         "entity_id": entity_id,
         "entity_name": entity["name"],
         "routes": routes,
         "routable_observations": routable_count,
+        "unroutable_by_source": unroutable_by_source,
     }
 
     if dry_run:
@@ -1469,14 +1529,20 @@ def split_dn_sink(
             created_references.append({"id": ref_id, "name": dn})
 
     routed_obs = 0
-    for obs in observations:
-        meta = json.loads(obs["metadata"] or "{}")
-        sender_dn = meta.get("sender_dn", "")
-        if sender_dn in dn_to_target:
+    for obs, target_id, backfilled_dn in obs_routing:
+        if target_id:
             conn.execute(
                 "UPDATE observations SET sender_entity_id = ? WHERE id = ?",
-                (dn_to_target[sender_dn], obs["id"]),
+                (target_id, obs["id"]),
             )
+            affected_entity_ids.add(target_id)
+            if backfilled_dn:
+                meta = json.loads(obs["metadata"] or "{}")
+                meta["sender_dn"] = backfilled_dn
+                conn.execute(
+                    "UPDATE observations SET metadata = ? WHERE id = ?",
+                    (json.dumps(meta), obs["id"]),
+                )
             routed_obs += 1
 
     conn.execute(
