@@ -1,7 +1,9 @@
-## v0.27.0 (2026-10-16)
-- #471: Feat: split_dn_sink routes 0 observations — Outlook adapter never ($2.09)
-- #469: Fix/truncated dn dedup ($0.00)
-Total: 2 PRs, $2.09
+## v0.27.0 (2026-10-17)
+- #476: Fix: backfill sender keys and multi-source routing for DN sink split ($3.75)
+- #474: Feat: maintenance.py conflicting-ID routing and merge rewire ($3.55)
+- #471: Feat: split_dn_sink routes 0 observations — Outlook adapter sender_dn ($2.09)
+- #469: Fix: truncated DN dedup ($0.00, external contribution)
+Total: 4 PRs, $9.39
 
 ## v0.26.1 (2026-10-14)
 - #466: Feat: apply DN rank to maintenance.py and add split command for DN-sink entities ($3.98)
