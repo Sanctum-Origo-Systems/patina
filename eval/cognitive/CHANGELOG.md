@@ -1,3 +1,7 @@
+## v0.28.0 (2026-10-18)
+- #481: Feat: Write sender_slack_id and organizer_dn keys at ingest in Sla ($1.53)
+Total: 1 PRs, $1.53
+
 ## v0.27.0 (2026-10-17)
 - #476: Fix: backfill sender keys and multi-source routing for DN sink split ($3.75)
 - #474: Feat: maintenance.py conflicting-ID routing and merge rewire ($3.55)
@@ -88,22 +92,4 @@ Total: 5 PRs, $9.27
 
 ### Config
 - #368: Chore: add review-queue to triage_labels exclusion list
-
-## v0.20.0 (2026-10-03)
-
-### Entity Quality & Extraction Fixes
-- #340: Fix: extraction path alias pollution — _upsert_entity merges owner identifiers into partial-match entities
-- #346: Fix: non-person phrases saved as type=person entities during extraction
-- #347: Fix: first-name-only references create duplicate person entities after LIKE removal
-- #348: Fix: LLM-supplied aliases merged unchecked into non-owner entities
-- #349: Fix: entity prune and dedup don't catch extraction residue — shared plausibility check
-
-### Data Quality & Maintenance
-- #330: Test: regression test that owner resolution never pollutes other entity aliases
-- #331: Fix: owner merge --dry-run and safety checks for non-owner entities
-- #332: Fix: mention path upserts owner duplicate entity without checking user_ids
-- #333: Fix: dangling reference cleanup and integrity check
-- #334: Fix: strip Slack link markup and improve channel_id extraction
-- #341: Feat: add patina entity prune-links CLI command with --dry-run
-- #342: Fix: strip_slack_link_markup preserves label text instead of dropping entire link
 
