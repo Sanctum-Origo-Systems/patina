@@ -1437,13 +1437,17 @@ def split_dn_sink(
 
     dn_to_target = {r["dn"]: r["target_id"] for r in routes if r["target_id"]}
 
-    # Backfill: collect sender_dn by channel for email observations
-    channel_dn_map: dict[str, str] = {}
+    # Backfill: collect sender_dn by channel for email observations;
+    # only use channels where every DN-bearing peer shares the same value
+    channel_dns: dict[str, set[str]] = {}
     for obs in observations:
         meta = json.loads(obs["metadata"] or "{}")
         dn = meta.get("sender_dn", "")
         if dn and obs["channel_id"]:
-            channel_dn_map[obs["channel_id"]] = dn
+            channel_dns.setdefault(obs["channel_id"], set()).add(dn)
+    channel_dn_map: dict[str, str] = {
+        ch: next(iter(dns)) for ch, dns in channel_dns.items() if len(dns) == 1
+    }
 
     # Resolve routing target for each observation using source-specific keys
     obs_routing: list[tuple] = []

@@ -942,3 +942,149 @@ def test_merge_rewires_surviving_entity_inherits_references(clean_merge):
                 (keep_id,),
             ).fetchone()["c"]
             assert count >= 1, f"{table}.{col} missing for surviving entity"
+
+
+# --- split_dn_sink: channel-peer DN backfill tests (#480) ---
+
+_DN_PREFIX = "/o=TestOrg/ou=Exchange/cn=Recipients"
+_DN_TANAKA = f"{_DN_PREFIX}/cn=abcdef01-2345-6789-abcd-ef0123456789-JTANAKA"
+_DN_MIYAKE = f"{_DN_PREFIX}/cn=12345678-2345-6789-abcd-ef0123456789-MMIYAKE"
+
+
+def _setup_dn_sink_entities(conn, sink_aliases, persons):
+    _ENT_SQL = (
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata,"
+        "  first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}',"
+        "  datetime('now'), datetime('now'), 0.02, 0)"
+    )
+    conn.execute(_ENT_SQL, ("dn-sink", "DN Sink", json.dumps(sink_aliases)))
+    for pid, pname, palias_list in persons:
+        conn.execute(_ENT_SQL, (pid, pname, json.dumps(palias_list)))
+
+
+def _insert_obs_meta(conn, obs_id, source, channel_id, entity_id, metadata, timestamp=1.0):
+    conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text, metadata, ingested_at)"
+        " VALUES (?, ?, ?, ?, ?, 'msg', ?, datetime('now'))",
+        (obs_id, source, channel_id, timestamp, entity_id, json.dumps(metadata)),
+    )
+
+
+def test_split_dn_sink_production_shaped_fixture(db_path):
+    """split_dn_sink dry-run with production-shaped metadata (channel_name + reactions only)."""
+    from patina.maintenance import split_dn_sink
+
+    conn = connect(db_path)
+    _setup_dn_sink_entities(
+        conn,
+        sink_aliases=[_DN_TANAKA],
+        persons=[("person-jt", "Jun Tanaka", ["JTANAKA"])],
+    )
+    src = "outlook_mcp_email"
+    meta = {"channel_name": "general", "reactions": []}
+    _insert_obs_meta(conn, "obs-p1", src, "email:conv1", "dn-sink", meta, timestamp=1.0)
+    _insert_obs_meta(conn, "obs-p2", src, "email:conv1", "dn-sink", meta, timestamp=2.0)
+    conn.commit()
+
+    result = split_dn_sink(conn, "dn-sink", dry_run=True)
+
+    assert result["routable_observations"] is not None
+    assert result["unroutable_by_source"] is not None
+    assert result["unroutable_by_source"]["outlook_mcp_email"] == 2
+    conn.close()
+
+
+def test_split_dn_sink_two_sender_no_cross_contamination(db_path):
+    """Two-sender channel: after backfill, no observation gets the wrong sender's DN."""
+    from patina.maintenance import split_dn_sink
+
+    conn = connect(db_path)
+    _setup_dn_sink_entities(
+        conn,
+        sink_aliases=[_DN_TANAKA, _DN_MIYAKE],
+        persons=[
+            ("person-jt", "Jun Tanaka", ["JTANAKA"]),
+            ("person-mm", "Mei Miyake", ["MMIYAKE"]),
+        ],
+    )
+    src, ch = "outlook_mcp_email", "email:conv-shared"
+    _insert_obs_meta(conn, "obs-a", src, ch, "dn-sink", {"sender_dn": _DN_TANAKA}, 1.0)
+    _insert_obs_meta(conn, "obs-b", src, ch, "dn-sink", {"sender_dn": _DN_MIYAKE}, 2.0)
+    _insert_obs_meta(conn, "obs-c", src, ch, "dn-sink", {}, 3.0)
+    conn.commit()
+
+    split_dn_sink(conn, "dn-sink", dry_run=False)
+
+    meta_a = json.loads(
+        conn.execute("SELECT metadata FROM observations WHERE id = 'obs-a'").fetchone()["metadata"]
+    )
+    meta_b = json.loads(
+        conn.execute("SELECT metadata FROM observations WHERE id = 'obs-b'").fetchone()["metadata"]
+    )
+    meta_c = json.loads(
+        conn.execute("SELECT metadata FROM observations WHERE id = 'obs-c'").fetchone()["metadata"]
+    )
+    assert meta_a.get("sender_dn") != _DN_MIYAKE
+    assert meta_b.get("sender_dn") != _DN_TANAKA
+    assert meta_c.get("sender_dn", "") not in (_DN_TANAKA, _DN_MIYAKE)
+    conn.close()
+
+
+def test_split_dn_sink_mixed_dn_channel_zero_backfill(db_path):
+    """Mixed-DN channel: observations without sender_dn get zero backfill updates."""
+    from patina.maintenance import split_dn_sink
+
+    conn = connect(db_path)
+    _setup_dn_sink_entities(
+        conn,
+        sink_aliases=[_DN_TANAKA, _DN_MIYAKE],
+        persons=[
+            ("person-jt", "Jun Tanaka", ["JTANAKA"]),
+            ("person-mm", "Mei Miyake", ["MMIYAKE"]),
+        ],
+    )
+    src, ch = "outlook_mcp_email", "email:conv-mixed"
+    _insert_obs_meta(conn, "obs-m1", src, ch, "dn-sink", {"sender_dn": _DN_TANAKA}, 1.0)
+    _insert_obs_meta(conn, "obs-m2", src, ch, "dn-sink", {"sender_dn": _DN_MIYAKE}, 2.0)
+    _insert_obs_meta(conn, "obs-m3", src, ch, "dn-sink", {}, 3.0)
+    conn.commit()
+
+    split_dn_sink(conn, "dn-sink", dry_run=False)
+
+    meta = json.loads(
+        conn.execute("SELECT metadata FROM observations WHERE id = 'obs-m3'").fetchone()["metadata"]
+    )
+    assert not meta.get("sender_dn")
+    conn.close()
+
+
+def test_split_dn_sink_uniform_dn_channel_all_backfilled(db_path):
+    """Uniform-DN channel: all observations without sender_dn get backfilled."""
+    from patina.maintenance import split_dn_sink
+
+    conn = connect(db_path)
+    _setup_dn_sink_entities(
+        conn,
+        sink_aliases=[_DN_TANAKA],
+        persons=[("person-jt", "Jun Tanaka", ["JTANAKA"])],
+    )
+    src, ch = "outlook_mcp_email", "email:conv-uniform"
+    _insert_obs_meta(conn, "obs-u1", src, ch, "dn-sink", {"sender_dn": _DN_TANAKA}, 1.0)
+    _insert_obs_meta(conn, "obs-u2", src, ch, "dn-sink", {"sender_dn": _DN_TANAKA}, 2.0)
+    _insert_obs_meta(conn, "obs-u3", src, ch, "dn-sink", {}, 3.0)
+    _insert_obs_meta(conn, "obs-u4", src, ch, "dn-sink", {}, 4.0)
+    conn.commit()
+
+    split_dn_sink(conn, "dn-sink", dry_run=False)
+
+    for obs_id in ("obs-u3", "obs-u4"):
+        meta = json.loads(
+            conn.execute("SELECT metadata FROM observations WHERE id = ?", (obs_id,)).fetchone()[
+                "metadata"
+            ]
+        )
+        assert meta.get("sender_dn") == _DN_TANAKA
+    conn.close()
