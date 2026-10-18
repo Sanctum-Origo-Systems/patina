@@ -671,6 +671,7 @@ def test_slack_live_sender_slack_id_in_metadata(tmp_path):
                     timestamp=1781900100.123456,
                     channel_id="D00000DM055",
                     user_name="Frank",
+                    sender_slack_id="U00000FRANK",
                 ),
             ]
 

@@ -30,6 +30,14 @@ def test_parse_messages():
     assert msgs[1].text == "World"
 
 
+def test_parse_messages_sets_sender_slack_id():
+    adapter = SlackLiveAdapter("xoxb-test")
+    raw = [{"user": "U999", "text": "Hey there", "ts": "1700000400.000"}]
+    msgs = adapter._parse_messages(raw, "C002")
+    assert len(msgs) == 1
+    assert msgs[0].sender_slack_id == "U999"
+
+
 def test_auth_error():
     adapter = SlackLiveAdapter("xoxb-invalid")
 

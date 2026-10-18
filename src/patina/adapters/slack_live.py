@@ -71,7 +71,7 @@ class SlackLiveAdapter:
                     thread_id=thread_id,
                     channel_name=channel_name,
                     reactions=msg.get("reactions", []),
-                    sender_slack_id=user_id,
+                    sender_slack_id=user_id if user_id else None,
                 )
             )
         return result
