@@ -38,6 +38,14 @@ def test_parse_messages_sets_sender_slack_id():
     assert msgs[0].sender_slack_id == "U999"
 
 
+def test_parse_messages_sender_slack_id_guard_consistency():
+    """All three adapter sites must use the 'if x else None' guard pattern."""
+    import inspect
+
+    source = inspect.getsource(SlackLiveAdapter._parse_messages)
+    assert "sender_slack_id=user_id if user_id else None" in source
+
+
 def test_auth_error():
     adapter = SlackLiveAdapter("xoxb-invalid")
 
