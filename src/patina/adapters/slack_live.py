@@ -71,6 +71,7 @@ class SlackLiveAdapter:
                     thread_id=thread_id,
                     channel_name=channel_name,
                     reactions=msg.get("reactions", []),
+                    sender_slack_id=user_id,
                 )
             )
         return result
@@ -98,13 +99,15 @@ class SlackLiveAdapter:
             if ts < since:
                 continue
             channel = msg.get("channel", {})
+            sender_id = msg.get("user", msg.get("username", ""))
             result.append(
                 ChatMessage(
-                    user_id=msg.get("user", msg.get("username", "")),
+                    user_id=sender_id,
                     text=msg.get("text", ""),
                     timestamp=ts,
                     channel_id=channel.get("id", ""),
                     channel_name=channel.get("name", ""),
+                    sender_slack_id=sender_id if sender_id else None,
                 )
             )
         return result

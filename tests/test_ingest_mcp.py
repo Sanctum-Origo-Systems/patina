@@ -619,6 +619,80 @@ def test_id_named_entity_renamed_on_retry(tmp_path):
     conn.close()
 
 
+def test_slack_mcp_sender_slack_id_in_metadata(tmp_path):
+    """AC: slack_mcp adapter writes sender_slack_id into observation metadata."""
+    import json
+
+    home = tmp_path / "patina_home"
+    port = MockSlackMcpPort()
+    ingest_live(port=port, source="slack_mcp", home=home)
+
+    conn = connect(get_db_path(home))
+    rows = conn.execute("SELECT metadata FROM observations").fetchall()
+    assert len(rows) >= 1
+    for row in rows:
+        meta = json.loads(row["metadata"])
+        assert "sender_slack_id" in meta
+        assert meta["sender_slack_id"] != ""
+    conn.close()
+
+
+def test_calendar_organizer_dn_in_metadata(tmp_path):
+    """AC: outlook_mcp calendar adapter writes organizer_dn into observation metadata."""
+    import json
+
+    home = tmp_path / "patina_home"
+    port = MockCalendarPort()
+    ingest_live(port=port, source="outlook_calendar", home=home)
+
+    conn = connect(get_db_path(home))
+    row = conn.execute("SELECT metadata FROM observations").fetchone()
+    meta = json.loads(row["metadata"])
+    assert meta["organizer_dn"] == "frank@example.com"
+    conn.close()
+
+
+def test_slack_live_sender_slack_id_in_metadata(tmp_path):
+    """AC: slack_live adapter writes sender_slack_id into observation metadata."""
+    import json
+
+    home = tmp_path / "patina_home"
+
+    class MockSlackLivePort:
+        @property
+        def platform(self) -> str:
+            return "slack"
+
+        def list_dm_messages(self, since: float) -> list[ChatMessage]:
+            return [
+                ChatMessage(
+                    user_id="U00000FRANK",
+                    text="Quick question about the release",
+                    timestamp=1781900100.123456,
+                    channel_id="D00000DM055",
+                    user_name="Frank",
+                ),
+            ]
+
+        def list_mentions(self, since: float) -> list[ChatMessage]:
+            return []
+
+        def list_channel_messages(self, channel_id, since):
+            return []
+
+        def get_thread(self, channel_id, thread_id):
+            return []
+
+    port = MockSlackLivePort()
+    ingest_live(port=port, source="slack_live", home=home)
+
+    conn = connect(get_db_path(home))
+    row = conn.execute("SELECT metadata FROM observations").fetchone()
+    meta = json.loads(row["metadata"])
+    assert meta["sender_slack_id"] == "U00000FRANK"
+    conn.close()
+
+
 def test_still_failing_lookup_leaves_entity_unchanged(tmp_path):
     """AC: a still-failing lookup leaves the entity name as the Slack ID."""
     home = tmp_path / "patina_home"

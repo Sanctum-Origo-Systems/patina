@@ -195,4 +195,5 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
         end=end,
         attendees=attendees,
         organizer=organizer,
+        organizer_dn=organizer if organizer else None,
     )

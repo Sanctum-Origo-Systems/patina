@@ -163,6 +163,12 @@ def _ingest_messages(
         }
         if msg.sender_dn:
             meta["sender_dn"] = msg.sender_dn
+        if msg.sender_slack_id:
+            meta["sender_slack_id"] = msg.sender_slack_id
+        elif family == "slack" and msg.user_id:
+            meta["sender_slack_id"] = msg.user_id
+        if msg.organizer_dn:
+            meta["organizer_dn"] = msg.organizer_dn
 
         obs = Observation(
             id=obs_id,
@@ -260,6 +266,7 @@ def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:
                 timestamp=ev.start,
                 channel_id=f"calendar:{ev.id}",
                 user_name=ev.organizer,
+                organizer_dn=ev.organizer_dn or ev.organizer or None,
             )
         )
     return results

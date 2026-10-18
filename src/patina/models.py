@@ -93,6 +93,8 @@ class ChatMessage:
     reactions: list[dict] = field(default_factory=list)
     is_bot: bool = False
     sender_dn: str | None = None
+    sender_slack_id: str | None = None
+    organizer_dn: str | None = None
 
 
 @dataclass
@@ -123,3 +125,4 @@ class CalendarEvent:
     end: float
     attendees: list[str] = field(default_factory=list)
     organizer: str = ""
+    organizer_dn: str | None = None

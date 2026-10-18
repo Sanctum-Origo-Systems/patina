@@ -282,6 +282,7 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
         channel_name=channel_name,
         user_name=user_name,
         reactions=reactions,
+        sender_slack_id=user_id if user_id else None,
     )
     msg._is_dm = is_dm  # type: ignore[attr-defined]
     return msg
