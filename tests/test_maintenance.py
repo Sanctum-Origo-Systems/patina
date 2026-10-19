@@ -3126,10 +3126,10 @@ def test_split_dn_sink_multi_source_dry_run(db_conn):
         ("obs-email-a2", "outlook_mcp_email", "email:conv-a", 1001.0, json.dumps({})),
         # Slack observation with sender_slack_id
         ("obs-slack", "slack_mcp", "C001", 1002.0, json.dumps({"sender_slack_id": "U0ALICE01"})),
-        # Calendar observation with organizer_dn
+        # Calendar observation with organizer_dn (live source, detected via channel_id)
         (
             "obs-cal",
-            "outlook_mcp_calendar",
+            "outlook_mcp_email",
             "calendar:evt1",
             1003.0,
             json.dumps({"organizer_dn": "bob@example.com"}),
@@ -3182,7 +3182,7 @@ def test_split_dn_sink_multi_source_commit(db_conn):
         ("obs-slack", "slack_mcp", "C001", 1002.0, json.dumps({"sender_slack_id": "U0ALICE01"})),
         (
             "obs-cal",
-            "outlook_mcp_calendar",
+            "outlook_mcp_email",
             "calendar:evt1",
             1003.0,
             json.dumps({"organizer_dn": "bob@example.com"}),
@@ -3236,3 +3236,149 @@ def test_split_dn_sink_multi_source_commit(db_conn):
         "SELECT sender_entity_id FROM observations WHERE id = 'obs-unroutable'"
     ).fetchone()
     assert obs["sender_entity_id"] == "sink"
+
+
+# ── split_dn_sink: calendar channel_id detection (#485) ──────────
+
+
+def test_split_dn_sink_calendar_routes_via_channel_id(db_conn):
+    """Calendar obs with outlook_mcp_email source routes via channel_id prefix."""
+    _add_person(db_conn, "p-dana", "Dana Brook", ["user_a"])
+
+    full_dn = f"{_DN_PREFIX}ABC123-USER_A"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn])
+
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-cal-live', 'outlook_mcp_email', 'calendar:M1', 1000.0, 'sink',"
+        "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+        (json.dumps({"organizer_dn": "user_a"}),),
+    )
+    db_conn.commit()
+
+    result = split_dn_sink(db_conn, "sink", dry_run=True)
+    assert result["routable_observations"] == 1
+
+    result = split_dn_sink(db_conn, "sink", dry_run=False)
+    assert result["observations_routed"] == 1
+
+    obs = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-cal-live'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-dana"
+
+
+def test_split_dn_sink_calendar_backfill_organizer_from_text(db_conn):
+    """Calendar obs without organizer_dn backfills from Organizer: field in text."""
+    _add_person(db_conn, "p-dana", "Dana Brook", ["dana@example.com"])
+
+    full_dn = f"{_DN_PREFIX}ABC123-DBROOK"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn])
+
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-cal-nokey', 'outlook_mcp_email', 'calendar:M2', 1000.0, 'sink',"
+        "  '[Meeting: Standup] Organizer: dana@example.com, Attendees: bob@example.com',"
+        "  '{}', '2025-01-01T00:00:00+00:00', 1)",
+    )
+    db_conn.commit()
+
+    result = split_dn_sink(db_conn, "sink", dry_run=True)
+    assert result["routable_observations"] == 1
+
+    result = split_dn_sink(db_conn, "sink", dry_run=False)
+    assert result["observations_routed"] == 1
+
+    obs = db_conn.execute(
+        "SELECT sender_entity_id, metadata FROM observations WHERE id = 'obs-cal-nokey'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-dana"
+    assert json.loads(obs["metadata"])["organizer_dn"] == "dana@example.com"
+
+
+# ── split_dn_sink: Slack backfill and source widening (#485) ─────
+
+
+def test_split_dn_sink_slack_live_routes(db_conn):
+    """Slack obs from slack_live source routes via sender_slack_id."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle", "slack:U0ALICE01"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a])
+
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-slack-live', 'slack_live', 'C002', 1000.0, 'sink',"
+        "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+        (json.dumps({"sender_slack_id": "U0ALICE01"}),),
+    )
+    db_conn.commit()
+
+    result = split_dn_sink(db_conn, "sink", dry_run=True)
+    assert result["routable_observations"] == 1
+
+    result = split_dn_sink(db_conn, "sink", dry_run=False)
+    assert result["observations_routed"] == 1
+
+    obs = db_conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE id = 'obs-slack-live'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-a"
+
+
+def test_split_dn_sink_slack_backfill_from_channel_peers(db_conn):
+    """Slack obs without sender_slack_id backfills from channel peers."""
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle", "slack:U0ALICE01"])
+
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    truncated_dn = f"{_DN_PREFIX}TRUNC"
+
+    _add_person(db_conn, "sink", truncated_dn, [full_dn_a])
+
+    obs_data = [
+        # Slack obs with sender_slack_id
+        (
+            "obs-slack-key",
+            "slack_live",
+            "C002",
+            1000.0,
+            json.dumps({"sender_slack_id": "U0ALICE01"}),
+        ),
+        # Slack obs without sender_slack_id (same channel → backfill)
+        ("obs-slack-nokey", "slack_live", "C002", 1001.0, json.dumps({})),
+    ]
+
+    for obs_id, source, channel_id, ts, meta in obs_data:
+        db_conn.execute(
+            "INSERT INTO observations"
+            " (id, source, channel_id, timestamp, sender_entity_id, text,"
+            "  metadata, ingested_at, processed)"
+            " VALUES (?, ?, ?, ?, 'sink',"
+            "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+            (obs_id, source, channel_id, ts, meta),
+        )
+    db_conn.commit()
+
+    result = split_dn_sink(db_conn, "sink", dry_run=True)
+    assert result["routable_observations"] == 2
+
+    result = split_dn_sink(db_conn, "sink", dry_run=False)
+    assert result["observations_routed"] == 2
+
+    obs = db_conn.execute(
+        "SELECT sender_entity_id, metadata FROM observations WHERE id = 'obs-slack-nokey'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-a"
+    assert json.loads(obs["metadata"])["sender_slack_id"] == "U0ALICE01"
