@@ -24,6 +24,24 @@ def _name_type_rank(name: str) -> int:
     return 1
 
 
+_SLACK_ID_EXTRACT_PAT = re.compile(r"^(?:slack:)?([UW][A-Z0-9]{4,})$", re.IGNORECASE)
+
+
+def _is_multi_identity(name: str, aliases: list[str]) -> bool:
+    """True when tokens contain >1 distinct Slack ID or DN — a known sink."""
+    slack_ids: set[str] = set()
+    dns: set[str] = set()
+    for token in [name] + aliases:
+        t = token.strip()
+        upper = t.upper()
+        m = _SLACK_ID_EXTRACT_PAT.match(t)
+        if m and _SLACK_ID_PAT.match(m.group(1).upper()):
+            slack_ids.add(m.group(1).upper())
+        elif upper.startswith("/O=") or "CN=" in upper:
+            dns.add(upper)
+    return len(slack_ids) > 1 or len(dns) > 1
+
+
 def normalize_name(name: str) -> str:
     name = name.strip()
     if "@" in name:
@@ -239,11 +257,12 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
         existing_aliases = json.loads(existing["aliases"] or "[]")
         new_aliases = _strip_foreign_slack_ids(conn, entity.aliases, entity.id)
         merged_aliases = list(set(existing_aliases + new_aliases))
-        name = (
-            existing["name"]
-            if _name_type_rank(existing["name"]) < _name_type_rank(entity.name)
-            else entity.name
-        )
+        if _is_multi_identity(existing["name"], merged_aliases):
+            name = existing["name"]
+        elif _name_type_rank(existing["name"]) < _name_type_rank(entity.name):
+            name = existing["name"]
+        else:
+            name = entity.name
         conn.execute(
             "UPDATE entities SET name = ?, aliases = ?, last_seen = ? WHERE id = ?",
             (name, json.dumps(merged_aliases), entity.last_seen, entity.id),

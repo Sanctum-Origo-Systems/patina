@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from patina.graph import (
+    _is_multi_identity,
     _name_type_rank,
     count_entities,
     count_observations,
@@ -486,6 +487,105 @@ class TestUpsertEntityNoOverwrite:
         )
         resolved = resolve_entity_id(db_conn, "dbook@example.com")
         assert resolved == "e1"
+
+
+class TestMultiIdentityGuard:
+    """#486: sink entity with >1 Slack ID or DN must not be renamed."""
+
+    def test_is_multi_identity_two_slack_ids(self):
+        assert _is_multi_identity(
+            "/O=EXAMPLEORG/OU=X",
+            ["U0EXAMPLE1", "slack:U0EXAMPLE1", "U0EXAMPLE2", "slack:U0EXAMPLE2", "user_a"],
+        )
+
+    def test_is_multi_identity_single_slack_id(self):
+        assert not _is_multi_identity(
+            "Dana Brook",
+            ["U0EXAMPLE1", "slack:U0EXAMPLE1", "dbrook"],
+        )
+
+    def test_is_multi_identity_two_dns(self):
+        assert _is_multi_identity(
+            "/O=EXAMPLEORG/OU=X",
+            ["/O=EXAMPLEORG/OU=X/CN=Dana Brook", "/O=OTHERORG/OU=Y/CN=Jo Smith"],
+        )
+
+    def test_sink_dn_name_not_overwritten_by_handle(self, db_conn):
+        """Acceptance #1: fixture sink holds truncated-DN name, 2 Slack IDs
+        and handle user_a.  Ingest from one of those IDs with user_name
+        user_a — name must stay unchanged."""
+        _raw_insert_entity(
+            db_conn,
+            "e626",
+            "person",
+            "/O=EXAMPLEORG/OU=X",
+            aliases=[
+                "U0EXAMPLE1",
+                "slack:U0EXAMPLE1",
+                "U0EXAMPLE2",
+                "slack:U0EXAMPLE2",
+                "user_a",
+            ],
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e626",
+                type="person",
+                name="user_a",
+                aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1", "user_a"],
+            ),
+        )
+        ent = get_entity(db_conn, "e626")
+        assert ent.name == "/O=EXAMPLEORG/OU=X"
+        assert "user_a" in ent.aliases
+
+    def test_sink_dn_name_not_overwritten_by_full_name(self, db_conn):
+        """Even a full name (rank 0) must not overwrite a multi-ID sink."""
+        _raw_insert_entity(
+            db_conn,
+            "e626",
+            "person",
+            "/O=EXAMPLEORG/OU=X",
+            aliases=[
+                "U0EXAMPLE1",
+                "slack:U0EXAMPLE1",
+                "U0EXAMPLE2",
+                "slack:U0EXAMPLE2",
+            ],
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e626",
+                type="person",
+                name="Dana Brook",
+                aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+            ),
+        )
+        ent = get_entity(db_conn, "e626")
+        assert ent.name == "/O=EXAMPLEORG/OU=X"
+
+    def test_single_slack_id_entity_still_promotable(self, db_conn):
+        """Normal entity with one Slack ID should still get name promoted."""
+        _raw_insert_entity(
+            db_conn,
+            "e1",
+            "person",
+            "U0EXAMPLE1",
+            aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+            ),
+        )
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Brook"
 
 
 class TestResolveEntityIdPrefixNormalization:
