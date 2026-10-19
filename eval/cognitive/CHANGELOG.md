@@ -1,7 +1,9 @@
 ## v0.29.0 (2026-10-19)
+- #489: Fix: split_dn_sink calendar branch never fires — live calendar source is outlook_mcp_email ($2.29)
+- #488: Fix: ingest renames DN sink entity to a member's Slack handle via name-type ranking ($1.66)
 - #487: Fix: slack_live sender_slack_id guard inconsistency and weak test ($2.98)
 - #484: Feat: Fix backfill channel-peer DN logic in backfill.py and add pr ($2.16)
-Total: 2 PRs, $5.14
+Total: 4 PRs, $9.09
 
 ## v0.28.0 (2026-10-18)
 - #481: Feat: Write sender_slack_id and organizer_dn keys at ingest in Sla ($1.53)
