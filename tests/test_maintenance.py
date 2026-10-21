@@ -28,6 +28,7 @@ from patina.maintenance import (
     merge_entities,
     prune_non_person_entities,
     prune_slack_link_entities,
+    repair_sink_names,
     reprocess_observations,
     retype_organization_entities,
     rewire_entity_references,
@@ -3382,3 +3383,174 @@ def test_split_dn_sink_slack_backfill_from_channel_peers(db_conn):
     ).fetchone()
     assert obs["sender_entity_id"] == "p-a"
     assert json.loads(obs["metadata"])["sender_slack_id"] == "U0ALICE01"
+
+
+# ── repair_sink_names (#491) ──────────────────────────────────────
+
+
+def test_repair_sink_names_dry_run(db_conn):
+    """Dry run identifies multi-identity sinks with stolen handle names."""
+    _insert_entity_raw(
+        db_conn,
+        "sink1",
+        "user_g",
+        aliases=[
+            "/O=EXAMPLEORG/OU=X",
+            "U0EXAMPLE1",
+            "slack:U0EXAMPLE1",
+            "U0EXAMPLE2",
+            "slack:U0EXAMPLE2",
+            "user_g",
+        ],
+    )
+    result = repair_sink_names(db_conn, dry_run=True)
+    assert result["repaired"] == 1
+    assert result["entities"][0]["old_name"] == "user_g"
+    assert result["entities"][0]["new_name"] == "/O=EXAMPLEORG/OU=X"
+
+    row = db_conn.execute("SELECT name FROM entities WHERE id = 'sink1'").fetchone()
+    assert row["name"] == "user_g"
+
+
+def test_repair_sink_names_commit(db_conn):
+    """Commit mode resets sink name to truncated DN and preserves old name as alias."""
+    _insert_entity_raw(
+        db_conn,
+        "sink1",
+        "user_g",
+        aliases=[
+            "/O=EXAMPLEORG/OU=X",
+            "U0EXAMPLE1",
+            "slack:U0EXAMPLE1",
+            "U0EXAMPLE2",
+            "slack:U0EXAMPLE2",
+            "user_g",
+        ],
+    )
+    result = repair_sink_names(db_conn, dry_run=False)
+    assert result["repaired"] == 1
+
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'sink1'").fetchone()
+    assert row["name"] == "/O=EXAMPLEORG/OU=X"
+    aliases = json.loads(row["aliases"])
+    assert "user_g" in aliases
+
+
+def test_repair_sink_names_skips_dn_named_sinks(db_conn):
+    """Sinks already named with a DN are not repaired."""
+    _insert_entity_raw(
+        db_conn,
+        "sink1",
+        "/O=EXAMPLEORG/OU=X",
+        aliases=[
+            "U0EXAMPLE1",
+            "slack:U0EXAMPLE1",
+            "U0EXAMPLE2",
+            "slack:U0EXAMPLE2",
+            "user_g",
+        ],
+    )
+    result = repair_sink_names(db_conn, dry_run=True)
+    assert result["repaired"] == 0
+
+
+def test_repair_sink_names_fallback_label(db_conn):
+    """Without a truncated-DN alias, uses synthetic sink-<id> label."""
+    _insert_entity_raw(
+        db_conn,
+        "sink1",
+        "user_g",
+        aliases=[
+            "U0EXAMPLE1",
+            "slack:U0EXAMPLE1",
+            "U0EXAMPLE2",
+            "slack:U0EXAMPLE2",
+        ],
+    )
+    result = repair_sink_names(db_conn, dry_run=False)
+    assert result["repaired"] == 1
+
+    row = db_conn.execute("SELECT name FROM entities WHERE id = 'sink1'").fetchone()
+    assert row["name"] == "sink-sink1"
+
+
+def test_repair_then_resolve_returns_real_holder(db_conn):
+    """After repair, resolve_entity_id returns the handle's real holder."""
+    from patina.graph import resolve_entity_id
+
+    _insert_entity_raw(
+        db_conn,
+        "sink1",
+        "user_g",
+        aliases=[
+            "/O=EXAMPLEORG/OU=X",
+            "U0EXAMPLE1",
+            "slack:U0EXAMPLE1",
+            "U0EXAMPLE2",
+            "slack:U0EXAMPLE2",
+            "user_g",
+        ],
+    )
+    _insert_entity_raw(
+        db_conn,
+        "real1",
+        "Dana Brook",
+        aliases=["user_g"],
+    )
+
+    result = repair_sink_names(db_conn, dry_run=False)
+    assert result["repaired"] == 1
+
+    resolved = resolve_entity_id(db_conn, "user_g")
+    assert resolved == "real1"
+
+
+def test_repaired_name_survives_ingest(db_conn):
+    """The #486 freeze guard preserves the repaired DN name on subsequent ingest."""
+    _insert_entity_raw(
+        db_conn,
+        "sink1",
+        "/O=EXAMPLEORG/OU=X",
+        aliases=[
+            "/O=EXAMPLEORG/OU=X",
+            "U0EXAMPLE1",
+            "slack:U0EXAMPLE1",
+            "U0EXAMPLE2",
+            "slack:U0EXAMPLE2",
+            "user_g",
+        ],
+    )
+    upsert_entity(
+        db_conn,
+        _entity("sink1", "user_g", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"]),
+    )
+    row = db_conn.execute("SELECT name FROM entities WHERE id = 'sink1'").fetchone()
+    assert row["name"] == "/O=EXAMPLEORG/OU=X"
+
+
+def test_repair_sink_names_not_in_dedup_review_as_handle(db_conn):
+    """After repair, the dedup REVIEW entry shows DN name, not a handle."""
+    _insert_entity_raw(
+        db_conn,
+        "sink1",
+        "user_g",
+        aliases=[
+            "/O=EXAMPLEORG/OU=X",
+            "U0EXAMPLE1",
+            "slack:U0EXAMPLE1",
+            "U0EXAMPLE2",
+            "slack:U0EXAMPLE2",
+            "user_g",
+        ],
+    )
+
+    before = find_dedup_candidates(db_conn)
+    review_names_before = [e["name"] for e in before["needs_review"]]
+    assert "user_g" in review_names_before
+
+    repair_sink_names(db_conn, dry_run=False)
+
+    after = find_dedup_candidates(db_conn)
+    review_names_after = [e["name"] for e in after["needs_review"]]
+    assert "user_g" not in review_names_after
+    assert "/O=EXAMPLEORG/OU=X" in review_names_after

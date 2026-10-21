@@ -587,6 +587,56 @@ class TestMultiIdentityGuard:
         ent = get_entity(db_conn, "e1")
         assert ent.name == "Dana Brook"
 
+    def test_resolve_skips_sink_on_exact_name_match(self, db_conn):
+        """#491: Phase 3 must not return a multi-identity sink by name."""
+        _raw_insert_entity(
+            db_conn,
+            "sink",
+            "person",
+            "user_g",
+            aliases=[
+                "U0EXAMPLE1",
+                "slack:U0EXAMPLE1",
+                "U0EXAMPLE2",
+                "slack:U0EXAMPLE2",
+                "user_g",
+            ],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "real",
+            "person",
+            "Dana Brook",
+            aliases=["user_g"],
+        )
+        resolved = resolve_entity_id(db_conn, "user_g")
+        assert resolved == "real"
+
+    def test_resolve_skips_sink_on_alias_match(self, db_conn):
+        """#491: Phase 4 alias match must skip multi-identity sinks."""
+        _raw_insert_entity(
+            db_conn,
+            "sink",
+            "person",
+            "/O=EXAMPLEORG/OU=X",
+            aliases=[
+                "U0EXAMPLE1",
+                "slack:U0EXAMPLE1",
+                "U0EXAMPLE2",
+                "slack:U0EXAMPLE2",
+                "user_g",
+            ],
+        )
+        _raw_insert_entity(
+            db_conn,
+            "real",
+            "person",
+            "Dana Brook",
+            aliases=["user_g"],
+        )
+        resolved = resolve_entity_id(db_conn, "user_g")
+        assert resolved == "real"
+
 
 class TestResolveEntityIdPrefixNormalization:
     def test_prefixed_query_finds_unprefixed_alias(self, db_conn):

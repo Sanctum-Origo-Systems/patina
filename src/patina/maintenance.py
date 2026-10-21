@@ -10,8 +10,8 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from patina.graph import _is_multi_identity, resolve_entity_id
 from patina.graph import normalize_name as _graph_normalize
-from patina.graph import resolve_entity_id
 
 
 class StaleSnapshotError(Exception):
@@ -1664,3 +1664,58 @@ def clean_bogus_slack_aliases(
         conn.commit()
 
     return {"cleaned": len(cleaned), "entities": cleaned}
+
+
+def repair_sink_names(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = True,
+) -> dict:
+    """Reset multi-identity sink names that are handles, Slack IDs, or person names.
+
+    Sinks whose name was overwritten with a member's handle before the
+    ``_is_multi_identity`` guard (#486) get their name replaced with a
+    truncated-DN alias (which ``resolve_entity_id`` already refuses to
+    match) or a synthetic ``sink-<id>`` label.  The old name is preserved
+    as an alias.
+    """
+    rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
+
+    repaired: list[dict] = []
+    for r in rows:
+        aliases = json.loads(r["aliases"] or "[]")
+        if not _is_multi_identity(r["name"], aliases):
+            continue
+
+        rank = _name_type_rank(r["name"])
+        if rank == 4:
+            continue
+
+        new_name = None
+        for alias in aliases:
+            if _is_truncated_dn(alias):
+                new_name = alias
+                break
+        if new_name is None:
+            new_name = f"sink-{r['id']}"
+
+        repaired.append(
+            {
+                "id": r["id"],
+                "old_name": r["name"],
+                "new_name": new_name,
+            }
+        )
+
+        if not dry_run:
+            if r["name"] not in aliases:
+                aliases.append(r["name"])
+            conn.execute(
+                "UPDATE entities SET name = ?, aliases = ? WHERE id = ?",
+                (new_name, json.dumps(aliases), r["id"]),
+            )
+
+    if not dry_run and repaired:
+        conn.commit()
+
+    return {"repaired": len(repaired), "entities": repaired}

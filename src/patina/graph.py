@@ -129,15 +129,20 @@ def resolve_entity_id(
     normalized = normalize_name(name_clean)
 
     if len(rows) == 1:
-        if not (normalized and len(normalized) > 2):
-            return rows[0]["id"]
         if non_owner_rows is None:
             non_owner_rows = conn.execute(
                 "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
             ).fetchall()
-        norm_count = sum(1 for r in non_owner_rows if normalize_name(r["name"]) == normalized)
-        if norm_count <= 1:
-            return rows[0]["id"]
+        matched = next((r for r in non_owner_rows if r["id"] == rows[0]["id"]), None)
+        is_sink = matched and _is_multi_identity(
+            matched["name"], json.loads(matched["aliases"] or "[]")
+        )
+        if not is_sink:
+            if not (normalized and len(normalized) > 2):
+                return rows[0]["id"]
+            norm_count = sum(1 for r in non_owner_rows if normalize_name(r["name"]) == normalized)
+            if norm_count <= 1:
+                return rows[0]["id"]
 
     # --- Phase 4: Normalized name / alias match (ambiguity-safe) ---
     if normalized and len(normalized) > 2:
@@ -149,14 +154,19 @@ def resolve_entity_id(
         name_matches: set[str] = set()
         for r in non_owner_rows:
             if normalize_name(r["name"]) == normalized:
-                name_matches.add(r["id"])
+                r_aliases = json.loads(r["aliases"] or "[]")
+                if not _is_multi_identity(r["name"], r_aliases):
+                    name_matches.add(r["id"])
         if len(name_matches) == 1:
             return name_matches.pop()
 
         if not name_matches:
             alias_matches: set[str] = set()
             for r in non_owner_rows:
-                for alias in json.loads(r["aliases"] or "[]"):
+                r_aliases = json.loads(r["aliases"] or "[]")
+                if _is_multi_identity(r["name"], r_aliases):
+                    continue
+                for alias in r_aliases:
                     clean = normalize_alias(alias)
                     if normalize_name(clean) == normalized:
                         alias_matches.add(r["id"])
@@ -178,7 +188,10 @@ def resolve_entity_id(
                 continue
             matches: set[str] = set()
             for r in non_owner_rows:
-                for stored_alias in json.loads(r["aliases"] or "[]"):
+                r_aliases = json.loads(r["aliases"] or "[]")
+                if _is_multi_identity(r["name"], r_aliases):
+                    continue
+                for stored_alias in r_aliases:
                     if normalize_alias(stored_alias) == stripped:
                         matches.add(r["id"])
                         break
@@ -191,7 +204,9 @@ def resolve_entity_id(
                 name_matches_2: set[str] = set()
                 for r in non_owner_rows:
                     if normalize_name(r["name"]) == norm_alias:
-                        name_matches_2.add(r["id"])
+                        r_aliases_2 = json.loads(r["aliases"] or "[]")
+                        if not _is_multi_identity(r["name"], r_aliases_2):
+                            name_matches_2.add(r["id"])
                 if len(name_matches_2) == 1:
                     return name_matches_2.pop()
 
