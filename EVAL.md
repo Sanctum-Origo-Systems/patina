@@ -4,17 +4,17 @@
 
 | Metric | Value |
 |--------|-------|
-| First-attempt success | 74% |
-| Avg cost/PR | $0.79 |
-| Human edit rate | 34% |
+| First-attempt success | 73% |
+| Avg cost/PR | $0.77 |
+| Human edit rate | 44% |
 
 ## Auto-Merge Gate (repo-level)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
-| Success rate | 74% | >90% |
-| Edit rate | 34% | <5% |
-| Clean merges | 72 | ≥10 |
+| Success rate | 73% | >90% |
+| Edit rate | 44% | <5% |
+| Clean merges | 64 | ≥10 |
 | **Ready?** | **No** | |
 
 ## Per-Module Breakdown
@@ -22,11 +22,11 @@
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
 | other | 42% | $0.73 | 12 | No |
-| src/patina/ | 26% | $0.56 | 69 | No |
-| src/patina/adapters/ | 36% | $0.39 | 14 | No |
-| src/patina/autonomy/ | 67% | $1.50 | 3 | No |
-| src/patina/beliefs/ | 0% | $0.00 | 7 | No |
-| src/patina/mcp/ | 71% | $0.46 | 7 | No |
+| src/patina/ | 23% | $0.57 | 70 | No |
+| src/patina/adapters/ | 31% | $0.34 | 16 | No |
+| src/patina/autonomy/ | 100% | $0.97 | 2 | No |
+| src/patina/beliefs/ | 0% | $0.00 | 9 | No |
+| src/patina/mcp/ | 78% | $0.57 | 9 | No |
 | src/patina/priority/ | 100% | $1.91 | 1 | No |
 
 ## Trend
@@ -66,31 +66,37 @@
 | 2026-10-14 | 2 | 50% | $0.33 | 0% |
 | 2026-10-15 | 3 | 0% | $0.80 | 0% |
 | 2026-10-17 | 1 | 100% | $0.00 | 333% |
+| 2026-10-18 | 1 | 50% | $0.28 | 100% |
+| 2026-10-19 | 4 | 0% | $0.78 | 0% |
+| 2026-10-20 | 0 | — | — | — |
+| 2026-10-21 | 1 | 100% | $0.00 | — |
+| 2026-10-22 | 0 | — | — | — |
+| 2026-10-23 | 0 | — | — | — |
 
 ```mermaid
 xychart-beta
     title "Weekly First-Attempt Success Rate (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/17 (n=5)"]
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/23 (n=2)"]
     y-axis "Success %" 0 --> 100
-    bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 40]
+    bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 43, 50]
 ```
 
 ```mermaid
 xychart-beta
     title "Weekly Avg Cost/PR (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/17 (n=5)"]
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/23 (n=2)"]
     y-axis "Cost ($)" 0 --> 1
-    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.41]
+    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27]
 ```
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
 pie title Attempt Distribution by Module
     "other (42%, 12 impl)" : 12
-    "src/patina/ (26%, 69 impl)" : 69
-    "src/patina/adapters/ (36%, 14 impl)" : 14
-    "src/patina/autonomy/ (67%, 3 impl)" : 3
-    "src/patina/beliefs/ (0%, 7 impl)" : 7
-    "src/patina/mcp/ (71%, 7 impl)" : 7
+    "src/patina/ (23%, 70 impl)" : 70
+    "src/patina/adapters/ (31%, 16 impl)" : 16
+    "src/patina/autonomy/ (100%, 2 impl)" : 2
+    "src/patina/beliefs/ (0%, 9 impl)" : 9
+    "src/patina/mcp/ (78%, 9 impl)" : 9
     "src/patina/priority/ (100%, 1 impl)" : 1
 ```
