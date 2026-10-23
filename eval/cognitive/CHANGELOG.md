@@ -1,3 +1,7 @@
+## v0.29.1 (2026-10-23)
+- #492: Fix: repair multi-identity entities retaining stolen member handles ($0.00)
+Total: 1 PRs, $0.00
+
 ## v0.29.0 (2026-10-19)
 - #489: Fix: split_dn_sink calendar branch never fires — live calendar source is outlook_mcp_email ($2.29)
 - #488: Fix: ingest renames DN sink entity to a member's Slack handle via name-type ranking ($1.66)
@@ -50,33 +54,4 @@ Total: 3 PRs, $10.21
 - #423: Fix: shared Slack ID dedup misses 3-entity group shape ($2.68)
 - #420: Fix: merge DN senders by trailing handle alias ($0.00)
 Total: 4 PRs, $6.52
-
-## v0.24.0 (2026-10-08)
-- #414: Fix: empty-text Slack messages never leave unprocessed ($1.15)
-- #410: Fix: pre-#399 junk senders remain in store ($2.17)
-- #411: Fix: organizations, lists and roles saved as people ($3.08)
-- #412: Fix: extraction creates single-word people — places and first names ($1.43)
-- #413: Fix: duplicates that share a Slack ID are stuck in SKIP ($2.57)
-- #409: Fix: people stay named by a raw Slack ID ($3.38)
-- #401: Fix: Outlook adapter creates junk sender entities ($2.68)
-- #400: Fix: ingest overwrites merged entities' name and aliases ($1.71)
-Total: 8 PRs, $18.17
-
-## v0.23.0 (2026-10-06)
-- #394: Fix: entity cleanup nulls dangling sender_entity_id refs ($1.20)
-- #393: Fix: route handle-alias merge to REVIEW when target has no Slack ID ($3.53)
-- #395: Fix: validate _collect_slack_ids captures against _SLACK_ID_RE ($1.52)
-- #387: Feat: REVIEW reason shows wrong label for ambiguous-handle entries ($0.79)
-- #386: Fix: foreign-handle exemption lets handle-named entity merge thro ($2.23)
-Total: 5 PRs, $9.27
-
-## v0.22.0 (2026-10-05)
-
-### Dedup Safety (continued)
-- #384: Fix: restrict foreign-handle exemption to full-name entities
-- #385: Fix: REVIEW reason shows correct label for ambiguous-handle entries
-
-### Testing & Dashboard
-- #367: Feat: invariants test module and process-rule documentation
-- #383: Chore: refresh EVAL.md with short date labels (MM-DD)
 
