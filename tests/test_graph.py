@@ -128,6 +128,15 @@ class TestNormalizeName:
     def test_last_first_with_email(self):
         assert normalize_name("Chen, Dana") == "dana chen"
 
+    def test_at_prefixed_alias(self):
+        assert normalize_name("@jdoe") == "jdoe"
+
+    def test_at_prefixed_alias_matches_bare_handle(self):
+        assert normalize_name("@jdoe") == normalize_name("jdoe") == "jdoe"
+
+    def test_email_still_strips_domain_after_at_prefix_fix(self):
+        assert normalize_name("jdoe@example.com") == "jdoe"
+
 
 class TestResolveEntityId:
     def test_exact_name_match(self, db_conn):

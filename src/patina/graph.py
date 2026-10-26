@@ -43,7 +43,7 @@ def _is_multi_identity(name: str, aliases: list[str]) -> bool:
 
 
 def normalize_name(name: str) -> str:
-    name = name.strip()
+    name = name.strip().lstrip("@")
     if "@" in name:
         name = name.split("@")[0]
     if "," in name:
