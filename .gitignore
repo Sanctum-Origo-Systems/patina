@@ -23,3 +23,5 @@ fixtures/**/*.zip
 .claude/scheduled_tasks.lock
 run_history.jsonl
 autoloop/jev_decisions.jsonl
+# autoloop runtime lock
+.autoloop.lock
