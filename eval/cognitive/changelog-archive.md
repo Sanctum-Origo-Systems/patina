@@ -255,3 +255,22 @@ Total: 5 PRs, $9.27
 - #367: Feat: invariants test module and process-rule documentation
 - #383: Chore: refresh EVAL.md with short date labels (MM-DD)
 
+## v0.25.2 (2026-10-11)
+- #439: Docs: link JEV.md from README ($0.00)
+- #437: Fix: automated Outlook senders still typed as person ($0.92)
+- #436: Fix: Slack message routed to wrong person via stale handle alias ($2.75)
+Total: 3 PRs, $3.67
+
+## v0.25.1 (2026-10-10)
+- #432: Fix: pin CI to Python 3.13 ($0.00)
+- #431: Fix: Outlook senders get a fake slack: alias ($1.83)
+- #430: Fix: dedup preview doesn't show what --confirm will do after #417 ($8.38)
+Total: 3 PRs, $10.21
+
+## v0.25.0 (2026-10-09)
+- #425: Fix: entity resolve-names writes by default and misses duplicates ($3.02)
+- #424: Fix: entity retype and extract --dry-run write without asking ($0.82)
+- #423: Fix: shared Slack ID dedup misses 3-entity group shape ($2.68)
+- #420: Fix: merge DN senders by trailing handle alias ($0.00)
+Total: 4 PRs, $6.52
+
