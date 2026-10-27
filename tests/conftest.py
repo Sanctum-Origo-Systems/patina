@@ -5,6 +5,8 @@ import json
 import pytest
 
 import patina.store as store_module
+from patina.graph import _is_multi_identity, identifier_type
+from patina.owner import normalize_alias
 from patina.store import connect, get_db_path, init_db
 
 
@@ -47,6 +49,55 @@ def _seed_identity_entity(conn, eid, name, aliases=None):
         " VALUES (?, 'person', ?, ?, '{}', ?, ?, 0.02, 0)",
         (eid, name, json.dumps(aliases or []), now, now),
     )
+
+
+def _assert_identity_invariants(conn, owner_identifiers):
+    """Assert the store-wide identity contract (#512); raises naming every broken invariant.
+
+    - exactly 1 owner entity
+    - 0 owner identifiers on non-owner entities
+    - 0 dangling claims
+    - each Slack ID held by at most one entity
+    - no multi-identity entity named after a member identifier
+    """
+    problems: list[str] = []
+    rows = conn.execute("SELECT id, name, aliases, is_owner FROM entities").fetchall()
+
+    owners = sorted(r["id"] for r in rows if r["is_owner"])
+    if len(owners) != 1:
+        problems.append(f"expected exactly 1 owner entity, found {owners}")
+
+    owner_keys = {str(i).strip().lstrip("@").lower() for i in owner_identifiers}
+    slack_holders: dict[str, set[str]] = {}
+    for r in rows:
+        aliases = json.loads(r["aliases"] or "[]")
+        tokens = [r["name"], *aliases]
+        if not r["is_owner"]:
+            leaked = sorted(
+                t for t in tokens if normalize_alias(t).strip().lstrip("@").lower() in owner_keys
+            )
+            if leaked:
+                problems.append(f"owner identifier(s) {leaked} on non-owner entity {r['id']}")
+            if _is_multi_identity(r["name"], aliases) and identifier_type(r["name"].strip()):
+                problems.append(
+                    f"multi-identity entity {r['id']} named after member identifier {r['name']!r}"
+                )
+        for t in tokens:
+            bare = normalize_alias(t).strip()
+            if identifier_type(bare) == "slack_id":
+                slack_holders.setdefault(bare, set()).add(r["id"])
+
+    shared = {sid: sorted(ids) for sid, ids in slack_holders.items() if len(ids) > 1}
+    if shared:
+        problems.append(f"Slack ID(s) held by more than one entity: {shared}")
+
+    dangling = conn.execute(
+        "SELECT id FROM claims WHERE subject_id NOT IN (SELECT id FROM entities)"
+    ).fetchall()
+    if dangling:
+        problems.append(f"dangling claim(s): {sorted(r['id'] for r in dangling)}")
+
+    assert not problems, "identity invariants violated:\n  " + "\n  ".join(problems)
 
 
 @pytest.fixture
