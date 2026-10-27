@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from patina.ingest import ingest_live
 from patina.maintenance import (
     dedup_entities,
@@ -130,16 +128,7 @@ def _seed_with_provenance(conn, eid: str, name: str, aliases: list[str]) -> None
 
 # --- Scenarios ---
 
-# Only the migration backfill writes provenance so far; ingest, merge, split and
-# repair do not. Strict, so each marker must come off as its write path lands.
-_PENDING_WRITE_PATHS = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="entity_alias_provenance write paths not yet in place (#514, #509)",
-)
 
-
-@_PENDING_WRITE_PATHS
 def test_ingest_of_single_slack_message_holds_invariant(tmp_path):
     """A Slack message from Dana Brook leaves every alias with a net 'added' row."""
     (tmp_path / "config.yaml").write_text(_OWNER_CONFIG)
@@ -165,7 +154,6 @@ def test_ingest_of_single_slack_message_holds_invariant(tmp_path):
         conn.close()
 
 
-@_PENDING_WRITE_PATHS
 def test_e2e_ingest_holds_invariant(tmp_path, monkeypatch):
     """The full e2e Slack + Outlook ingest over a legacy DN sink holds the invariant."""
     store = _build_store(tmp_path, monkeypatch, sink_aliases=SINK_ALIASES)
@@ -175,7 +163,6 @@ def test_e2e_ingest_holds_invariant(tmp_path, monkeypatch):
         store.conn.close()
 
 
-@_PENDING_WRITE_PATHS
 def test_dedup_merge_moves_provenance_to_surviving_entity(tmp_path, monkeypatch):
     store = _build_store(tmp_path, monkeypatch, sink_aliases=SINK_ALIASES)
     conn = store.conn
@@ -197,7 +184,6 @@ def test_dedup_merge_moves_provenance_to_surviving_entity(tmp_path, monkeypatch)
         conn.close()
 
 
-@_PENDING_WRITE_PATHS
 def test_split_dn_sink_holds_invariant(tmp_path, monkeypatch):
     store = _build_store(tmp_path, monkeypatch, sink_aliases=SINK_ALIASES)
     conn = store.conn
@@ -221,7 +207,6 @@ def test_split_dn_sink_holds_invariant(tmp_path, monkeypatch):
         conn.close()
 
 
-@_PENDING_WRITE_PATHS
 def test_repair_multi_identity_names_holds_invariant(tmp_path, monkeypatch):
     store = _build_store(tmp_path, monkeypatch, sink_aliases=SINK_ALIASES)
     conn = store.conn
