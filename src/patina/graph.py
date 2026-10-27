@@ -155,14 +155,22 @@ def resolve_entity_id(
 
         if not name_matches:
             alias_matches: set[str] = set()
+            multi_matches: set[str] = set()
             for r in non_owner_rows:
-                for alias in json.loads(r["aliases"] or "[]"):
+                r_aliases = json.loads(r["aliases"] or "[]")
+                for alias in r_aliases:
                     clean = normalize_alias(alias)
                     if normalize_name(clean) == normalized:
                         alias_matches.add(r["id"])
+                        if _is_multi_identity(r["name"], r_aliases):
+                            multi_matches.add(r["id"])
                         break
             if len(alias_matches) == 1:
                 return alias_matches.pop()
+            # Tiebreak (#502): one multi-identity sink + one single-identity
+            # holder -> the single-identity holder owns the alias.
+            if len(alias_matches) == 2 and len(multi_matches) == 1:
+                return (alias_matches - multi_matches).pop()
 
     # --- Phase 5: Provided non-Slack-ID aliases (ambiguity-safe) ---
     if aliases:
