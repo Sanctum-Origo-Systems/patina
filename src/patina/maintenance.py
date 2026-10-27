@@ -19,6 +19,7 @@ from patina.graph import (
 )
 from patina.graph import _name_type_rank as _graph_name_type_rank
 from patina.graph import normalize_name as _graph_normalize
+from patina.owner import normalize_alias
 
 
 class StaleSnapshotError(Exception):
@@ -1718,3 +1719,66 @@ def repair_multi_identity_names(
         conn.commit()
 
     return {"repaired": len(repaired), "entities": repaired}
+
+
+def _is_handle_alias(alias: str) -> bool:
+    """True for a bare or ``@``-prefixed handle (not a name, email, Slack ID or DN)."""
+    value = normalize_alias(alias).strip().lstrip("@")
+    if not value or " " in value or "@" in value:
+        return False
+    if _SLACK_ID_RE.match(value.upper()):
+        return False
+    return _name_type_rank(value) == 1
+
+
+def repair_sink_handle_aliases(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = True,
+) -> dict:
+    """Strip member handle aliases left on multi-identity sinks (#502).
+
+    A handle alias on a multi-identity entity is removed when exactly one
+    single-identity entity also holds it (compared with ``normalize_name``).
+    Only aliases are touched: names, Slack IDs and DNs stay, and
+    single-identity entities are never modified.
+    """
+    rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
+
+    sinks: list[tuple[sqlite3.Row, list[str]]] = []
+    single_holders: dict[str, set[str]] = {}
+    for r in rows:
+        aliases = json.loads(r["aliases"] or "[]")
+        if _is_multi_identity(r["name"], aliases):
+            sinks.append((r, aliases))
+            continue
+        for a in aliases:
+            key = _graph_normalize(normalize_alias(a))
+            if key:
+                single_holders.setdefault(key, set()).add(r["id"])
+
+    stripped: list[dict] = []
+    for r, aliases in sinks:
+        kept: list[str] = []
+        removed: list[str] = []
+        for a in aliases:
+            key = _graph_normalize(normalize_alias(a))
+            if _is_handle_alias(a) and len(single_holders.get(key, ())) == 1:
+                removed.append(a)
+            else:
+                kept.append(a)
+        if removed:
+            stripped.append({"id": r["id"], "name": r["name"], "removed": removed, "kept": kept})
+
+    if not dry_run and stripped:
+        for item in stripped:
+            conn.execute(
+                "UPDATE entities SET aliases = ? WHERE id = ?",
+                (json.dumps(item["kept"]), item["id"]),
+            )
+        conn.commit()
+
+    return {
+        "stripped": sum(len(item["removed"]) for item in stripped),
+        "entities": stripped,
+    }
