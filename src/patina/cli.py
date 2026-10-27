@@ -1359,6 +1359,44 @@ def entity_repair_multi_identity_cmd(
         conn.close()
 
 
+@entity_app.command("repair-sink-handles")
+def entity_repair_sink_handles_cmd(
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Apply changes (preview only without this flag)"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Strip member handle aliases left on multi-identity sinks."""
+    from patina.maintenance import backup_store, repair_sink_handle_aliases
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        if confirm:
+            backup_path = backup_store(db_path)
+            typer.echo(f"Backup: {backup_path}")
+
+        result = repair_sink_handle_aliases(conn, dry_run=not confirm)
+
+        if result["stripped"] == 0:
+            typer.echo("No sink handle aliases need stripping.")
+            return
+
+        mode = "Stripped" if confirm else "Would strip"
+        typer.echo(f"{mode} {result['stripped']} handle alias(es) from multi-identity sinks:")
+        for ent in result["entities"]:
+            for alias in ent["removed"]:
+                typer.echo(f"  {ent['id'][:8]} '{ent['name']}': {alias}")
+        if not confirm:
+            typer.echo(f"{result['stripped']} strip(s) proposed — re-run with --confirm to apply")
+    finally:
+        conn.close()
+
+
 @entity_app.command("list")
 def entity_list_cmd(
     entity_type: str = typer.Option(

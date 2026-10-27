@@ -1053,3 +1053,48 @@ class TestSlackIdUniquenessInvariant:
         ent = get_entity(db_conn, "eA")
         assert "U0EXAMPLE1" in ent.aliases
         assert "slack:U0EXAMPLE1" in ent.aliases
+
+
+class TestResolveSinkHandleTiebreak:
+    """#502: a handle held by one DN sink and one person resolves to the person."""
+
+    _SINK_ALIASES = [
+        "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=AAA-USER_A",
+        "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=BBB-USER_B",
+        "user_a",
+    ]
+
+    def test_sink_plus_person_resolves_to_person(self, db_conn):
+        _raw_insert_entity(
+            db_conn, "sink", "person", "/O=EXAMPLEORG/OU=ADMIN GROUP", self._SINK_ALIASES
+        )
+        _raw_insert_entity(db_conn, "p-dana", "person", "Dana Brook", aliases=["@user_a"])
+        assert _is_multi_identity("/O=EXAMPLEORG/OU=ADMIN GROUP", self._SINK_ALIASES)
+        assert resolve_entity_id(db_conn, "user_a") == "p-dana"
+
+    def test_two_single_identity_holders_returns_none(self, db_conn):
+        _raw_insert_entity(db_conn, "p-dana", "person", "Dana Brook", aliases=["@user_a"])
+        _raw_insert_entity(db_conn, "p-evan", "person", "Evan Stone", aliases=["user_a"])
+        assert resolve_entity_id(db_conn, "user_a") is None
+
+    def test_two_sinks_plus_person_returns_none(self, db_conn):
+        _raw_insert_entity(
+            db_conn, "sink1", "person", "/O=EXAMPLEORG/OU=ADMIN GROUP", self._SINK_ALIASES
+        )
+        _raw_insert_entity(
+            db_conn,
+            "sink2",
+            "person",
+            "/O=SINK/sink2",
+            aliases=["U0EXAMPLE1", "U0EXAMPLE2", "user_a"],
+        )
+        _raw_insert_entity(db_conn, "p-dana", "person", "Dana Brook", aliases=["@user_a"])
+        assert resolve_entity_id(db_conn, "user_a") is None
+
+    def test_sink_plus_two_persons_returns_none(self, db_conn):
+        _raw_insert_entity(
+            db_conn, "sink", "person", "/O=EXAMPLEORG/OU=ADMIN GROUP", self._SINK_ALIASES
+        )
+        _raw_insert_entity(db_conn, "p-dana", "person", "Dana Brook", aliases=["@user_a"])
+        _raw_insert_entity(db_conn, "p-evan", "person", "Evan Stone", aliases=["user_a"])
+        assert resolve_entity_id(db_conn, "user_a") is None

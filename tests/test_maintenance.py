@@ -31,6 +31,7 @@ from patina.maintenance import (
     prune_non_person_entities,
     prune_slack_link_entities,
     repair_multi_identity_names,
+    repair_sink_handle_aliases,
     reprocess_observations,
     retype_organization_entities,
     rewire_entity_references,
@@ -3619,4 +3620,122 @@ def test_cli_repair_multi_identity(db_path):
     conn = connect(db_path)
     row = conn.execute("SELECT name FROM entities WHERE id = 'sink'").fetchone()
     assert row["name"] == "/O=EXAMPLEORG/OU=X"
+    conn.close()
+
+
+# ── repair_sink_handle_aliases (#502) ──────────────────────────
+
+_SINK_NAME = "/O=EXAMPLEORG/OU=ADMIN GROUP"
+_SINK_ALIASES = [
+    "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=AAA-USER_A",
+    "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=BBB-USER_B",
+    "U0EXAMPLE1",
+    "slack:U0EXAMPLE1",
+    "user_a",
+]
+
+
+def test_repair_sink_handle_aliases_dry_run_zero_writes(db_conn):
+    """Dry-run lists the sink's bare handle but makes zero writes."""
+    _insert_entity_raw(db_conn, "sink", _SINK_NAME, aliases=_SINK_ALIASES)
+    _insert_entity_raw(db_conn, "p-dana", "Dana Brook", aliases=["@user_a"])
+
+    result = repair_sink_handle_aliases(db_conn, dry_run=True)
+
+    assert result["stripped"] == 1
+    assert len(result["entities"]) == 1
+    assert result["entities"][0]["id"] == "sink"
+    assert result["entities"][0]["removed"] == ["user_a"]
+
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'sink'").fetchone()
+    assert row["name"] == _SINK_NAME
+    assert json.loads(row["aliases"]) == _SINK_ALIASES
+    row_p = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'p-dana'").fetchone()
+    assert json.loads(row_p["aliases"]) == ["@user_a"]
+
+
+def test_repair_sink_handle_aliases_strips_only_handle(db_conn):
+    """Live run strips only the handle: name, Slack IDs and DNs stay; person untouched."""
+    _insert_entity_raw(db_conn, "sink", _SINK_NAME, aliases=_SINK_ALIASES)
+    _insert_entity_raw(db_conn, "p-dana", "Dana Brook", aliases=["@user_a"])
+
+    result = repair_sink_handle_aliases(db_conn, dry_run=False)
+    assert result["stripped"] == 1
+
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'sink'").fetchone()
+    assert row["name"] == _SINK_NAME
+    assert json.loads(row["aliases"]) == [a for a in _SINK_ALIASES if a != "user_a"]
+    row_p = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'p-dana'").fetchone()
+    assert row_p["name"] == "Dana Brook"
+    assert json.loads(row_p["aliases"]) == ["@user_a"]
+
+    assert resolve_entity_id(db_conn, "user_a") == "p-dana"
+
+
+def test_repair_sink_handle_aliases_two_single_holders_strips_nothing(db_conn):
+    """Two single-identity holders of the handle: nothing is stripped."""
+    _insert_entity_raw(db_conn, "p-dana", "Dana Brook", aliases=["@user_a"])
+    _insert_entity_raw(db_conn, "p-evan", "Evan Stone", aliases=["user_a"])
+
+    result = repair_sink_handle_aliases(db_conn, dry_run=True)
+    assert result["stripped"] == 0
+    assert result["entities"] == []
+    assert resolve_entity_id(db_conn, "user_a") is None
+
+
+def test_repair_sink_handle_aliases_shared_by_two_singles_keeps_sink_alias(db_conn):
+    """A sink handle that two single-identity entities also hold is left alone."""
+    _insert_entity_raw(db_conn, "sink", _SINK_NAME, aliases=_SINK_ALIASES)
+    _insert_entity_raw(db_conn, "p-dana", "Dana Brook", aliases=["@user_a"])
+    _insert_entity_raw(db_conn, "p-evan", "Evan Stone", aliases=["user_a"])
+
+    result = repair_sink_handle_aliases(db_conn, dry_run=True)
+    assert result["stripped"] == 0
+
+
+def test_repair_sink_handle_aliases_no_single_holder_keeps_alias(db_conn):
+    """A sink handle that no single-identity entity holds is left alone."""
+    _insert_entity_raw(db_conn, "sink", _SINK_NAME, aliases=_SINK_ALIASES)
+
+    result = repair_sink_handle_aliases(db_conn, dry_run=True)
+    assert result["stripped"] == 0
+
+
+def test_cli_repair_sink_handles(db_path):
+    """CLI entity repair-sink-handles respects --confirm and defaults to dry-run."""
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "sink", _SINK_NAME, aliases=_SINK_ALIASES)
+    _insert_entity_raw(conn, "p-dana", "Dana Brook", aliases=["@user_a"])
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+
+    # Dry-run
+    res_dry = runner.invoke(app, ["entity", "repair-sink-handles", "--home", str(home)])
+    assert res_dry.exit_code == 0
+    assert "Would strip 1 handle alias(es)" in res_dry.output
+    assert "user_a" in res_dry.output
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT aliases FROM entities WHERE id = 'sink'").fetchone()
+    assert "user_a" in json.loads(row["aliases"])
+    conn.close()
+
+    # Confirm
+    res_confirm = runner.invoke(
+        app, ["entity", "repair-sink-handles", "--confirm", "--home", str(home)]
+    )
+    assert res_confirm.exit_code == 0
+    assert "Backup:" in res_confirm.output
+    assert "Stripped 1 handle alias(es)" in res_confirm.output
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT aliases FROM entities WHERE id = 'sink'").fetchone()
+    assert "user_a" not in json.loads(row["aliases"])
     conn.close()
