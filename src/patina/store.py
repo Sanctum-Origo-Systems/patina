@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 DEFAULT_HOME = Path.home() / ".patina"
@@ -793,6 +794,118 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
             "VALUES ('add_extraction_runs_table_v1', datetime('now'))"
         )
         conn.commit()
+
+    row = conn.execute(
+        "SELECT 1 FROM migrations WHERE name = 'add_entity_alias_provenance_v1'"
+    ).fetchone()
+    if not row:
+        # Back up the store before running this on a live store
+        # (cp ~/.patina/store.db ~/.patina/store.db.bak). The migration only
+        # adds a table and backfills it; entities.aliases is left untouched.
+        backfilled = _backfill_alias_provenance(conn)
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('add_entity_alias_provenance_v1', datetime('now'))"
+        )
+        conn.commit()
+
+        if backfilled > 0:
+            print(f"Migration add_entity_alias_provenance_v1: backfilled {backfilled} aliases")
+
+
+ALIAS_PROVENANCE_ACTIONS = ("added", "removed")
+
+
+def ensure_entity_alias_provenance_table(conn: sqlite3.Connection) -> None:
+    # No foreign keys: provenance must outlive entity merges and observation
+    # dedup, both of which delete the rows these columns point at.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS entity_alias_provenance (
+               entity_id TEXT NOT NULL,
+               alias TEXT NOT NULL,
+               adapter TEXT NOT NULL,
+               observation_id TEXT,
+               action TEXT NOT NULL CHECK(action IN ('added', 'removed')),
+               created_at TEXT NOT NULL
+           )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alias_provenance_entity "
+        "ON entity_alias_provenance(entity_id, alias)"
+    )
+
+
+def _backfill_alias_provenance(conn: sqlite3.Connection) -> int:
+    """Record one 'added' row per existing alias with adapter='unknown'.
+
+    The source adapter of pre-existing aliases is not known, so none is guessed.
+    Aliases that already have an 'unknown' backfill row are skipped, so a re-run
+    never duplicates rows.
+    """
+    ensure_entity_alias_provenance_table(conn)
+    created_at = datetime.now(UTC).isoformat()
+    count = 0
+    rows = conn.execute(
+        "SELECT id, aliases FROM entities WHERE aliases IS NOT NULL AND aliases != ''"
+    ).fetchall()
+    for r in rows:
+        try:
+            aliases = json.loads(r["aliases"])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(aliases, list):
+            continue
+        for alias in dict.fromkeys(a for a in aliases if isinstance(a, str)):
+            exists = conn.execute(
+                "SELECT 1 FROM entity_alias_provenance "
+                "WHERE entity_id = ? AND alias = ? AND action = 'added' "
+                "AND adapter = 'unknown' AND observation_id IS NULL",
+                (r["id"], alias),
+            ).fetchone()
+            if exists:
+                continue
+            record_alias_provenance(
+                conn,
+                r["id"],
+                alias,
+                adapter="unknown",
+                action="added",
+                created_at=created_at,
+            )
+            count += 1
+    return count
+
+
+def record_alias_provenance(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    alias: str,
+    *,
+    adapter: str,
+    action: str,
+    observation_id: str | None = None,
+    created_at: str | None = None,
+) -> None:
+    """Append one alias provenance row. Does not commit; the caller owns the transaction."""
+    if action not in ALIAS_PROVENANCE_ACTIONS:
+        raise ValueError(
+            f"Invalid alias provenance action {action!r}; "
+            f"expected one of {ALIAS_PROVENANCE_ACTIONS}"
+        )
+    ensure_entity_alias_provenance_table(conn)
+    conn.execute(
+        "INSERT INTO entity_alias_provenance "
+        "(entity_id, alias, adapter, observation_id, action, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            entity_id,
+            alias,
+            adapter,
+            observation_id,
+            action,
+            created_at or datetime.now(UTC).isoformat(),
+        ),
+    )
 
 
 def ensure_extraction_runs_table(conn: sqlite3.Connection) -> None:
