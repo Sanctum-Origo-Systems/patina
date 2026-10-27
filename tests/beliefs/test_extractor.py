@@ -1096,3 +1096,143 @@ class TestSingleTokenNameResolution:
 
         assert stats["claims_extracted"] == 0
         assert stats["skipped_unresolved"] >= 1
+
+
+def _extraction_runs(tmp_path):
+    from patina.store import connect, ensure_extraction_runs_table, get_db_path
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        ensure_extraction_runs_table(conn)
+        return conn.execute("SELECT * FROM extraction_runs ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+
+def _insert_obs(db_conn, obs_id, source, text, *, sender=None, ts=1.0):
+    insert_observation(
+        db_conn,
+        Observation(
+            id=obs_id,
+            source=source,
+            channel_id="C1",
+            thread_id=None,
+            timestamp=ts,
+            sender_entity_id=sender,
+            text=text,
+        ),
+    )
+
+
+_EMPTY_RESPONSE = json.dumps({"entities": [], "claims": [], "relationships": [], "behavioral": []})
+
+
+class TestExtractionRunPersistence:
+    """#505: per-run skip and alias-collision counts persisted by source."""
+
+    def test_run_persisted_with_counts_by_source(self, db_conn, db_path, tmp_path):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="John Doe", aliases=["Doe, John"]),
+        )
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Rivera, Sam"))
+        _insert_obs(db_conn, "o1", "slack_live", "Quinn Harper owns the roadmap", ts=1.0)
+        _insert_obs(db_conn, "o2", "outlook_mcp_email", "Riley Park is based in Denver", ts=2.0)
+        _insert_obs(db_conn, "o3", "slack_live", "The quick brown fox", sender="e2", ts=3.0)
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [
+                    {"name": "Rivera, Sam", "aliases": ["Doe, John"], "type": "person"},
+                ],
+                "claims": [
+                    {
+                        "subject": "Quinn Harper",
+                        "predicate": "role",
+                        "object": "roadmap owner",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "subject": "Riley Park",
+                        "predicate": "location",
+                        "object": "Denver",
+                        "confidence": 0.9,
+                    },
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=mock_response),
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            stats = extract_beliefs(home=tmp_path, batch_size=5, model="sonnet")
+
+        assert stats["skipped_unresolved"] == 2
+        assert stats["alias_collisions"] == 1
+
+        runs = _extraction_runs(tmp_path)
+        assert len(runs) == 1
+        run = runs[0]
+        assert run["model"] == "sonnet"
+        assert run["observations_processed"] == 3
+        assert run["skipped_unresolved"] == 2
+        assert run["alias_collisions"] == 1
+        assert run["started_at"] <= run["finished_at"]
+        assert json.loads(run["by_source_json"]) == {
+            "slack_live": {"skipped_unresolved": 1, "alias_collisions": 1},
+            "outlook_mcp_email": {"skipped_unresolved": 1, "alias_collisions": 0},
+        }
+
+    def test_dry_run_writes_no_row(self, db_conn, db_path, tmp_path):
+        _insert_obs(db_conn, "o1", "slack_live", "The quick brown fox")
+        db_conn.close()
+
+        extract_beliefs(home=tmp_path, dry_run=True, batch_size=5)
+
+        assert _extraction_runs(tmp_path) == []
+
+    def test_summary_prints_zero_skip_and_collision_lines(self, db_conn, db_path, tmp_path, capsys):
+        _insert_obs(db_conn, "o1", "slack_live", "The quick brown fox")
+        db_conn.close()
+
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_EMPTY_RESPONSE),
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            extract_beliefs(home=tmp_path, batch_size=5)
+
+        out = capsys.readouterr().out
+        assert "Skipped (unresolved):   0" in out
+        assert "Alias collisions:       0" in out
+
+        runs = _extraction_runs(tmp_path)
+        assert len(runs) == 1
+        assert json.loads(runs[0]["by_source_json"]) == {
+            "slack_live": {"skipped_unresolved": 0, "alias_collisions": 0},
+        }
+
+    def test_chunked_run_writes_one_row_per_invocation(self, db_conn, db_path, tmp_path):
+        for i in range(3):
+            _insert_obs(db_conn, f"o{i}", "slack_live", "The quick brown fox", ts=float(i))
+        db_conn.close()
+
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_EMPTY_RESPONSE),
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            extract_beliefs(home=tmp_path, batch_size=5, limit=2)
+            extract_beliefs(home=tmp_path, batch_size=5, limit=2)
+
+        runs = _extraction_runs(tmp_path)
+        assert [r["observations_processed"] for r in runs] == [2, 1]
+
+    def test_run_with_nothing_to_process_still_recorded(self, tmp_path):
+        extract_beliefs(home=tmp_path)
+
+        runs = _extraction_runs(tmp_path)
+        assert len(runs) == 1
+        assert runs[0]["observations_processed"] == 0
+        assert json.loads(runs[0]["by_source_json"]) == {}
