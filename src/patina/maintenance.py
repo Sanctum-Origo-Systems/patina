@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import sqlite3
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,6 +21,9 @@ from patina.graph import (
 from patina.graph import _name_type_rank as _graph_name_type_rank
 from patina.graph import normalize_name as _graph_normalize
 from patina.owner import normalize_alias
+from patina.store import ensure_entity_alias_provenance_table, record_alias_provenance
+
+_PROVENANCE_ADAPTER = "maintenance"
 
 
 class StaleSnapshotError(Exception):
@@ -391,6 +395,32 @@ def _handle_fits_name(handle: str, full_name: str) -> bool:
     return False
 
 
+def _alias_provenance_is_added(conn: sqlite3.Connection, entity_id: str, alias: str) -> bool:
+    """True when the latest provenance row for (entity_id, alias) is 'added'."""
+    row = conn.execute(
+        "SELECT action FROM entity_alias_provenance WHERE entity_id = ? AND alias = ?"
+        " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (entity_id, alias),
+    ).fetchone()
+    return bool(row) and row["action"] == "added"
+
+
+def _record_alias_changes(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    *,
+    added: Iterable[str] = (),
+    removed: Iterable[str] = (),
+) -> None:
+    """Record maintenance provenance rows for aliases added to / removed from an entity."""
+    for alias in dict.fromkeys(added):
+        record_alias_provenance(conn, entity_id, alias, adapter=_PROVENANCE_ADAPTER, action="added")
+    for alias in dict.fromkeys(removed):
+        record_alias_provenance(
+            conn, entity_id, alias, adapter=_PROVENANCE_ADAPTER, action="removed"
+        )
+
+
 def backup_store(db_path: Path) -> Path:
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     backup_path = db_path.with_suffix(f".db.bak.{ts}")
@@ -523,6 +553,21 @@ def merge_entities(
         return result
 
     rewire_entity_references(conn, keep_id, drop_id)
+
+    # Provenance follows the aliases to the survivor; rows are moved, not copied,
+    # so the table's row count only grows for aliases with no live 'added' row.
+    ensure_entity_alias_provenance_table(conn)
+    conn.execute(
+        "UPDATE entity_alias_provenance SET entity_id = ? WHERE entity_id = ?",
+        (keep_id, drop_id),
+    )
+    gained = [
+        a
+        for a in merged_aliases
+        if a not in keep_aliases and not _alias_provenance_is_added(conn, keep_id, a)
+    ]
+    lost = [a for a in keep_aliases + drop_aliases if a not in merged_aliases]
+    _record_alias_changes(conn, keep_id, added=gained, removed=lost)
 
     conn.execute(
         "UPDATE entities SET aliases = ? WHERE id = ?",
@@ -1536,6 +1581,7 @@ def split_dn_sink(
             target_aliases = json.loads(target["aliases"] or "[]")
             if dn not in target_aliases:
                 target_aliases.append(dn)
+                _record_alias_changes(conn, route["target_id"], added=[dn])
             conn.execute(
                 "UPDATE entities SET aliases = ? WHERE id = ?",
                 (json.dumps(target_aliases), route["target_id"]),
@@ -1573,6 +1619,9 @@ def split_dn_sink(
     conn.execute(
         "UPDATE entities SET aliases = ? WHERE id = ?",
         (json.dumps(remaining_aliases), entity_id),
+    )
+    _record_alias_changes(
+        conn, entity_id, removed=[a for a in aliases if a not in remaining_aliases]
     )
 
     for eid in affected_entity_ids:
@@ -1681,6 +1730,7 @@ def repair_multi_identity_names(
     rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
 
     repaired: list[dict] = []
+    stripped: dict[str, list[str]] = {}
     for r in rows:
         aliases = json.loads(r["aliases"] or "[]")
         if not _is_multi_identity(r["name"], aliases):
@@ -1709,6 +1759,7 @@ def repair_multi_identity_names(
                 "aliases": new_aliases,
             }
         )
+        stripped[r["id"]] = [a for a in aliases if a not in new_aliases]
 
     if not dry_run and repaired:
         for item in repaired:
@@ -1716,6 +1767,7 @@ def repair_multi_identity_names(
                 "UPDATE entities SET name = ?, aliases = ? WHERE id = ?",
                 (item["new_name"], json.dumps(item["aliases"]), item["id"]),
             )
+            _record_alias_changes(conn, item["id"], removed=stripped[item["id"]])
         conn.commit()
 
     return {"repaired": len(repaired), "entities": repaired}

@@ -1088,3 +1088,206 @@ def test_split_dn_sink_uniform_dn_channel_all_backfilled(db_path):
         )
         assert meta.get("sender_dn") == _DN_TANAKA
     conn.close()
+
+
+# --- Alias provenance for merge / split_dn_sink / repair (#509) ---
+
+
+def _seed_provenance_entity(conn, entity_id, name, aliases):
+    """Insert a person entity and one 'added' provenance row per alias."""
+    from patina.store import record_alias_provenance
+
+    conn.execute(
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata,"
+        "  first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES (?, 'person', ?, ?, '{}', datetime('now'), datetime('now'), 0.02, 0)",
+        (entity_id, name, json.dumps(aliases)),
+    )
+    for alias in aliases:
+        record_alias_provenance(conn, entity_id, alias, adapter="slack", action="added")
+
+
+def _provenance_count(conn):
+    return conn.execute("SELECT COUNT(*) FROM entity_alias_provenance").fetchone()[0]
+
+
+def _provenance_rows(conn, entity_id=None, action=None):
+    sql = "SELECT entity_id, alias, adapter, action FROM entity_alias_provenance WHERE 1 = 1"
+    params: list = []
+    if entity_id is not None:
+        sql += " AND entity_id = ?"
+        params.append(entity_id)
+    if action is not None:
+        sql += " AND action = ?"
+        params.append(action)
+    return [dict(r) for r in conn.execute(sql + " ORDER BY rowid", params).fetchall()]
+
+
+def _latest_action(conn, entity_id, alias):
+    row = conn.execute(
+        "SELECT action FROM entity_alias_provenance WHERE entity_id = ? AND alias = ?"
+        " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (entity_id, alias),
+    ).fetchone()
+    return row["action"] if row else None
+
+
+def _entity_aliases(conn, entity_id):
+    row = conn.execute("SELECT aliases FROM entities WHERE id = ?", (entity_id,)).fetchone()
+    return json.loads(row["aliases"] or "[]")
+
+
+def test_merge_moves_provenance_rows_to_survivor(db_path):
+    """Merge re-points every provenance row at the survivor; row count is unchanged."""
+    from patina.maintenance import merge_entities
+
+    conn = connect(db_path)
+    _seed_provenance_entity(conn, "pv-keep", "Kai Moreno", ["kmoreno"])
+    _seed_provenance_entity(conn, "pv-drop", "K. Moreno", ["K. Moreno", "kai.moreno@example.com"])
+    conn.commit()
+    before = _provenance_count(conn)
+
+    merge_entities(conn, "pv-keep", "pv-drop")
+
+    rows = _provenance_rows(conn)
+    assert rows
+    assert all(r["entity_id"] == "pv-keep" for r in rows)
+    assert _provenance_rows(conn, entity_id="pv-drop") == []
+    assert _provenance_count(conn) == before
+    conn.close()
+
+
+def test_merge_records_added_and_removed_provenance(db_path):
+    """Aliases the survivor gains have a live 'added' row; aliases lost have 'removed'."""
+    from patina.maintenance import merge_entities
+
+    conn = connect(db_path)
+    _seed_provenance_entity(conn, "pv-keep", "Kai Moreno", ["kmoreno"])
+    _seed_provenance_entity(conn, "pv-drop", "Kai M.", ["slack:U0EXAMPLE9"])
+    conn.commit()
+    pre_merge = set(_entity_aliases(conn, "pv-keep")) | set(_entity_aliases(conn, "pv-drop"))
+
+    merge_entities(conn, "pv-keep", "pv-drop")
+
+    post_merge = set(_entity_aliases(conn, "pv-keep"))
+    gained = post_merge - {"kmoreno"}
+    assert gained == {"Kai M.", "slack:U0EXAMPLE9"}
+    for alias in gained:
+        assert _latest_action(conn, "pv-keep", alias) == "added", alias
+
+    # The drop name had no provenance row; the merge itself records it.
+    name_rows = [r for r in _provenance_rows(conn, "pv-keep") if r["alias"] == "Kai M."]
+    assert name_rows == [
+        {"entity_id": "pv-keep", "alias": "Kai M.", "adapter": "maintenance", "action": "added"}
+    ]
+
+    for alias in pre_merge - post_merge:
+        assert _latest_action(conn, "pv-keep", alias) == "removed", alias
+    for alias in post_merge:
+        assert _latest_action(conn, "pv-keep", alias) != "removed", alias
+    conn.close()
+
+
+_REPAIR_SINK_ALIASES = [
+    "user_q",
+    "slack:user_q",
+    "U0EXAMPLE1",
+    "slack:U0EXAMPLE1",
+    "U0EXAMPLE2",
+    "slack:U0EXAMPLE2",
+    "/O=EXAMPLEORG/OU=X",
+]
+
+
+def test_repair_multi_identity_names_records_removed_provenance(db_path):
+    """Each alias stripped by repair gets a 'removed' row on that entity."""
+    from patina.maintenance import repair_multi_identity_names
+
+    conn = connect(db_path)
+    _seed_provenance_entity(conn, "pv-sink", "user_q", _REPAIR_SINK_ALIASES)
+    conn.commit()
+
+    result = repair_multi_identity_names(conn, dry_run=False)
+
+    assert result["repaired"] == 1
+    remaining = _entity_aliases(conn, "pv-sink")
+    stripped = [a for a in _REPAIR_SINK_ALIASES if a not in remaining]
+    assert stripped == ["user_q", "slack:user_q"]
+    removed = _provenance_rows(conn, action="removed")
+    assert [(r["entity_id"], r["alias"]) for r in removed] == [
+        ("pv-sink", "user_q"),
+        ("pv-sink", "slack:user_q"),
+    ]
+    conn.close()
+
+
+def test_repair_multi_identity_names_dry_run_writes_no_provenance(db_path):
+    """Dry-run repair leaves provenance rows and entities.aliases untouched."""
+    from patina.maintenance import repair_multi_identity_names
+
+    conn = connect(db_path)
+    _seed_provenance_entity(conn, "pv-sink", "user_q", _REPAIR_SINK_ALIASES)
+    conn.commit()
+    count_before = _provenance_count(conn)
+    aliases_before = conn.execute("SELECT id, aliases FROM entities ORDER BY id").fetchall()
+
+    result = repair_multi_identity_names(conn, dry_run=True)
+
+    assert result["repaired"] == 1
+    assert _provenance_count(conn) == count_before
+    aliases_after = conn.execute("SELECT id, aliases FROM entities ORDER BY id").fetchall()
+    assert [tuple(r) for r in aliases_after] == [tuple(r) for r in aliases_before]
+    conn.close()
+
+
+def test_split_dn_sink_records_removed_and_added_provenance(db_path):
+    """Split writes 'removed' on the sink and 'added' on the target for each routed DN."""
+    from patina.maintenance import split_dn_sink
+
+    conn = connect(db_path)
+    _setup_dn_sink_entities(
+        conn,
+        sink_aliases=[_DN_TANAKA, "sinkhandle"],
+        persons=[("person-jt", "Jun Tanaka", ["JTANAKA"])],
+    )
+    _insert_obs_meta(
+        conn, "obs-pv1", "outlook_mcp_email", "email:pv", "dn-sink", {"sender_dn": _DN_TANAKA}
+    )
+    conn.commit()
+
+    result = split_dn_sink(conn, "dn-sink", dry_run=False)
+
+    assert result["observations_routed"] == 1
+    assert _entity_aliases(conn, "dn-sink") == ["sinkhandle"]
+    assert _entity_aliases(conn, "person-jt") == ["JTANAKA", _DN_TANAKA]
+    removed = _provenance_rows(conn, action="removed")
+    assert [(r["entity_id"], r["alias"]) for r in removed] == [("dn-sink", _DN_TANAKA)]
+    added = _provenance_rows(conn, action="added")
+    assert [(r["entity_id"], r["alias"]) for r in added] == [("person-jt", _DN_TANAKA)]
+    conn.close()
+
+
+def test_split_dn_sink_dry_run_writes_no_provenance(db_path):
+    """Dry-run split adds no provenance rows."""
+    from patina.maintenance import split_dn_sink
+    from patina.store import record_alias_provenance
+
+    conn = connect(db_path)
+    _setup_dn_sink_entities(
+        conn,
+        sink_aliases=[_DN_TANAKA],
+        persons=[("person-jt", "Jun Tanaka", ["JTANAKA"])],
+    )
+    _insert_obs_meta(
+        conn, "obs-pv2", "outlook_mcp_email", "email:pv", "dn-sink", {"sender_dn": _DN_TANAKA}
+    )
+    record_alias_provenance(conn, "dn-sink", _DN_TANAKA, adapter="outlook", action="added")
+    conn.commit()
+    before = _provenance_count(conn)
+
+    result = split_dn_sink(conn, "dn-sink", dry_run=True)
+
+    assert result["routable_observations"] == 1
+    assert _provenance_count(conn) == before
+    conn.close()
