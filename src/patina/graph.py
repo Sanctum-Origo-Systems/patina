@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from patina.models import Claim, Entity, Observation, Relationship
 from patina.owner import normalize_alias
+from patina.store import record_alias_provenance
 
 _SLACK_ID_PAT = re.compile(r"^[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}$")
 _DN_CN_PAT = re.compile(r"(^|/)CN=")
@@ -292,7 +293,43 @@ def _strip_foreign_slack_ids(
     return result
 
 
-def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
+def record_added_aliases(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    before: list[str],
+    after: list[str],
+    *,
+    adapter: str | None,
+    observation_id: str | None,
+) -> None:
+    """Record an 'added' provenance row for each alias in after but not in before.
+
+    Writes nothing when adapter is None, since the alias source is unknown.
+    Does not commit; the caller owns the transaction.
+    """
+    if adapter is None:
+        return
+    present = set(before)
+    for alias in dict.fromkeys(after):
+        if alias in present:
+            continue
+        record_alias_provenance(
+            conn,
+            entity_id,
+            alias,
+            adapter=adapter,
+            action="added",
+            observation_id=observation_id,
+        )
+
+
+def upsert_entity(
+    conn: sqlite3.Connection,
+    entity: Entity,
+    *,
+    adapter: str | None = None,
+    observation_id: str | None = None,
+) -> None:
     existing_id = resolve_entity_id(conn, entity.name, entity.aliases)
 
     if existing_id and existing_id == entity.id:
@@ -317,6 +354,14 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
             "UPDATE entities SET aliases = ?, last_seen = ? WHERE id = ?",
             (json.dumps(merged_aliases), entity.last_seen, existing_id),
         )
+        record_added_aliases(
+            conn,
+            existing_id,
+            existing_aliases,
+            new_aliases,
+            adapter=adapter,
+            observation_id=observation_id,
+        )
         conn.commit()
         entity.id = existing_id
         return
@@ -339,6 +384,14 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
             "UPDATE entities SET name = ?, aliases = ?, last_seen = ? WHERE id = ?",
             (name, json.dumps(merged_aliases), entity.last_seen, entity.id),
         )
+        record_added_aliases(
+            conn,
+            entity.id,
+            existing_aliases,
+            new_aliases,
+            adapter=adapter,
+            observation_id=observation_id,
+        )
     else:
         safe_aliases = _strip_foreign_slack_ids(conn, entity.aliases, entity.id)
         conn.execute(
@@ -356,6 +409,14 @@ def upsert_entity(conn: sqlite3.Connection, entity: Entity) -> None:
                 entity.last_seen,
                 entity.decay_rate,
             ),
+        )
+        record_added_aliases(
+            conn,
+            entity.id,
+            [],
+            safe_aliases,
+            adapter=adapter,
+            observation_id=observation_id,
         )
     conn.commit()
 

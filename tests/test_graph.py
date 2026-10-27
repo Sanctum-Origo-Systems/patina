@@ -1169,3 +1169,110 @@ class TestResolveSinkHandleTiebreak:
         _raw_insert_entity(db_conn, "p-dana", "person", "Dana Brook", aliases=["@user_a"])
         _raw_insert_entity(db_conn, "p-evan", "person", "Evan Stone", aliases=["user_a"])
         assert resolve_entity_id(db_conn, "user_a") is None
+
+
+def _alias_provenance(conn, entity_id):
+    from patina.store import ensure_entity_alias_provenance_table
+
+    ensure_entity_alias_provenance_table(conn)
+    rows = conn.execute(
+        "SELECT alias, adapter, observation_id, action FROM entity_alias_provenance"
+        " WHERE entity_id = ? ORDER BY rowid",
+        (entity_id,),
+    ).fetchall()
+    return [tuple(r) for r in rows]
+
+
+class TestUpsertEntityAliasProvenance:
+    """#514: upsert_entity records 'added' rows for new aliases."""
+
+    def test_new_entity_records_added_row_per_alias(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e1",
+                type="person",
+                name="Dana Brook",
+                aliases=["U0000000A1", "slack:U0000000A1"],
+            ),
+            adapter="slack",
+            observation_id="obs1",
+        )
+
+        assert sorted(_alias_provenance(db_conn, "e1")) == [
+            ("U0000000A1", "slack", "obs1", "added"),
+            ("slack:U0000000A1", "slack", "obs1", "added"),
+        ]
+
+    def test_reupsert_existing_alias_writes_no_duplicate(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook", aliases=["U0000000A1"]),
+            adapter="slack",
+            observation_id="obs1",
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook", aliases=["U0000000A1"]),
+            adapter="slack",
+            observation_id="obs2",
+        )
+
+        assert _alias_provenance(db_conn, "e1") == [("U0000000A1", "slack", "obs1", "added")]
+
+    def test_only_new_alias_recorded_on_update(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook", aliases=["U0000000A1"]),
+            adapter="slack",
+            observation_id="obs1",
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook", aliases=["U0000000A1", "dbrook"]),
+            adapter="slack",
+            observation_id="obs2",
+        )
+
+        assert _alias_provenance(db_conn, "e1") == [
+            ("U0000000A1", "slack", "obs1", "added"),
+            ("dbrook", "slack", "obs2", "added"),
+        ]
+
+    def test_alias_added_to_resolved_entity_recorded_on_that_entity(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook", aliases=["U0000000A1"]),
+            adapter="slack",
+            observation_id="obs1",
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Dana Brook", aliases=["U0000000A1", "dbrook"]),
+            adapter="slack",
+            observation_id="obs2",
+        )
+
+        assert _alias_provenance(db_conn, "e1") == [
+            ("U0000000A1", "slack", "obs1", "added"),
+            ("dbrook", "slack", "obs2", "added"),
+        ]
+        assert _alias_provenance(db_conn, "e2") == []
+
+    def test_no_adapter_writes_no_provenance(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook", aliases=["U0000000A1"]),
+        )
+
+        assert _alias_provenance(db_conn, "e1") == []
+
+    def test_observation_id_none_recorded_as_null(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook", aliases=["U0000000A1"]),
+            adapter="slack",
+            observation_id=None,
+        )
+
+        assert _alias_provenance(db_conn, "e1") == [("U0000000A1", "slack", None, "added")]

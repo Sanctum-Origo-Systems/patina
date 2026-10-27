@@ -1236,3 +1236,114 @@ class TestExtractionRunPersistence:
         assert len(runs) == 1
         assert runs[0]["observations_processed"] == 0
         assert json.loads(runs[0]["by_source_json"]) == {}
+
+
+def _alias_provenance(conn, entity_id):
+    from patina.store import ensure_entity_alias_provenance_table
+
+    ensure_entity_alias_provenance_table(conn)
+    rows = conn.execute(
+        "SELECT alias, adapter, observation_id, action FROM entity_alias_provenance"
+        " WHERE entity_id = ? ORDER BY rowid",
+        (entity_id,),
+    ).fetchall()
+    return [tuple(r) for r in rows]
+
+
+def _dana_brook_response():
+    return json.dumps(
+        {
+            "entities": [
+                {"name": "Dana Brook", "aliases": ["Brook, Dana"], "type": "person"},
+            ],
+            "claims": [],
+            "relationships": [],
+            "behavioral": [],
+        }
+    )
+
+
+class TestExtractionAliasProvenance:
+    """#514: the extraction alias path records 'added' provenance rows."""
+
+    def test_new_entity_records_added_rows(self, db_conn):
+        entity_id, _ = _upsert_entity(
+            db_conn,
+            "Dana Brook",
+            ["Brook, Dana"],
+            adapter="slack",
+            observation_id="o1",
+        )
+
+        assert _alias_provenance(db_conn, entity_id) == [("Brook, Dana", "slack", "o1", "added")]
+
+    def test_alias_added_to_existing_entity_recorded(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Dana Brook"))
+
+        entity_id, _ = _upsert_entity(
+            db_conn,
+            "Dana Brook",
+            ["Brook, Dana"],
+            adapter="outlook",
+            observation_id="o2",
+        )
+
+        assert entity_id == "e1"
+        assert _alias_provenance(db_conn, "e1") == [("Brook, Dana", "outlook", "o2", "added")]
+
+    def test_existing_alias_writes_no_duplicate(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Brook", aliases=["Brook, Dana"]),
+        )
+
+        _upsert_entity(
+            db_conn,
+            "Dana Brook",
+            ["Brook, Dana"],
+            adapter="slack",
+            observation_id="o1",
+        )
+
+        assert _alias_provenance(db_conn, "e1") == []
+
+    def test_extract_beliefs_records_source_observation(self, db_conn, db_path, tmp_path):
+        _insert_obs(db_conn, "o1", "outlook_mcp_email", "Riley Park is based in Denver", ts=1.0)
+        _insert_obs(db_conn, "o2", "slack_live", "Dana Brook owns the roadmap", ts=2.0)
+        db_conn.close()
+
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_dana_brook_response()),
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            extract_beliefs(home=tmp_path, batch_size=5)
+
+        from patina.store import connect
+
+        conn = connect(db_path)
+        try:
+            entity_id = _resolve_entity_id(conn, "Dana Brook")
+            assert _alias_provenance(conn, entity_id) == [("Brook, Dana", "slack", "o2", "added")]
+        finally:
+            conn.close()
+
+    def test_extract_beliefs_unattributed_name_records_null_observation(
+        self, db_conn, db_path, tmp_path
+    ):
+        _insert_obs(db_conn, "o1", "slack_live", "The quick brown fox", ts=1.0)
+        db_conn.close()
+
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_dana_brook_response()),
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            extract_beliefs(home=tmp_path, batch_size=5)
+
+        from patina.store import connect
+
+        conn = connect(db_path)
+        try:
+            entity_id = _resolve_entity_id(conn, "Dana Brook")
+            assert _alias_provenance(conn, entity_id) == [("Brook, Dana", "slack", None, "added")]
+        finally:
+            conn.close()

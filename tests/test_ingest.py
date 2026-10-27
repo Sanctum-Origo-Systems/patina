@@ -1572,3 +1572,87 @@ def test_mention_path_resolves_owner_no_duplicate(tmp_path):
     ).fetchone()["cnt"]
     assert duplicate_check == 0, "no non-owner entity for U0OWNER2 should exist"
     conn.close()
+
+
+class _DanaBrookSlackPort:
+    @property
+    def platform(self) -> str:
+        return "slack"
+
+    def list_dm_messages(self, since: float) -> list[ChatMessage]:
+        return [
+            ChatMessage(
+                user_id="U0000000A1",
+                text="The quick brown fox",
+                timestamp=_FIXED_TS,
+                channel_id="D0000000A1",
+                user_name="Dana Brook",
+            ),
+        ]
+
+    def list_mentions(self, since: float) -> list[ChatMessage]:
+        return []
+
+    def list_channel_messages(self, channel_id, since):
+        return []
+
+    def get_thread(self, channel_id, thread_id):
+        return []
+
+
+def test_ingest_records_added_alias_provenance(tmp_path):
+    """#514: ingest writes 'added' alias provenance with adapter and observation id."""
+    from patina.store import connect, ensure_entity_alias_provenance_table, get_db_path
+
+    home = tmp_path / "live_home"
+    ingest_live(port=_DanaBrookSlackPort(), source="slack_live", home=home)
+
+    conn = connect(get_db_path(home))
+    try:
+        obs = conn.execute("SELECT id, sender_entity_id FROM observations").fetchone()
+        entity = conn.execute(
+            "SELECT aliases FROM entities WHERE id = ?", (obs["sender_entity_id"],)
+        ).fetchone()
+        ensure_entity_alias_provenance_table(conn)
+        rows = conn.execute(
+            "SELECT alias, adapter, observation_id, action FROM entity_alias_provenance"
+            " WHERE entity_id = ?",
+            (obs["sender_entity_id"],),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    aliases = json.loads(entity["aliases"])
+    assert "U0000000A1" in aliases
+    assert sorted(r["alias"] for r in rows) == sorted(aliases)
+    for r in rows:
+        assert r["action"] == "added"
+        assert r["adapter"] == "slack"
+        assert r["observation_id"] == obs["id"]
+
+
+def test_reingest_writes_no_duplicate_alias_provenance(tmp_path):
+    from patina.store import connect, get_db_path
+
+    home = tmp_path / "live_home"
+    ingest_live(port=_DanaBrookSlackPort(), source="slack_live", home=home)
+
+    conn = connect(get_db_path(home))
+    try:
+        before = conn.execute("SELECT COUNT(*) FROM entity_alias_provenance").fetchone()[0]
+        msgs = [
+            ChatMessage(
+                user_id="U0000000A1",
+                text="The quick brown fox jumps",
+                timestamp=_FIXED_TS + 50,
+                channel_id="D0000000A1",
+                user_name="Dana Brook",
+            ),
+        ]
+        _ingest_messages(conn, msgs, "slack_live", home=home)
+        after = conn.execute("SELECT COUNT(*) FROM entity_alias_provenance").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert before > 0
+    assert after == before

@@ -59,6 +59,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
         skipped = 0
         non_person_skipped = 0
         entity_ids_seen: set[str] = set()
+        family = _source_family("slack_export")
 
         for msg in messages:
             obs_id = _obs_id("slack_export", msg.channel_id, msg.thread_id, msg.timestamp)
@@ -86,7 +87,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
                 non_person_skipped += 1
             else:
                 sender = extract_sender_entity(msg.user_id, sender_name, conn=conn)
-                upsert_entity(conn, sender)
+                upsert_entity(conn, sender, adapter=family, observation_id=obs_id)
                 entity_ids_seen.add(sender.id)
 
                 if msg.user_id in owner_ids:
@@ -112,7 +113,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
                     resolved = users.get(ent.aliases[0]) if ent.aliases else None
                     if resolved:
                         ent.name = resolved
-                upsert_entity(conn, ent)
+                upsert_entity(conn, ent, adapter=family, observation_id=obs_id)
                 entity_ids_seen.add(ent.id)
 
         owner_id = get_owner_entity_id(conn)
@@ -200,7 +201,7 @@ def _ingest_messages(
             sender = extract_sender_entity(
                 msg.user_id, msg.user_name, source_family=family, conn=conn
             )
-            upsert_entity(conn, sender)
+            upsert_entity(conn, sender, adapter=family, observation_id=obs_id)
             sender_id = sender.id
 
             if is_owner_match:
@@ -225,7 +226,7 @@ def _ingest_messages(
                 if owner_identifiers & mention_tokens:
                     entity_ids_seen.add(owner_entity_id)
                     continue
-            upsert_entity(conn, ent)
+            upsert_entity(conn, ent, adapter=family, observation_id=obs_id)
             entity_ids_seen.add(ent.id)
 
     return inserted, skipped, non_person_skipped, entity_ids_seen

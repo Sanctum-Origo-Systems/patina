@@ -279,8 +279,10 @@ def _upsert_entity(
     *,
     owner_entity_id: str | None = None,
     owner_match_names: set[str] | None = None,
+    adapter: str | None = None,
+    observation_id: str | None = None,
 ) -> tuple[str, int]:
-    from patina.graph import normalize_name, resolve_entity_id
+    from patina.graph import normalize_name, record_added_aliases, resolve_entity_id
 
     name = name.strip()
     if not _is_plausible_person_name(name):
@@ -320,6 +322,14 @@ def _upsert_entity(
                         "UPDATE entities SET aliases = ? WHERE id = ?",
                         (json.dumps(merged), existing_id),
                     )
+                    record_added_aliases(
+                        conn,
+                        existing_id,
+                        existing_aliases,
+                        aliases,
+                        adapter=adapter,
+                        observation_id=observation_id,
+                    )
         return existing_id, collisions
 
     if _is_single_token_name(name):
@@ -342,14 +352,46 @@ def _upsert_entity(
         entity_id = _id("person", name)
 
     now = _iso_now()
-    conn.execute(
+    cur = conn.execute(
         """INSERT OR IGNORE INTO entities
            (id, type, name, aliases, metadata, first_seen, last_seen,
             decay_rate, is_owner)
            VALUES (?, 'person', ?, ?, '{}', ?, ?, 0.02, 0)""",
         (entity_id, name, json.dumps(aliases or []), now, now),
     )
+    if cur.rowcount:
+        record_added_aliases(
+            conn,
+            entity_id,
+            [],
+            aliases or [],
+            adapter=adapter,
+            observation_id=observation_id,
+        )
     return entity_id, collisions
+
+
+def _observation_for_name(
+    name: str,
+    batch: Sequence,
+    normalize: Callable[[str], str],
+):
+    """Attribute a name from a batch's LLM response to one observation row.
+
+    Prefers the observation whose sender matches the name, then the first one
+    whose text mentions it. Returns None when no observation matches.
+    """
+    needle = (name or "").strip().lower()
+    if needle:
+        norm = normalize(name)
+        for row in batch:
+            sender = row["sender_name"]
+            if sender and (sender.lower() == needle or (norm and normalize(sender) == norm)):
+                return row
+        for row in batch:
+            if needle in (row["text"] or "").lower():
+                return row
+    return None
 
 
 def _source_for_name(
@@ -359,19 +401,12 @@ def _source_for_name(
 ) -> str:
     """Attribute a name from a batch's LLM response to one observation's source.
 
-    Prefers the observation whose sender matches the name, then the first one
-    whose text mentions it, then falls back to the batch's most common source.
+    Uses the observation from _observation_for_name, then falls back to the
+    batch's most common source.
     """
-    needle = (name or "").strip().lower()
-    if needle:
-        norm = normalize(name)
-        for row in batch:
-            sender = row["sender_name"]
-            if sender and (sender.lower() == needle or (norm and normalize(sender) == norm)):
-                return row["source"]
-        for row in batch:
-            if needle in (row["text"] or "").lower():
-                return row["source"]
+    row = _observation_for_name(name, batch, normalize)
+    if row is not None:
+        return row["source"]
     return Counter(row["source"] for row in batch).most_common(1)[0][0]
 
 
@@ -419,6 +454,7 @@ def extract_beliefs(
 
     try:
         from patina.graph import normalize_name as _normalize_name
+        from patina.ingest import _source_family
         from patina.owner import get_owner_entity_id, get_owner_identifiers, normalize_alias
 
         owner_entity_id = get_owner_entity_id(conn)
@@ -526,15 +562,20 @@ def extract_beliefs(
             for ent in entities:
                 name = ent.get("name", "").strip()
                 if name and len(name) > 1 and ent.get("type") == "person":
+                    # A name matched to no single observation keeps the batch's
+                    # source but records no observation id.
+                    obs = _observation_for_name(name, batch, _normalize_name)
+                    source = _source_for_name(name, batch, _normalize_name)
                     _, collisions = _upsert_entity(
                         conn,
                         name,
                         ent.get("aliases", []),
                         owner_entity_id=owner_entity_id,
                         owner_match_names=owner_match_names,
+                        adapter=_source_family(source),
+                        observation_id=obs["id"] if obs is not None else None,
                     )
                     if collisions:
-                        source = _source_for_name(name, batch, _normalize_name)
                         _count(source, "alias_collisions", collisions)
 
             batch_names: set[str] = set()
