@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from patina.graph import (
+    IDENTIFIER_PRECEDENCE,
     _is_multi_identity,
     _name_type_rank,
     count_entities,
     count_observations,
     get_entity,
+    identifier_rank,
+    identifier_type,
     insert_claim,
     insert_observation,
     normalize_name,
@@ -1053,3 +1056,71 @@ class TestSlackIdUniquenessInvariant:
         ent = get_entity(db_conn, "eA")
         assert "U0EXAMPLE1" in ent.aliases
         assert "slack:U0EXAMPLE1" in ent.aliases
+
+
+_PRECEDENCE_SAMPLES = {
+    "slack_id": "U0000000A1",
+    "dn": "/O=EXAMPLEORG/OU=X/CN=RECIPIENTS/CN=DBROOK",
+    "email": "dbrook@example.com",
+    "handle": "dbrook",
+    "display_name": "Dana Brook",
+}
+_OPAQUE = ("slack_id", "dn")
+
+
+class TestIdentifierPrecedence:
+    """#511: single IDENTIFIER_PRECEDENCE contract for identity resolution."""
+
+    def test_precedence_order(self):
+        assert IDENTIFIER_PRECEDENCE == ("slack_id", "dn", "email", "handle", "display_name")
+
+    def test_identifier_type_classifies_samples(self):
+        for kind, sample in _PRECEDENCE_SAMPLES.items():
+            assert identifier_type(sample) == kind
+
+    def test_identifier_rank_order_matches_precedence(self):
+        ordered = sorted(_PRECEDENCE_SAMPLES, key=lambda k: identifier_rank(_PRECEDENCE_SAMPLES[k]))
+        assert tuple(ordered) == IDENTIFIER_PRECEDENCE
+
+    def test_name_type_rank_order_derived_from_precedence(self):
+        """Readable labels rank in reverse precedence; opaque IDs last, in precedence order."""
+        by_rank = sorted(_PRECEDENCE_SAMPLES, key=lambda k: _name_type_rank(_PRECEDENCE_SAMPLES[k]))
+        readable = [k for k in IDENTIFIER_PRECEDENCE if k not in _OPAQUE]
+        opaque = [k for k in IDENTIFIER_PRECEDENCE if k in _OPAQUE]
+        assert by_rank == list(reversed(readable)) + opaque
+        ranks = {_name_type_rank(s) for s in _PRECEDENCE_SAMPLES.values()}
+        assert len(ranks) == len(IDENTIFIER_PRECEDENCE)
+
+
+class TestTruncatedDnNotIdentifier:
+    """#511: a truncated DN (/O= without CN=) is never an identifier."""
+
+    TRUNCATED = "/O=EXAMPLEORG"
+    FULL = "/O=EXAMPLEORG/OU=X/CN=RECIPIENTS/CN=DBROOK"
+
+    def test_identifier_type(self):
+        assert identifier_type(self.TRUNCATED) is None
+        assert identifier_type("/o=exampleorg/ou=x") is None
+        assert identifier_type(self.FULL) == "dn"
+
+    def test_identifier_rank_after_every_identifier(self):
+        assert identifier_rank(self.TRUNCATED) == len(IDENTIFIER_PRECEDENCE)
+        assert identifier_rank(self.FULL) == IDENTIFIER_PRECEDENCE.index("dn")
+
+    def test_name_type_rank_never_outranks_an_identifier(self):
+        truncated = _name_type_rank(self.TRUNCATED)
+        assert all(truncated >= _name_type_rank(s) for s in _PRECEDENCE_SAMPLES.values())
+
+    def test_resolve_ignores_truncated_dn_name(self, db_conn):
+        _raw_insert_entity(db_conn, "e1", "person", self.TRUNCATED)
+        assert resolve_entity_id(db_conn, self.TRUNCATED) is None
+
+    def test_resolve_ignores_truncated_dn_alias(self, db_conn):
+        _raw_insert_entity(db_conn, "e1", "person", "Dana Brook", aliases=[self.TRUNCATED])
+        assert resolve_entity_id(db_conn, "Zed Query", aliases=[self.TRUNCATED]) is None
+
+    def test_resolve_uses_full_dn_name_and_alias(self, db_conn):
+        _raw_insert_entity(db_conn, "e1", "person", "Dana Brook", aliases=[self.FULL])
+        _raw_insert_entity(db_conn, "e2", "person", self.FULL + "-2")
+        assert resolve_entity_id(db_conn, "Zed Query", aliases=[self.FULL]) == "e1"
+        assert resolve_entity_id(db_conn, self.FULL + "-2") == "e2"

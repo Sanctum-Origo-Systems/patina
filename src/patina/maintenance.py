@@ -10,7 +10,14 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from patina.graph import _is_multi_identity, resolve_entity_id
+from patina.graph import _SLACK_ID_PAT as _SLACK_ID_RE
+from patina.graph import (
+    IDENTIFIER_PRECEDENCE,
+    _is_multi_identity,
+    identifier_type,
+    resolve_entity_id,
+)
+from patina.graph import _name_type_rank as _graph_name_type_rank
 from patina.graph import normalize_name as _graph_normalize
 
 
@@ -245,7 +252,6 @@ _NON_NAME_NOUNS = frozenset(
 )
 
 
-_SLACK_ID_RE = re.compile(r"^[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}$")
 _SLACK_ID_EXTRACT_RE = re.compile(r"^(?:slack:)?([UW][A-Z0-9]{4,})$", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"^[a-z][a-z0-9_]{1,}$")
 
@@ -286,17 +292,8 @@ def is_plausible_person_name(name: str) -> bool:
 
 
 def _name_type_rank(name: str) -> int:
-    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3) > DN (4)."""
-    upper = name.upper()
-    if upper.startswith("/O=") or "CN=" in upper:
-        return 4
-    if " " in name and is_plausible_person_name(name):
-        return 0
-    if "@" in name:
-        return 2
-    if _SLACK_ID_RE.match(name):
-        return 3
-    return 1
+    """Graph display-label rank; a spaced name must also look like a person."""
+    return _graph_name_type_rank(name, is_display_name=is_plausible_person_name)
 
 
 def is_non_person(name: str) -> bool:
@@ -553,13 +550,9 @@ def merge_entities(
     return result
 
 
-_CN_RE = re.compile(r"(^|/)CN=")
-
-
 def _is_truncated_dn(value: str) -> bool:
-    """Return True for legacy DNs that lack a CN component."""
-    normalized = value.strip().upper()
-    return bool(_LEGACY_DN_RE.match(normalized)) and not _CN_RE.search(normalized)
+    """Return True for legacy DNs that lack a CN component (never an identifier)."""
+    return identifier_type(value.strip()) is None
 
 
 def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
@@ -1408,15 +1401,17 @@ def split_dn_sink(
         target_id: str | None = None
         target_name: str | None = None
 
-        if handle:
-            hits = person_alias_lookup.get(_normalize_for_dedup(handle), set())
-            if len(hits) == 1:
-                target_id = next(iter(hits))
-
-        if not target_id and smtp:
-            tid = resolve_entity_id(conn, smtp)
-            if tid and tid != entity_id:
-                target_id = tid
+        for kind in IDENTIFIER_PRECEDENCE:
+            if target_id:
+                break
+            if kind == "email" and smtp:
+                tid = resolve_entity_id(conn, smtp)
+                if tid and tid != entity_id:
+                    target_id = tid
+            elif kind == "handle" and handle:
+                hits = person_alias_lookup.get(_normalize_for_dedup(handle), set())
+                if len(hits) == 1:
+                    target_id = next(iter(hits))
 
         if target_id:
             for ent in all_entities:
@@ -1460,7 +1455,8 @@ def split_dn_sink(
         ch: next(iter(ids)) for ch, ids in channel_slack_ids.items() if len(ids) == 1
     }
 
-    # Resolve routing target for each observation using source-specific keys
+    # Resolve routing target for each observation using source-specific keys,
+    # tried in IDENTIFIER_PRECEDENCE order
     obs_routing: list[tuple] = []
     unroutable_by_source: dict[str, int] = {}
 
@@ -1471,24 +1467,28 @@ def split_dn_sink(
         target_id = None
         backfills: dict[str, str] = {}
 
-        # sender_dn (direct or backfilled from channel peers)
-        sender_dn = meta.get("sender_dn", "")
-        if not sender_dn and channel_id in channel_dn_map:
-            sender_dn = channel_dn_map[channel_id]
-            backfills["sender_dn"] = sender_dn
-        if sender_dn and sender_dn in dn_to_target:
-            target_id = dn_to_target[sender_dn]
+        for kind in IDENTIFIER_PRECEDENCE:
+            if target_id:
+                break
+            if kind == "slack_id" and source.startswith("slack"):
+                # sender_slack_id (direct or backfilled from channel peers)
+                slack_id = meta.get("sender_slack_id", "")
+                if not slack_id and channel_id in channel_slack_id_map:
+                    slack_id = channel_slack_id_map[channel_id]
+                    backfills["sender_slack_id"] = slack_id
+                if slack_id:
+                    target_id = _resolve_key_via_aliases(slack_id, person_alias_lookup, entity_id)
+            elif kind == "dn":
+                # sender_dn (direct or backfilled from channel peers)
+                sender_dn = meta.get("sender_dn", "")
+                if not sender_dn and channel_id in channel_dn_map:
+                    sender_dn = channel_dn_map[channel_id]
+                    backfills["sender_dn"] = sender_dn
+                if sender_dn and sender_dn in dn_to_target:
+                    target_id = dn_to_target[sender_dn]
 
-        # Slack: sender_slack_id (direct or backfilled from channel peers)
-        if not target_id and source.startswith("slack"):
-            slack_id = meta.get("sender_slack_id", "")
-            if not slack_id and channel_id in channel_slack_id_map:
-                slack_id = channel_slack_id_map[channel_id]
-                backfills["sender_slack_id"] = slack_id
-            if slack_id:
-                target_id = _resolve_key_via_aliases(slack_id, person_alias_lookup, entity_id)
-
-        # Calendar: organizer_dn (direct or backfilled from observation text)
+        # Calendar: organizer (direct or backfilled from observation text) is a
+        # display-name key, the weakest identifier, so it is tried last
         if not target_id and channel_id.startswith("calendar:"):
             org = meta.get("organizer_dn", "")
             if not org:

@@ -3,25 +3,84 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Callable
 
 from patina.models import Claim, Entity, Observation, Relationship
 from patina.owner import normalize_alias
 
 _SLACK_ID_PAT = re.compile(r"^[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}$")
+_DN_CN_PAT = re.compile(r"(^|/)CN=")
+
+# --- Identity contract (#444/#447/#511) ---
+# Identifier types, strongest first. This is the single source of truth for
+# which identifier wins when resolving, deduplicating or splitting entities;
+# see docs/features/identity-precedence.md.
+IDENTIFIER_PRECEDENCE: tuple[str, ...] = (
+    "slack_id",
+    "dn",
+    "email",
+    "handle",
+    "display_name",
+)
+
+# Machine identifiers that carry no human-readable label.
+_OPAQUE_IDENTIFIERS = frozenset({"slack_id", "dn"})
+
+# Display-label preference (lower is better), derived from the precedence:
+# readable identifiers in reverse (a full name reads better than a handle or an
+# email), then opaque machine IDs strongest first.
+_DISPLAY_ORDER: tuple[str, ...] = tuple(
+    t for t in reversed(IDENTIFIER_PRECEDENCE) if t not in _OPAQUE_IDENTIFIERS
+) + tuple(t for t in IDENTIFIER_PRECEDENCE if t in _OPAQUE_IDENTIFIERS)
 
 
-def _name_type_rank(name: str) -> int:
-    """Rank: full name (0) > handle (1) > email (2) > raw Slack ID (3) > DN (4)."""
+def identifier_type(
+    name: str,
+    *,
+    is_display_name: Callable[[str], bool] | None = None,
+) -> str | None:
+    """Classify *name* as an IDENTIFIER_PRECEDENCE type.
+
+    Returns None for a truncated DN (``/O=`` without ``CN=``), which is never
+    an identifier. *is_display_name* can veto the display-name type for
+    spaced tokens; vetoed tokens fall through to email or handle.
+    """
     upper = name.upper()
-    if upper.startswith("/O=") or "CN=" in upper:
-        return 4
-    if " " in name:
-        return 0
+    if upper.startswith("/O="):
+        return "dn" if _DN_CN_PAT.search(upper) else None
+    if "CN=" in upper:
+        return "dn"
+    if " " in name and (is_display_name is None or is_display_name(name)):
+        return "display_name"
     if "@" in name:
-        return 2
+        return "email"
     if _SLACK_ID_PAT.match(name):
-        return 3
-    return 1
+        return "slack_id"
+    return "handle"
+
+
+def identifier_rank(name: str) -> int:
+    """Precedence rank of *name* (0 = strongest); non-identifiers rank last."""
+    kind = identifier_type(name)
+    if kind is None:
+        return len(IDENTIFIER_PRECEDENCE)
+    return IDENTIFIER_PRECEDENCE.index(kind)
+
+
+def _name_type_rank(
+    name: str,
+    *,
+    is_display_name: Callable[[str], bool] | None = None,
+) -> int:
+    """Display-label rank: full name (0) > handle (1) > email (2) > Slack ID (3) > DN (4).
+
+    A truncated DN is not an identifier, so it never outranks one: it shares
+    the last slot with the full DN.
+    """
+    kind = identifier_type(name, is_display_name=is_display_name)
+    if kind is None:
+        return len(_DISPLAY_ORDER) - 1
+    return _DISPLAY_ORDER.index(kind)
 
 
 _SLACK_ID_EXTRACT_PAT = re.compile(r"^(?:slack:)?([UW][A-Z0-9]{4,})$", re.IGNORECASE)
@@ -61,8 +120,7 @@ def resolve_entity_id(
     if not name or not name.strip():
         return None
 
-    name_upper = name.strip().upper()
-    if name_upper.startswith("/O=") and "CN=" not in name_upper:
+    if identifier_type(name.strip()) is None:
         return None
 
     non_owner_rows = None
@@ -80,7 +138,7 @@ def resolve_entity_id(
             if not alias:
                 continue
             stripped = normalize_alias(alias)
-            if _SLACK_ID_PAT.match(stripped):
+            if identifier_type(stripped) == "slack_id":
                 incoming_slack_ids.add(stripped)
 
         if incoming_slack_ids:
@@ -116,7 +174,7 @@ def resolve_entity_id(
                             bare_slack_ids = set()
                             for sa in json.loads(r["aliases"] or "[]"):
                                 bare = normalize_alias(sa)
-                                if _SLACK_ID_PAT.match(bare):
+                                if identifier_type(bare) == "slack_id":
                                     bare_slack_ids.add(bare)
                             if len(bare_slack_ids) == 1:
                                 clean.append(r)
@@ -164,18 +222,24 @@ def resolve_entity_id(
             if len(alias_matches) == 1:
                 return alias_matches.pop()
 
-    # --- Phase 5: Provided non-Slack-ID aliases (ambiguity-safe) ---
+    # --- Phase 5: Provided non-Slack-ID aliases, in IDENTIFIER_PRECEDENCE order ---
     if aliases:
         if non_owner_rows is None:
             non_owner_rows = conn.execute(
                 "SELECT id, name, aliases FROM entities WHERE is_owner = 0"
             ).fetchall()
+        ranked: list[tuple[int, str]] = []
         for alias in aliases:
             if not alias:
                 continue
             stripped = normalize_alias(alias)
-            if _SLACK_ID_PAT.match(stripped):
+            kind = identifier_type(stripped)
+            # Slack IDs were handled in phase 2; truncated DNs are not identifiers.
+            if kind is None or kind == "slack_id":
                 continue
+            ranked.append((IDENTIFIER_PRECEDENCE.index(kind), stripped))
+        ranked.sort(key=lambda item: item[0])
+        for _, stripped in ranked:
             matches: set[str] = set()
             for r in non_owner_rows:
                 for stored_alias in json.loads(r["aliases"] or "[]"):

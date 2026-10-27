@@ -5,13 +5,16 @@ import json
 import pytest
 
 from patina.graph import (
+    IDENTIFIER_PRECEDENCE,
     get_entity,
+    identifier_type,
     insert_claim,
     insert_observation,
     resolve_entity_id,
     upsert_entity,
     upsert_relationship,
 )
+from patina.graph import _name_type_rank as _graph_name_type_rank
 from patina.maintenance import (
     StaleSnapshotError,
     _collect_slack_ids,
@@ -3620,3 +3623,94 @@ def test_cli_repair_multi_identity(db_path):
     row = conn.execute("SELECT name FROM entities WHERE id = 'sink'").fetchone()
     assert row["name"] == "/O=EXAMPLEORG/OU=X"
     conn.close()
+
+
+# ── IDENTIFIER_PRECEDENCE contract (#511) ─────────────────────
+
+_PRECEDENCE_SAMPLES = {
+    "slack_id": "U0000000A1",
+    "dn": f"{_DN_PREFIX}{_GUID}-BFENN",
+    "email": "clund@example.com",
+    "handle": "dhale",
+    "display_name": "Dana Brook",
+}
+
+
+def test_maintenance_name_type_rank_matches_graph_rank():
+    """Maintenance and graph share one rank derived from IDENTIFIER_PRECEDENCE."""
+    for sample in _PRECEDENCE_SAMPLES.values():
+        assert _name_type_rank(sample) == _graph_name_type_rank(sample)
+
+
+def test_maintenance_name_type_rank_types_follow_precedence():
+    """Readable labels rank in reverse precedence; opaque IDs last, in precedence order."""
+    by_rank = sorted(_PRECEDENCE_SAMPLES, key=lambda k: _name_type_rank(_PRECEDENCE_SAMPLES[k]))
+    opaque = ("slack_id", "dn")
+    readable = [k for k in IDENTIFIER_PRECEDENCE if k not in opaque]
+    assert by_rank == list(reversed(readable)) + [k for k in IDENTIFIER_PRECEDENCE if k in opaque]
+
+
+def test_maintenance_name_type_rank_implausible_spaced_name_is_handle():
+    assert identifier_type("the quick fox") == "display_name"
+    assert _name_type_rank("the quick fox") == _name_type_rank(_PRECEDENCE_SAMPLES["handle"])
+
+
+def test_resolve_entity_id_phases_follow_precedence(db_conn):
+    """With every alias matching a different entity, the strongest type wins."""
+    owners = {
+        "slack_id": ("p-slack", "Avery Stone"),
+        "dn": ("p-dn", "Blair Fenn"),
+        "email": ("p-email", "Casey Lund"),
+        "handle": ("p-handle", "Drew Hale"),
+        "display_name": ("p-name", "Emery Vos"),
+    }
+    for kind, (eid, name) in owners.items():
+        _add_person(db_conn, eid, name, [_PRECEDENCE_SAMPLES[kind]])
+    db_conn.commit()
+
+    weakest_first = list(reversed(IDENTIFIER_PRECEDENCE))
+    for n in range(len(weakest_first), 0, -1):
+        present = weakest_first[:n]
+        aliases = [_PRECEDENCE_SAMPLES[k] for k in present]
+        strongest = min(present, key=IDENTIFIER_PRECEDENCE.index)
+        assert resolve_entity_id(db_conn, "Zed Query", aliases) == owners[strongest][0]
+
+
+def test_truncated_dn_is_not_an_identifier(db_conn):
+    truncated = "/O=EXAMPLEORG"
+    full = _PRECEDENCE_SAMPLES["dn"]
+    assert identifier_type(truncated) is None
+    assert identifier_type(full) == "dn"
+    assert _is_truncated_dn(truncated)
+    assert not _is_truncated_dn(full)
+    truncated_rank = _name_type_rank(truncated)
+    assert all(truncated_rank >= _name_type_rank(s) for s in _PRECEDENCE_SAMPLES.values())
+
+    _add_person(db_conn, "p-trunc", "Dana Brook", [truncated])
+    _add_person(db_conn, "p-full", "Blair Fenn", [full])
+    db_conn.commit()
+    assert resolve_entity_id(db_conn, "Zed Query", [truncated]) is None
+    assert resolve_entity_id(db_conn, truncated) is None
+    assert resolve_entity_id(db_conn, "Zed Query", [full]) == "p-full"
+
+
+def test_split_dn_sink_routes_slack_id_before_dn(db_conn):
+    """An observation carrying both keys routes by the stronger Slack ID."""
+    full_dn_a = f"{_DN_PREFIX}{_GUID}-AHANDLE"
+    _add_person(db_conn, "p-a", "Alice Tran", ["ahandle"])
+    _add_person(db_conn, "p-b", "Bob Marsh", ["U0000000B2"])
+    _add_person(db_conn, "sink", "/O=EXAMPLEORG", [full_dn_a])
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-both', 'slack_export', 'C001', 1000.0, 'sink',"
+        "  'The quick brown fox', ?, '2025-01-01T00:00:00+00:00', 1)",
+        (json.dumps({"sender_dn": full_dn_a, "sender_slack_id": "U0000000B2"}),),
+    )
+    db_conn.commit()
+
+    split_dn_sink(db_conn, "sink", dry_run=False)
+
+    row = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'obs-both'")
+    assert row.fetchone()["sender_entity_id"] == "p-b"
