@@ -783,6 +783,75 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
         )
         conn.commit()
 
+    row = conn.execute(
+        "SELECT 1 FROM migrations WHERE name = 'add_extraction_runs_table_v1'"
+    ).fetchone()
+    if not row:
+        ensure_extraction_runs_table(conn)
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('add_extraction_runs_table_v1', datetime('now'))"
+        )
+        conn.commit()
+
+
+def ensure_extraction_runs_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS extraction_runs (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               started_at TEXT NOT NULL,
+               finished_at TEXT NOT NULL,
+               model TEXT NOT NULL,
+               observations_processed INTEGER NOT NULL DEFAULT 0,
+               claims_extracted INTEGER NOT NULL DEFAULT 0,
+               skipped_unresolved INTEGER NOT NULL DEFAULT 0,
+               alias_collisions INTEGER NOT NULL DEFAULT 0,
+               empty_skipped INTEGER NOT NULL DEFAULT 0,
+               errors INTEGER NOT NULL DEFAULT 0,
+               by_source_json TEXT NOT NULL DEFAULT '{}'
+           )"""
+    )
+
+
+def record_extraction_run(
+    conn: sqlite3.Connection,
+    *,
+    started_at: str,
+    finished_at: str,
+    model: str,
+    stats: dict,
+    by_source: dict[str, dict[str, int]],
+) -> int:
+    ensure_extraction_runs_table(conn)
+    cur = conn.execute(
+        """INSERT INTO extraction_runs
+           (started_at, finished_at, model, observations_processed,
+            claims_extracted, skipped_unresolved, alias_collisions,
+            empty_skipped, errors, by_source_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            started_at,
+            finished_at,
+            model,
+            stats["observations_processed"],
+            stats["claims_extracted"],
+            stats["skipped_unresolved"],
+            stats["alias_collisions"],
+            stats["empty_skipped"],
+            stats["errors"],
+            json.dumps(by_source, sort_keys=True),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_recent_extraction_runs(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
+    ensure_extraction_runs_table(conn)
+    return conn.execute(
+        "SELECT * FROM extraction_runs ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+
 
 def get_open_draft_reply_for_channel(
     conn: sqlite3.Connection,

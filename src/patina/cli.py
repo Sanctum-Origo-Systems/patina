@@ -208,9 +208,22 @@ def extract_cmd(
     source: str | None = typer.Option(
         None, "--source", help="Reprocess observations from this source"
     ),
+    history: bool = typer.Option(
+        False, "--history", help="Show the last N extraction runs instead of extracting"
+    ),
+    history_count: int | None = typer.Argument(
+        None, metavar="[N]", help="Number of runs for --history (default 10)", min=1
+    ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Extract beliefs from unprocessed observations via LLM."""
+    if history:
+        _print_extraction_history(history_count or 10, home)
+        return
+    if history_count is not None:
+        typer.echo("N is only valid with --history.", err=True)
+        raise typer.Exit(2)
+
     if reprocess:
         from patina.maintenance import reprocess_observations
 
@@ -239,6 +252,47 @@ def extract_cmd(
         dry_run=dry_run,
         home=home,
     )
+
+
+def _print_extraction_history(limit: int, home: Path | None) -> None:
+    import json
+
+    from patina.store import get_recent_extraction_runs
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        runs = get_recent_extraction_runs(conn, limit)
+    finally:
+        conn.close()
+
+    if not runs:
+        typer.echo("No extraction runs recorded.")
+        return
+
+    typer.echo(
+        f"{'Date':<20} {'Processed':>9} {'Skipped':>8} {'Collisions':>10}  Top source (skips)"
+    )
+    for run in runs:
+        by_source = json.loads(run["by_source_json"] or "{}")
+        top = max(
+            by_source.items(),
+            key=lambda kv: kv[1].get("skipped_unresolved", 0),
+            default=None,
+        )
+        if top and top[1].get("skipped_unresolved", 0):
+            top_label = f"{top[0]} ({top[1]['skipped_unresolved']})"
+        else:
+            top_label = "-"
+        date = run["started_at"][:19].replace("T", " ")
+        typer.echo(
+            f"{date:<20} {run['observations_processed']:>9} "
+            f"{run['skipped_unresolved']:>8} {run['alias_collisions']:>10}  {top_label}"
+        )
 
 
 def _get_discovery_threshold(home: Path | None) -> int:

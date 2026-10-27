@@ -10,11 +10,13 @@ import hashlib
 import json
 import subprocess
 import time
+from collections import Counter
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
 from patina.maintenance import is_plausible_person_name as _is_plausible_person_name
-from patina.store import connect, get_db_path, init_db
+from patina.store import connect, get_db_path, init_db, record_extraction_run
 
 EXTRACTION_PROMPT = """\
 Analyze these messages and extract structured beliefs about people and their relationships.
@@ -350,6 +352,29 @@ def _upsert_entity(
     return entity_id, collisions
 
 
+def _source_for_name(
+    name: str,
+    batch: Sequence,
+    normalize: Callable[[str], str],
+) -> str:
+    """Attribute a name from a batch's LLM response to one observation's source.
+
+    Prefers the observation whose sender matches the name, then the first one
+    whose text mentions it, then falls back to the batch's most common source.
+    """
+    needle = (name or "").strip().lower()
+    if needle:
+        norm = normalize(name)
+        for row in batch:
+            sender = row["sender_name"]
+            if sender and (sender.lower() == needle or (norm and normalize(sender) == norm)):
+                return row["source"]
+        for row in batch:
+            if needle in (row["text"] or "").lower():
+                return row["source"]
+    return Counter(row["source"] for row in batch).most_common(1)[0][0]
+
+
 def extract_beliefs(
     *,
     batch_size: int = 10,
@@ -361,6 +386,7 @@ def extract_beliefs(
     db_path = get_db_path(home)
     init_db(db_path)
     conn = connect(db_path)
+    started_at = _iso_now()
 
     stats = {
         "observations_processed": 0,
@@ -372,6 +398,24 @@ def extract_beliefs(
         "alias_collisions": 0,
         "empty_skipped": 0,
     }
+    # Per observation source: skip and collision counts for this run.
+    by_source: dict[str, dict[str, int]] = {}
+
+    def _count(source: str, key: str, n: int = 1) -> None:
+        stats[key] += n
+        by_source[source][key] += n
+
+    def _record_run() -> None:
+        if dry_run:
+            return
+        record_extraction_run(
+            conn,
+            started_at=started_at,
+            finished_at=_iso_now(),
+            model=model,
+            stats=stats,
+            by_source=by_source,
+        )
 
     try:
         from patina.graph import normalize_name as _normalize_name
@@ -427,6 +471,7 @@ def extract_beliefs(
 
         if not rows:
             print("No unprocessed observations found.")
+            _record_run()
             return stats
 
         print(f"Processing {len(rows)} observations in batches of {batch_size}...")
@@ -459,6 +504,11 @@ def extract_beliefs(
                 stats["observations_processed"] += len(batch)
                 continue
 
+            for row in batch:
+                by_source.setdefault(
+                    row["source"], {"skipped_unresolved": 0, "alias_collisions": 0}
+                )
+
             response = _call_claude(prompt, model=model)
             if not response:
                 print("[no response]")
@@ -483,7 +533,9 @@ def extract_beliefs(
                         owner_entity_id=owner_entity_id,
                         owner_match_names=owner_match_names,
                     )
-                    stats["alias_collisions"] += collisions
+                    if collisions:
+                        source = _source_for_name(name, batch, _normalize_name)
+                        _count(source, "alias_collisions", collisions)
 
             batch_names: set[str] = set()
             for row in batch:
@@ -511,7 +563,8 @@ def extract_beliefs(
                     owner_match_names=owner_match_names,
                 )
                 if not subject_id:
-                    stats["skipped_unresolved"] += 1
+                    source = _source_for_name(subject_name, batch, _normalize_name)
+                    _count(source, "skipped_unresolved")
                     continue
                 claim_id = _id(
                     "claim",
@@ -555,7 +608,9 @@ def extract_beliefs(
                     owner_match_names=owner_match_names,
                 )
                 if not subject_id or not object_id:
-                    stats["skipped_unresolved"] += 1
+                    unresolved = rel.get("subject", "") if not subject_id else rel.get("object", "")
+                    source = _source_for_name(unresolved, batch, _normalize_name)
+                    _count(source, "skipped_unresolved")
                     continue
                 rel_id = _id(
                     "rel",
@@ -592,7 +647,8 @@ def extract_beliefs(
                     owner_match_names=owner_match_names,
                 )
                 if not subject_id:
-                    stats["skipped_unresolved"] += 1
+                    source = _source_for_name(subject_name, batch, _normalize_name)
+                    _count(source, "skipped_unresolved")
                     continue
                 predicate = f"behavioral:{beh.get('predicate', 'pattern')}"
                 claim_id = _id(
@@ -640,13 +696,12 @@ def extract_beliefs(
         print(f"  Claims extracted:       {stats['claims_extracted']}")
         print(f"  Relationships found:    {stats['relationships_extracted']}")
         print(f"  Batches sent to LLM:    {stats['batches_sent']}")
-        if stats["skipped_unresolved"]:
-            print(f"  Skipped (unresolved):   {stats['skipped_unresolved']}")
-        if stats["alias_collisions"]:
-            print(f"  Alias collisions:       {stats['alias_collisions']}")
+        print(f"  Skipped (unresolved):   {stats['skipped_unresolved']}")
+        print(f"  Alias collisions:       {stats['alias_collisions']}")
         if stats["errors"]:
             print(f"  Errors:                 {stats['errors']}")
 
+        _record_run()
         return stats
 
     finally:

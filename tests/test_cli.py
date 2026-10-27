@@ -122,6 +122,122 @@ def test_status_after_init(tmp_path):
     assert "Entities" in result.output
 
 
+def _seed_extraction_runs(tmp_path):
+    from patina.store import record_extraction_run
+
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    conn = connect(db_path)
+    base = {
+        "observations_processed": 0,
+        "claims_extracted": 0,
+        "skipped_unresolved": 0,
+        "alias_collisions": 0,
+        "empty_skipped": 0,
+        "errors": 0,
+    }
+    runs = [
+        ("2026-10-23T09:00:00+00:00", 100, 7, 1, {"slack_live": 7}),
+        ("2026-10-24T09:00:00+00:00", 200, 11, 2, {"slack_live": 3, "outlook_mcp_email": 8}),
+        ("2026-10-25T09:00:00+00:00", 300, 13, 3, {"slack_live": 9, "outlook_mcp_email": 4}),
+    ]
+    for started, processed, skipped, collisions, skips_by_source in runs:
+        record_extraction_run(
+            conn,
+            started_at=started,
+            finished_at=started,
+            model="sonnet",
+            stats=base
+            | {
+                "observations_processed": processed,
+                "skipped_unresolved": skipped,
+                "alias_collisions": collisions,
+            },
+            by_source={
+                src: {"skipped_unresolved": n, "alias_collisions": 0}
+                for src, n in skips_by_source.items()
+            },
+        )
+    conn.close()
+
+
+def test_extract_history_prints_most_recent_runs_newest_first(tmp_path):
+    _seed_extraction_runs(tmp_path)
+
+    result = runner.invoke(app, ["extract", "--history", "2", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.strip().splitlines()
+    assert lines[0].split() == [
+        "Date",
+        "Processed",
+        "Skipped",
+        "Collisions",
+        "Top",
+        "source",
+        "(skips)",
+    ]
+    assert len(lines) == 3
+    assert lines[1].split() == ["2026-10-25", "09:00:00", "300", "13", "3", "slack_live", "(9)"]
+    assert lines[2].split() == [
+        "2026-10-24",
+        "09:00:00",
+        "200",
+        "11",
+        "2",
+        "outlook_mcp_email",
+        "(8)",
+    ]
+
+
+def test_extract_history_defaults_to_ten(tmp_path, monkeypatch):
+    _seed_extraction_runs(tmp_path)
+    called = {}
+    monkeypatch.setattr(
+        "patina.cli._print_extraction_history",
+        lambda limit, home: called.setdefault("limit", limit),
+    )
+
+    result = runner.invoke(app, ["extract", "--history", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert called["limit"] == 10
+
+
+def test_extract_history_does_not_extract(tmp_path, monkeypatch):
+    _seed_extraction_runs(tmp_path)
+
+    def boom(**kwargs):
+        raise AssertionError("extract_beliefs should not run with --history")
+
+    monkeypatch.setattr("patina.beliefs.extractor.extract_beliefs", boom)
+
+    result = runner.invoke(app, ["extract", "--history", "5", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "2026-10-23" in result.output
+
+
+def test_extract_count_without_history_rejected(tmp_path, monkeypatch):
+    def boom(**kwargs):
+        raise AssertionError("extract_beliefs should not run")
+
+    monkeypatch.setattr("patina.beliefs.extractor.extract_beliefs", boom)
+
+    result = runner.invoke(app, ["extract", "5", "--home", str(tmp_path)])
+
+    assert result.exit_code == 2
+
+
+def test_extract_history_empty(tmp_path):
+    init_db(get_db_path(tmp_path))
+
+    result = runner.invoke(app, ["extract", "--history", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "No extraction runs recorded." in result.output
+
+
 def _fake_ingest_all(channels_seen=0, newly_watched=0, zero_streak=0):
     def fake(*, home=None, lookback_days=3):
         return {
