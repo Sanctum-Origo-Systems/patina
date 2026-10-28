@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from patina.extraction import (
+    _make_id,
     extract_entities_from_text,
     extract_sender_entity,
     is_non_person_sender,
+    sanitize_reference_url,
     strip_slack_link_markup,
 )
 from patina.owner import normalize_alias
@@ -293,3 +297,94 @@ class TestExtractSenderSlackIdPrecedence:
         assert e is not None
         assert e.name == "Kai Tanaka"
         assert "U0KAITANA" in e.aliases
+
+
+class TestSanitizeReferenceUrl:
+    def test_strips_meeting_pwd(self):
+        assert (
+            sanitize_reference_url("https://meet.example.com/j/123?pwd=AbC123")
+            == "https://meet.example.com/j/123"
+        )
+
+    def test_strips_amz_params(self):
+        url = "https://files.example.com/a.pdf?X-Amz-Signature=abc&X-Amz-Credential=xyz&v=2"
+        assert sanitize_reference_url(url) == "https://files.example.com/a.pdf?v=2"
+
+    def test_strips_amz_security_token(self):
+        url = "https://files.example.com/a.pdf?v=2&X-Amz-Security-Token=tok123"
+        assert sanitize_reference_url(url) == "https://files.example.com/a.pdf?v=2"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "pwd",
+            "password",
+            "passcode",
+            "token",
+            "access_token",
+            "key",
+            "api_key",
+            "sig",
+            "signature",
+        ],
+    )
+    @pytest.mark.parametrize("case", [str.lower, str.upper, str.title])
+    def test_strips_each_credential_param(self, name, case):
+        param = case(name)
+        url = f"https://example.com/p?a=1&{param}=s3cret&b=2"
+        result = sanitize_reference_url(url)
+        assert result == "https://example.com/p?a=1&b=2"
+        assert "s3cret" not in result
+
+    def test_no_credentials_unchanged(self):
+        url = "https://example.com/p?b=2&a=1#frag"
+        assert sanitize_reference_url(url) == url
+
+    def test_mixed_params_keep_order_and_fragment(self):
+        url = "https://example.com/p?z=9&token=abc&a=1&Sig=def&m=5#section-2"
+        assert sanitize_reference_url(url) == "https://example.com/p?z=9&a=1&m=5#section-2"
+
+    def test_all_credentials_no_trailing_question_mark(self):
+        url = "https://example.com/p?pwd=a&token=b&X-Amz-Date=c"
+        assert sanitize_reference_url(url) == "https://example.com/p"
+
+    def test_all_credentials_with_fragment(self):
+        url = "https://example.com/p?pwd=a#frag"
+        assert sanitize_reference_url(url) == "https://example.com/p#frag"
+
+    def test_no_query_unchanged(self):
+        url = "https://example.com/p#frag"
+        assert sanitize_reference_url(url) == url
+
+    def test_similar_param_names_kept(self):
+        url = "https://example.com/p?keyword=x&monkey=y&tokens=z"
+        assert sanitize_reference_url(url) == url
+
+
+class TestReferenceEntitySanitization:
+    def test_reference_name_has_no_credential(self):
+        entities = extract_entities_from_text(
+            "Join here: https://meet.example.com/j/123?pwd=AbC123"
+        )
+        refs = [e for e in entities if e.type == "reference"]
+        assert len(refs) == 1
+        assert refs[0].name == "https://meet.example.com/j/123"
+        assert "AbC123" not in refs[0].name
+        assert "pwd=" not in refs[0].name
+
+    def test_same_link_different_pwd_same_entity(self):
+        a = extract_entities_from_text("Call: https://meet.example.com/j/123?pwd=AbC123")
+        b = extract_entities_from_text("Call: https://meet.example.com/j/123?pwd=ZyX987")
+        ref_a = next(e for e in a if e.type == "reference")
+        ref_b = next(e for e in b if e.type == "reference")
+        assert ref_a.id == ref_b.id
+        assert ref_a.name == ref_b.name
+        assert ref_a.id == _make_id("reference", "https://meet.example.com/j/123")
+
+    def test_clean_url_reference_unchanged(self):
+        url = "https://example.com/p?b=2&a=1#frag"
+        entities = extract_entities_from_text(f"See {url}")
+        refs = [e for e in entities if e.type == "reference"]
+        assert len(refs) == 1
+        assert refs[0].name == url
+        assert refs[0].id == _make_id("reference", url)
