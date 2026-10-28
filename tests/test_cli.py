@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 
 import yaml
@@ -931,5 +932,7 @@ def test_entity_rekey_references_confirm(tmp_path):
 def test_entity_rekey_references_help_shows_confirm():
     result = runner.invoke(app, ["entity", "rekey-references", "--help"])
 
+    # CI forces Rich colour, and the escape codes split option names apart.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
     assert result.exit_code == 0
-    assert "--confirm" in result.stdout
+    assert "--confirm" in plain
