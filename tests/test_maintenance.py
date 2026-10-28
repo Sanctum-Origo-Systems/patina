@@ -628,6 +628,207 @@ def test_find_dedup_ambiguous_handle_alias_needs_review(db_conn):
         assert "e3" not in all_ids
 
 
+# ── Shape A / Shape B: one person split across entities (#527) ──
+
+
+def _members(candidate):
+    return {candidate["keep"]["id"]} | {d["id"] for d in candidate["drop"]}
+
+
+def _review_by_id(result):
+    return {r["id"]: r for r in result["needs_review"]}
+
+
+def test_shape_a_handle_alias_of_person_merges(db_conn):
+    """Shape A: a handle-named sender aliased by one full-name person merges into it."""
+    _insert_entity_raw(db_conn, "h", "jdoe", aliases=["U0000000B1"])
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe", "U0000000B1"])
+    insert_observation(db_conn, _obs("o1", "h"))
+    insert_observation(db_conn, _obs("o2", "h", ts=1001.0))
+    insert_claim(db_conn, _claim("c1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert len(result["candidates"]) == 1
+    candidate = result["candidates"][0]
+    assert candidate["keep"]["id"] == "f"
+    assert [d["id"] for d in candidate["drop"]] == ["h"]
+    assert candidate["shape"] == "handle_alias_of_person"
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 1
+    assert report["merges"][0]["shape"] == "handle_alias_of_person"
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'h'").fetchone() is None
+    senders = {r["sender_entity_id"] for r in db_conn.execute("SELECT * FROM observations")}
+    assert senders == {"f"}
+    subjects = {r["subject_id"] for r in db_conn.execute("SELECT * FROM claims")}
+    assert subjects == {"f"}
+    assert resolve_entity_id(db_conn, "jdoe") == "f"
+
+
+def test_shape_a_matches_at_handle_alias_and_lowercase_full_name(db_conn):
+    """Shape A compares normalize_name forms: '@jdoe' on 'jane doe' holds handle 'jdoe'."""
+    _insert_entity_raw(db_conn, "h", "jdoe")
+    _insert_entity_raw(db_conn, "f", "jane doe", aliases=["@jdoe"])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert len(result["candidates"]) == 1
+    candidate = result["candidates"][0]
+    assert candidate["keep"]["id"] == "f"
+    assert _members(candidate) == {"h", "f"}
+    assert candidate["shape"] == "handle_alias_of_person"
+
+
+def test_shape_a_conflicting_slack_ids_needs_review(db_conn):
+    _insert_entity_raw(db_conn, "h", "jdoe", aliases=["U0000000B1"])
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe", "U0000000B2"])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "conflicting Slack IDs"
+    assert review["shape"] == "handle_alias_of_person"
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 0
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'h'").fetchone() is not None
+
+
+def test_shape_a_handle_aliased_by_two_people_needs_review(db_conn):
+    _insert_entity_raw(db_conn, "h", "jdoe")
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe"])
+    _insert_entity_raw(db_conn, "g", "Jim Doe", aliases=["@jdoe"])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "ambiguous handle alias"
+    assert review["shape"] == "handle_alias_of_person"
+    assert sorted(review["related"]) == ["Jane Doe", "Jim Doe"]
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 0
+
+
+def test_shape_a_multi_identity_holder_needs_review(db_conn):
+    dn_a = "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=JDOE"
+    dn_b = "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=QHALE"
+    _insert_entity_raw(db_conn, "h", "jdoe")
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe", dn_a, dn_b])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "multi-identity"
+    assert review["shape"] == "handle_alias_of_person"
+
+
+def test_shape_a_owner_holder_needs_review(db_conn):
+    _insert_entity_raw(db_conn, "h", "jdoe")
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe"], is_owner=1)
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "owner"
+    assert review["shape"] == "handle_alias_of_person"
+
+
+def test_shape_b_first_name_only_without_shared_id_review_only(db_conn):
+    _insert_entity_raw(db_conn, "j", "Jane")
+    _insert_entity_raw(db_conn, "f", "Jane Doe")
+    insert_observation(db_conn, _obs("o1", "j"))
+    insert_observation(db_conn, _obs("o2", "f"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["j"]
+    assert review["reason"] == "first_name_only"
+    assert review["shape"] == "first_name_only"
+    assert review["related"] == ["Jane Doe"]
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 0
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'j'").fetchone() is not None
+
+
+def test_shape_b_name_alias_alone_never_merges(db_conn):
+    """A first-name alias on the full-name person is still only a name match."""
+    _insert_entity_raw(db_conn, "j", "jane")
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jane"])
+    insert_observation(db_conn, _obs("o1", "j"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    assert _review_by_id(result)["j"]["reason"] == "first_name_only"
+
+
+@pytest.mark.parametrize(
+    "shared",
+    ["U0000000B1", "jane.doe@example.com", "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=JDOE"],
+    ids=["slack-id", "email", "full-dn"],
+)
+def test_shape_b_shared_id_merges(db_conn, shared):
+    _insert_entity_raw(db_conn, "j", "Jane", aliases=[shared])
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=[shared])
+    insert_observation(db_conn, _obs("o1", "j"))
+
+    result = find_dedup_candidates(db_conn)
+    assert len(result["candidates"]) == 1
+    candidate = result["candidates"][0]
+    assert candidate["keep"]["id"] == "f"
+    assert _members(candidate) == {"j", "f"}
+    assert candidate["shape"] == "first_name_only"
+    assert "j" not in _review_by_id(result)
+
+
+def test_shape_b_two_full_name_matches_no_entry(db_conn):
+    _insert_entity_raw(db_conn, "j", "Jane")
+    _insert_entity_raw(db_conn, "f", "Jane Doe")
+    _insert_entity_raw(db_conn, "r", "Jane Roe")
+    insert_observation(db_conn, _obs("o1", "j"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    assert result["needs_review"] == []
+
+
+def test_shape_b_two_first_name_entities_no_entry(db_conn):
+    _insert_entity_raw(db_conn, "j1", "Jane")
+    _insert_entity_raw(db_conn, "j2", "jane")
+    _insert_entity_raw(db_conn, "f", "Jane Doe")
+
+    result = find_dedup_candidates(db_conn)
+    assert all("f" not in _members(c) for c in result["candidates"])
+    assert all(c["shape"] is None for c in result["candidates"])
+    assert result["needs_review"] == []
+
+
+def test_cli_entity_dedup_shows_shape(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "h", "jdoe")
+    _insert_entity_raw(conn, "f", "Jane Doe", aliases=["jdoe"])
+    _insert_entity_raw(conn, "j", "Jim")
+    _insert_entity_raw(conn, "g", "Jim Roe")
+    insert_observation(conn, _obs("o1", "h"))
+    conn.close()
+
+    result = CliRunner().invoke(app, ["entity", "dedup", "--home", str(db_path.parent)])
+    assert result.exit_code == 0, result.output
+    assert "'jdoe' -> 'Jane Doe'" in result.output
+    assert "[shape: handle_alias_of_person]" in result.output
+    assert "REVIEW 'Jim' (needs review: first_name_only) [shape: first_name_only]" in result.output
+
+
 def test_find_dedup_conflicting_id_fixture_needs_review(conflicting_id):
     """Shared conflicting_id fixture: both entities land in needs_review (#449)."""
     conn = conflicting_id["conn"]

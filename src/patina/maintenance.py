@@ -16,6 +16,7 @@ from patina.graph import (
     IDENTIFIER_PRECEDENCE,
     _is_multi_identity,
     identifier_type,
+    normalize_name,
     resolve_entity_id,
 )
 from patina.graph import _name_type_rank as _graph_name_type_rank
@@ -601,6 +602,151 @@ def _is_truncated_dn(value: str) -> bool:
     return identifier_type(value.strip()) is None
 
 
+SHAPE_HANDLE_ALIAS = "handle_alias_of_person"
+SHAPE_FIRST_NAME = "first_name_only"
+
+
+def _collect_dns(tokens: list[str]) -> set[str]:
+    return {t.strip().upper() for t in tokens if identifier_type(t.strip()) == "dn"}
+
+
+def _is_full_name(name: str) -> bool:
+    return identifier_type(name.strip()) == "display_name"
+
+
+def _find_person_shapes(
+    conn: sqlite3.Connection,
+    sender_ids: set[str],
+    flagged_ids: set[str],
+) -> tuple[list[tuple[str, str, str, str]], list[dict], set[str]]:
+    """Find one person split across a handle- or first-name entity and a full-name one.
+
+    Shape A (``handle_alias_of_person``): a handle-named person whose normalized
+    name is a handle alias of exactly one full-name person merges into it.
+    Shape B (``first_name_only``): a first-name-only person whose first name
+    matches exactly one full-name person merges only on a shared Slack ID,
+    email or full DN; otherwise it goes to review.
+
+    Returns (merge pairs as (drop_id, keep_id, shape, match), review entries,
+    entity ids to keep out of every merge group).
+    """
+    rows = conn.execute(
+        "SELECT id, name, aliases, is_owner FROM entities WHERE type = 'person'"
+    ).fetchall()
+    persons = [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "aliases": json.loads(r["aliases"] or "[]"),
+            "is_owner": bool(r["is_owner"]),
+        }
+        for r in rows
+    ]
+    full_names = [p for p in persons if _is_full_name(p["name"])]
+
+    handle_holders: dict[str, list[dict]] = {}
+    for p in full_names:
+        keys = set()
+        for alias in p["aliases"]:
+            clean = normalize_alias(alias).strip().lstrip("@")
+            if clean and identifier_type(clean) == "handle":
+                keys.add(normalize_name(clean))
+        for key in keys:
+            handle_holders.setdefault(key, []).append(p)
+
+    first_name_holders: dict[str, list[dict]] = {}
+    for p in full_names:
+        words = normalize_name(p["name"]).split()
+        if words:
+            first_name_holders.setdefault(words[0], []).append(p)
+
+    singles = [
+        p
+        for p in persons
+        if not p["is_owner"]
+        and p["id"] not in flagged_ids
+        and identifier_type(p["name"].strip()) == "handle"
+        and len(normalize_name(p["name"])) >= 2
+    ]
+    first_name_counts: dict[str, int] = {}
+    for p in singles:
+        key = normalize_name(p["name"])
+        if key in first_name_holders:
+            first_name_counts[key] = first_name_counts.get(key, 0) + 1
+
+    pairs: list[tuple[str, str, str, str]] = []
+    review: list[dict] = []
+    excluded: set[str] = set()
+
+    def _review(ent: dict, shape: str, reason: str, others: list[dict]) -> None:
+        excluded.add(ent["id"])
+        review.append(
+            {
+                "id": ent["id"],
+                "name": ent["name"],
+                "aliases": ent["aliases"],
+                "reason": reason,
+                "shape": shape,
+                "related": [o["name"] for o in others],
+            }
+        )
+
+    def _blocker(ent: dict, other: dict) -> str | None:
+        if ent["is_owner"] or other["is_owner"]:
+            return "owner"
+        if any(_is_multi_identity(e["name"], e["aliases"]) for e in (ent, other)):
+            return "multi-identity"
+        ent_tokens = [ent["name"]] + ent["aliases"]
+        other_tokens = [other["name"]] + other["aliases"]
+        ent_slack, other_slack = _collect_slack_ids(ent_tokens), _collect_slack_ids(other_tokens)
+        if ent_slack and other_slack and ent_slack.isdisjoint(other_slack):
+            return "conflicting Slack IDs"
+        return None
+
+    for ent in singles:
+        key = normalize_name(ent["name"])
+        tokens = [ent["name"]] + ent["aliases"]
+
+        if key in first_name_holders:
+            # Shape B: a name match alone never merges.
+            matches = [m for m in first_name_holders[key] if m["id"] != ent["id"]]
+            if len(matches) != 1 or first_name_counts[key] != 1:
+                continue
+            match = matches[0]
+            match_tokens = [match["name"]] + match["aliases"]
+            shared = (
+                (_collect_slack_ids(tokens) & _collect_slack_ids(match_tokens))
+                or (_collect_emails(tokens) & _collect_emails(match_tokens))
+                or (_collect_dns(tokens) & _collect_dns(match_tokens))
+            )
+            if not shared:
+                _review(ent, SHAPE_FIRST_NAME, SHAPE_FIRST_NAME, [match])
+                continue
+            reason = _blocker(ent, match)
+            if reason:
+                _review(ent, SHAPE_FIRST_NAME, reason, [match])
+                continue
+            pairs.append((ent["id"], match["id"], SHAPE_FIRST_NAME, sorted(shared)[0].lower()))
+            continue
+
+        # Shape A: the handle is an alias of a full-name person.
+        holders = [h for h in handle_holders.get(key, []) if h["id"] != ent["id"]]
+        if not holders:
+            continue
+        if len(holders) > 1:
+            _review(ent, SHAPE_HANDLE_ALIAS, "ambiguous handle alias", holders)
+            continue
+        holder = holders[0]
+        reason = _blocker(ent, holder)
+        if reason:
+            _review(ent, SHAPE_HANDLE_ALIAS, reason, [holder])
+            continue
+        if ent["id"] in sender_ids:
+            pairs.append((ent["id"], holder["id"], SHAPE_HANDLE_ALIAS, key))
+
+    return pairs, review, excluded
+
+
 def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
     rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
 
@@ -626,10 +772,6 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
             needs_review.append({**ent, "reason": "multiple Slack IDs"})
         else:
             clean.append(ent)
-    entities = clean
-
-    if not entities:
-        return {"candidates": [], "needs_review": needs_review}
 
     sender_ids = {
         r["sender_entity_id"]
@@ -637,6 +779,15 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
             "SELECT DISTINCT sender_entity_id FROM observations WHERE sender_entity_id IS NOT NULL"
         ).fetchall()
     }
+
+    shape_pairs, shape_review, shape_excluded = _find_person_shapes(
+        conn, sender_ids, {r["id"] for r in needs_review}
+    )
+    needs_review.extend(shape_review)
+    entities = [e for e in clean if e["id"] not in shape_excluded]
+
+    if not entities:
+        return {"candidates": [], "needs_review": needs_review}
 
     name_by_handle: dict[str, list[dict]] = {}
     for ent in entities:
@@ -742,6 +893,19 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                 pair_match[pair] = ident
             _union(a, b)
 
+    index_by_id = {e["id"]: i for i, e in enumerate(entities)}
+    shape_by_pair: dict[tuple[int, int], str] = {}
+    shape_keep: set[int] = set()
+    for drop_id, keep_id, shape, ident in shape_pairs:
+        a, b = index_by_id.get(drop_id), index_by_id.get(keep_id)
+        if a is None or b is None:
+            continue
+        pair = (min(a, b), max(a, b))
+        pair_match.setdefault(pair, ident)
+        shape_by_pair[pair] = shape
+        shape_keep.add(b)
+        _union(a, b)
+
     groups_map: dict[int, list[int]] = {}
     for i in range(len(entities)):
         root = _find(i)
@@ -758,8 +922,13 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
 
         group = [entities[i] for i in indices]
         idx_set = set(indices)
+        group_shape = next(
+            (s for p, s in shape_by_pair.items() if p[0] in idx_set and p[1] in idx_set), None
+        )
+        shape_tag = {"shape": group_shape} if group_shape else {}
 
         group_names_lower = {e["name"].strip().lower() for e in group}
+        group_names_lower |= {normalize_name(e["name"]) for e in group}
         send_to_review = False
         for pair, ident in pair_match.items():
             if pair[0] in idx_set and pair[1] in idx_set:
@@ -782,7 +951,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                 continue
             for a_idx, b_idx in ((pair[0], pair[1]), (pair[1], pair[0])):
                 fn_ent = entities[a_idx]
-                if _name_type_rank(fn_ent["name"]) != 0:
+                if _name_type_rank(fn_ent["name"]) != 0 and a_idx not in shape_keep:
                     continue
                 if entity_hard_ids[a_idx]["slack_ids"]:
                     continue
@@ -795,7 +964,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                 break
         if send_to_review:
             for ent in group:
-                needs_review.append({**ent, "reason": "handle-name mismatch"})
+                needs_review.append({**ent, "reason": "handle-name mismatch", **shape_tag})
             continue
 
         obs_counts = {}
@@ -805,10 +974,13 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                 (ent["id"],),
             ).fetchone()["c"]
 
+        # The full-name side of a shape pair survives even when its name
+        # does not look like a plausible display name (e.g. all lowercase).
+        shape_keep_ids = {entities[i]["id"] for i in shape_keep & idx_set}
         sorted_group = sorted(
             group,
             key=lambda e: (
-                _name_type_rank(e["name"]),
+                0 if e["id"] in shape_keep_ids else _name_type_rank(e["name"]),
                 -obs_counts[e["id"]],
             ),
         )
@@ -825,6 +997,7 @@ def find_dedup_candidates(conn: sqlite3.Connection) -> dict:
                 "keep": keep,
                 "drop": sorted_group[1:],
                 "match_identifier": match_ident,
+                "shape": group_shape,
             }
         )
 
@@ -1001,6 +1174,7 @@ def dedup_entities(
     for group in candidates:
         keep = group["keep"]
         match_id = group.get("match_identifier", "")
+        shape_tag = {"shape": group["shape"]} if group.get("shape") else {}
         drops = list(group["drop"])
 
         drops, folded_ids = _pre_merge_slack_drops(conn, drops, result, match_id, dry_run=dry_run)
@@ -1039,13 +1213,17 @@ def dedup_entities(
                     extra_keep_slacks = keep_slacks - shared_slacks
                     extra_drop_slacks = drop_slacks - shared_slacks
                     if extra_keep or extra_drop or extra_keep_slacks or extra_drop_slacks:
-                        result["needs_review"].append({**drop, "reason": "alias collision"})
+                        result["needs_review"].append(
+                            {**drop, "reason": "alias collision", **shape_tag}
+                        )
                         continue
                 else:
                     keep_slacks = _collect_slack_ids(keep_tokens)
                     drop_slacks = _collect_slack_ids(drop_tokens)
                     if keep_slacks and drop_slacks:
-                        result["needs_review"].append({**drop, "reason": "conflicting Slack IDs"})
+                        result["needs_review"].append(
+                            {**drop, "reason": "conflicting Slack IDs", **shape_tag}
+                        )
                     else:
                         result["skipped"].append(
                             {
@@ -1059,6 +1237,7 @@ def dedup_entities(
                     continue
             merge_result = merge_entities(conn, keep["id"], drop["id"], dry_run=dry_run)
             merge_result["match_identifier"] = match_id
+            merge_result["shape"] = group.get("shape")
             result["merges"].append(merge_result)
             result["entities_merged"] += 1
 

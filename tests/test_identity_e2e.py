@@ -645,6 +645,62 @@ def test_calendar_rows_from_outlook_mcp_email_route_in_split_485(identity_store)
     assert SINK_ID not in after.values()
 
 
+def test_handle_named_person_aliased_by_full_name_merges_obs_2026_10_27_2(identity_store):
+    """OBS-2026-10-27-2 (#527): one person split across a handle- and a full-name entity.
+
+    Shape A ("jdoe" sends on Slack while "Jane Doe" holds "@jdoe") merges into the
+    full name; Shape B ("Quinn" vs "Quinn Hale", no shared ID) is review only.
+    """
+    store, conn = identity_store, identity_store.conn
+    jdoe_slack_id = "U0000000C1"
+    ingest_live(
+        port=FakeSlackPort(
+            [_slack(40, jdoe_slack_id, "jdoe", "The quick brown fox", "D0000000003")]
+        ),
+        source="slack_mcp",
+        home=store.home,
+        lookback_days=_LOOKBACK_DAYS,
+    )
+    jdoe = _holder(conn, f"slack:{jdoe_slack_id}")
+    assert conn.execute("SELECT name FROM entities WHERE id = ?", (jdoe,)).fetchone()[0] == "jdoe"
+    _seed_identity_entity(conn, "jane-doe", "Jane Doe", aliases=["@jdoe", "Doe, Jane"])
+    _seed_claim(conn, "claim-jdoe", jdoe)
+    _seed_identity_entity(conn, "quinn", "Quinn")
+    _seed_identity_entity(conn, "quinn-hale", "Quinn Hale")
+    conn.commit()
+    _check(store)
+
+    before = _full_snapshot(conn)
+    ents, senders = _entity_state(conn), _obs_senders(conn)
+    preview = dedup_entities(conn, dry_run=True)
+    assert _full_snapshot(conn) == before
+
+    shape_a = [m for m in preview["merges"] if m["drop_id"] == jdoe]
+    assert len(shape_a) == 1
+    assert shape_a[0]["keep_id"] == "jane-doe"
+    assert shape_a[0]["shape"] == "handle_alias_of_person"
+    review = {r["id"]: r for r in preview["needs_review"]}
+    assert review["quinn"]["reason"] == "first_name_only"
+    assert review["quinn"]["shape"] == "first_name_only"
+    assert not [
+        m for m in preview["merges"] if {"quinn", "quinn-hale"} & {m["keep_id"], m["drop_id"]}
+    ]
+
+    committed = dedup_entities(conn, dry_run=False, snapshot_token=store_snapshot_token(conn))
+    assert _merge_pairs(committed) == _merge_pairs(preview)
+    expected_ents, expected_senders = _expected_after_dedup(ents, senders, preview)
+    assert _entity_state(conn) == expected_ents
+    assert _obs_senders(conn) == expected_senders
+    _check(store)
+
+    assert jdoe not in _entity_state(conn)
+    assert jdoe not in _obs_senders(conn).values()
+    claim = conn.execute("SELECT subject_id FROM claims WHERE id = 'claim-jdoe'").fetchone()
+    assert claim["subject_id"] == "jane-doe"
+    assert resolve_entity_id(conn, "jdoe") == "jane-doe"
+    assert {"quinn", "quinn-hale"} <= set(_entity_state(conn))
+
+
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,

@@ -1148,12 +1148,15 @@ def entity_dedup_cmd(
         for merge in result["merges"]:
             match = merge.get("match_identifier", "")
             suffix = f" (match: {match})" if match else ""
+            if merge.get("shape"):
+                suffix += f" [shape: {merge['shape']}]"
             typer.echo(f"  '{merge['drop_name']}' -> '{merge['keep_name']}'{suffix}")
         for skip in result.get("skipped", []):
             drop, keep = skip["drop_name"], skip["keep_name"]
             typer.echo(f"  SKIP '{drop}' -> '{keep}' ({skip['reason']})")
         for review in needs_review:
-            typer.echo(f"  REVIEW '{review['name']}' (needs review: {review['reason']})")
+            suffix = f" [shape: {review['shape']}]" if review.get("shape") else ""
+            typer.echo(f"  REVIEW '{review['name']}' (needs review: {review['reason']}){suffix}")
         if not confirm and result["entities_merged"] > 0:
             n = result["entities_merged"]
             typer.echo(f"{n} merges proposed — re-run with --confirm to apply")
