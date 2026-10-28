@@ -563,6 +563,33 @@ def test_repair_preview_equals_commit_on_member_named_sink(tmp_path, monkeypatch
     conn.close()
 
 
+def test_repair_skips_person_carrying_stale_foreign_slack_id_522(tmp_path, monkeypatch):
+    """#522: a single person holding one stale foreign Slack ID is not renamed to a sink label."""
+    store = _build_store(tmp_path, monkeypatch, sink_aliases=SINK_ALIASES)
+    conn = store.conn
+    # user_b's own ID is U0000000C2; U0000000C1 is user_c's and reached A via a misroute.
+    _seed_identity_entity(conn, "stale-a", "user_b", aliases=["user_b", "U0000000C2", "U0000000C1"])
+    _seed_identity_entity(conn, "stale-c", "user_c", aliases=["user_c", "U0000000C1"])
+    conn.commit()
+    assert _is_multi_identity("user_b", _aliases(conn, "stale-a"))
+
+    before = _full_snapshot(conn)
+    preview = repair_multi_identity_names(conn, dry_run=True)
+    assert _full_snapshot(conn) == before
+    assert not {"stale-a", "stale-c"} & {e["id"] for e in preview["entities"]}
+    assert [(s["id"], s["reason"]) for s in preview["skipped"]] == [("stale-a", "stale_foreign_id")]
+    assert all("stripped_aliases" in e for e in preview["entities"])
+
+    state = _entity_state(conn)
+    committed = repair_multi_identity_names(conn, dry_run=False)
+    assert committed == preview
+    after = _entity_state(conn)
+    assert after["stale-a"] == state["stale-a"]
+    assert after["stale-c"] == state["stale-c"]
+    assert resolve_entity_id(conn, "user_b") == "stale-a"
+    conn.close()
+
+
 # --- Named cases ---
 
 
