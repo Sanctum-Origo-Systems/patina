@@ -1,32 +1,46 @@
 # EVAL Report
 
+Report date 2026-10-28: data as of 2026-10-28T04:59:29.364124+00:00, 223 history rows.
+
 ## Overall
 
-| Metric | Value |
-|--------|-------|
-| Total PRs | 115 |
-| First-attempt success | 87% (n=108 implement runs) |
-| Avg cost/run | $1.98 (n=108 implement runs) |
-| Human edit rate | 43% (n=115 merged PRs) |
+| Metric | Value | Pending |
+|--------|-------|---------|
+| Total PRs | 127 | — |
+| First-attempt success | 88% (n=120 implement runs) | pending: 1 |
+| Avg cost/run | $1.94 (n=121 implement runs) | included |
+| Avg review cost/run | $0.27 (n=9 implement runs) | included |
+| Human edit rate | 29% (n=126 merged PRs; edited by a human PR within 7 days) | pending: 1 |
+
+## Definitions
+
+| Metric | Numerator | Denominator | Counts | Window |
+|--------|-----------|-------------|--------|--------|
+| First-attempt success | implement runs that succeeded with attempts == 1 | implement runs with an outcome (pending runs excluded) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded) | Overall: lifetime. Trend: change since the previous snapshot (snapshots without outcome counts use the attempt distribution) |
+| Human edit rate | merged PRs with a non-autoloop PR merged within the fixup window that touches the same files (bookkeeping files, release and eval-report PRs are ignored) | merged PRs (open PRs are pending; closed unmerged PRs excluded) | PRs from `autoloop/` branches, up to the 500 most recent | Overall: lifetime. Trend: new edits / new merges since the previous snapshot; invalid when edits exceed merges (older PRs flagged late) |
+| Avg cost/run | sum of implementation cost over implement runs: `impl_cost_usd` when logged, else `cost_usd` (rows before #451 never included review cost) | implement runs, pending included (cost is known when a run ends) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded) | Overall: lifetime. Trend: change in total cost / change in implement runs |
+| Avg review cost/run | sum of `review_cost_usd` over implement runs that logged it | implement runs with `review_cost_usd` (none is imputed for older rows) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded); logged from #451 onward only | Overall: lifetime, shown only when n > 0 |
+
+Pending: a successful implement run whose PR is still open, or an open PR. Pending items are left out of outcome-dependent denominators and shown as a separate pending count. Any rate whose numerator exceeds its denominator renders as invalid.
 
 ## Auto-Merge Gate (repo-level)
 
 | Metric | Value | Threshold |
 |--------|-------|-----------|
-| Success rate | 87% | >90% |
-| Edit rate | 43% | <5% |
-| Clean merges | 65 | ≥10 |
+| Success rate | 88% | >90% |
+| Edit rate | 29% | <5% |
+| Clean merges | 90 | ≥10 |
 | **Ready?** | **No** | |
 
 ## Per-Module Breakdown
 
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
-| other | insufficient data (n=11 runs) | insufficient data (n=11 runs) | 12 | No |
-| src/patina/ | 93% (n=72 runs) | $2.18 (n=72 runs) | 77 | No |
+| other | insufficient data (n=14 runs) | insufficient data (n=14 runs) | 15 | No |
+| src/patina/ | 96% (n=78 runs) | $2.06 (n=79 runs) | 84 | No |
 | src/patina/adapters/ | insufficient data (n=7 runs) | insufficient data (n=7 runs) | 13 | No |
-| src/patina/autonomy/ | insufficient data (n=1 runs) | insufficient data (n=1 runs) | 1 | No |
-| src/patina/beliefs/ | insufficient data (n=6 runs) | insufficient data (n=6 runs) | 7 | No |
+| src/patina/autonomy/ | insufficient data (n=3 runs) | insufficient data (n=3 runs) | 3 | No |
+| src/patina/beliefs/ | insufficient data (n=7 runs) | insufficient data (n=7 runs) | 8 | No |
 | src/patina/mcp/ | insufficient data (n=7 runs) | insufficient data (n=7 runs) | 9 | No |
 | src/patina/priority/ | insufficient data (n=1 runs) | insufficient data (n=1 runs) | 1 | No |
 
@@ -66,7 +80,7 @@
 | 2026-10-13 | 1 | — | — | — |
 | 2026-10-14 | 2 | 50% | $0.33 | 0% |
 | 2026-10-15 | 3 | 0% | $0.80 | 0% |
-| 2026-10-17 | 1 | 100% | $0.00 | 333% |
+| 2026-10-17 | 1 | 100% | $0.00 | invalid |
 | 2026-10-18 | 1 | 50% | $0.28 | 100% |
 | 2026-10-19 | 4 | 0% | $0.78 | 0% |
 | 2026-10-20 | 0 | — | — | — |
@@ -76,33 +90,37 @@
 | 2026-10-24 | 0 | — | — | — |
 | 2026-10-25 | 0 | — | — | — |
 | 2026-10-26 (baseline break) | 1 | 87% | $1.98 | 43% |
+| 2026-10-27 | 3 | 100% | $1.70 | — |
+| 2026-10-28 (baseline break) | 9 | 100% | $1.57 | 29% |
 
 > Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
+> Baseline break at 2026-10-28: human edits are counted under a 7-day window from this row on, so earlier human edit rates are not comparable with later rows.
+
 ```mermaid
-xychart-beta
+xychart-beta horizontal
     title "Weekly First-Attempt Success Rate (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "10/26 (n=108)"]
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "10/28 (n=121)"]
     y-axis "Success %" 0 --> 100
-    bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 43, 50, 87]
+    bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 43, 50, 88]
 ```
 
 ```mermaid
-xychart-beta
+xychart-beta horizontal
     title "Weekly Avg Cost/PR (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "10/26 (n=108)"]
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "10/28 (n=121)"]
     y-axis "Cost ($)" 0 --> 2
-    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27, 1.98]
+    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27, 1.94]
 ```
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
 pie title Attempt Distribution by Module
-    "other (82%, 12 impl)" : 12
-    "src/patina/ (93%, 77 impl)" : 77
+    "other (86%, 15 impl)" : 15
+    "src/patina/ (96%, 84 impl)" : 84
     "src/patina/adapters/ (71%, 13 impl)" : 13
-    "src/patina/autonomy/ (100%, 1 impl)" : 1
-    "src/patina/beliefs/ (67%, 7 impl)" : 7
+    "src/patina/autonomy/ (67%, 3 impl)" : 3
+    "src/patina/beliefs/ (57%, 8 impl)" : 8
     "src/patina/mcp/ (100%, 9 impl)" : 9
     "src/patina/priority/ (100%, 1 impl)" : 1
 ```
