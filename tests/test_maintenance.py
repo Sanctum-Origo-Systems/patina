@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
+from patina.extraction import _make_id
 from patina.graph import (
     IDENTIFIER_PRECEDENCE,
     get_entity,
@@ -33,6 +35,7 @@ from patina.maintenance import (
     merge_entities,
     prune_non_person_entities,
     prune_slack_link_entities,
+    rekey_credential_references,
     repair_multi_identity_names,
     repair_sink_handle_aliases,
     reprocess_observations,
@@ -4142,3 +4145,211 @@ def test_cli_repair_sink_handles(db_path):
     row = conn.execute("SELECT aliases FROM entities WHERE id = 'sink'").fetchone()
     assert "user_a" not in json.loads(row["aliases"])
     conn.close()
+
+
+# ── rekey_credential_references ─────────────────────────────
+
+_CRED_PARAM_RE = re.compile(
+    r"(?i)[?&](pwd|password|passcode|token|access_token|key|api_key|sig|signature|x-amz-[a-z-]+)="
+)
+_MEET_BASE = "https://meet.example.com/j/123"
+_DOC_BASE = "https://files.example.com/doc?id=7"
+_PLAIN_URL = "https://example.com/page?ref=home"
+
+
+def _insert_reference_raw(conn, eid, name):
+    conn.execute(
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata, first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES (?, 'reference', ?, '[]', '{}', '2026-01-01', '2026-01-02', 0.02, 0)",
+        (eid, name),
+    )
+    conn.commit()
+
+
+def _seed_credential_references(conn):
+    """3 credential URLs (two sharing a base), one plain URL, one person."""
+    _insert_entity_raw(conn, "p1", "Alice Tran")
+    _insert_reference_raw(conn, "ref-a", f"{_MEET_BASE}?pwd=AbC123")
+    _insert_reference_raw(conn, "ref-b", f"{_MEET_BASE}?PWD=AbC123zz")
+    _insert_reference_raw(conn, "ref-c", f"{_DOC_BASE}&sig=AbC123")
+    _insert_reference_raw(conn, "ref-plain", _PLAIN_URL)
+    for eid in ("ref-a", "ref-b", "ref-c", "ref-plain"):
+        insert_claim(conn, _claim(f"c-{eid}", eid, predicate="topic", obj="sync"))
+        upsert_relationship(conn, _rel(f"r-{eid}", "p1", eid, predicate="shared"))
+    conn.commit()
+
+
+def _store_rows(conn):
+    return {
+        table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+        for table in ("entities", "claims", "relationships")
+    }
+
+
+def _backups(db_path):
+    return list(db_path.parent.glob("*.bak.*"))
+
+
+def test_rekey_credential_references_dry_run_reports(db_conn):
+    _seed_credential_references(db_conn)
+
+    result = rekey_credential_references(db_conn)
+
+    assert len(result["entities"]) == 3
+    assert result["merged"] == 1
+    assert result["renamed"] == 2
+    assert all(e["had_credentials"] is True for e in result["entities"])
+    assert {e["old_id"] for e in result["entities"]} == {"ref-a", "ref-b", "ref-c"}
+    assert {e["name"] for e in result["entities"]} == {_MEET_BASE, _DOC_BASE}
+    assert {e["new_id"] for e in result["entities"]} == {
+        _make_id("reference", _MEET_BASE),
+        _make_id("reference", _DOC_BASE),
+    }
+
+
+def test_rekey_credential_references_dry_run_writes_nothing(db_conn, db_path):
+    _seed_credential_references(db_conn)
+    before = _store_rows(db_conn)
+
+    result = rekey_credential_references(db_conn)
+
+    assert _store_rows(db_conn) == before
+    assert _backups(db_path) == []
+    assert result["backup"] is None
+    assert "AbC123" not in repr(result)
+    assert "AbC123" not in json.dumps(result)
+
+
+def test_rekey_credential_references_backs_up_before_first_write(db_conn, db_path, monkeypatch):
+    import patina.maintenance as maintenance
+
+    _seed_credential_references(db_conn)
+    before = _store_rows(db_conn)
+    calls = []
+    real_backup = maintenance.backup_store
+
+    def spy_backup(path):
+        calls.append(_store_rows(db_conn) == before)
+        return real_backup(path)
+
+    monkeypatch.setattr(maintenance, "backup_store", spy_backup)
+
+    result = rekey_credential_references(db_conn, confirm=True)
+
+    assert calls == [True]
+    assert len(_backups(db_path)) == 1
+    assert result["backup"] == str(_backups(db_path)[0])
+    names = [
+        r["name"]
+        for r in db_conn.execute("SELECT name FROM entities WHERE type = 'reference'").fetchall()
+    ]
+    assert not any(_CRED_PARAM_RE.search(n) for n in names)
+
+
+def test_rekey_credential_references_merges_into_existing(db_conn, monkeypatch):
+    import patina.maintenance as maintenance
+
+    _seed_credential_references(db_conn)
+    meet_id = _make_id("reference", _MEET_BASE)
+    _insert_reference_raw(db_conn, meet_id, _MEET_BASE)
+    merges = []
+    real_merge = maintenance.merge_entities
+
+    def spy_merge(conn, keep_id, drop_id, **kwargs):
+        merges.append((keep_id, drop_id))
+        return real_merge(conn, keep_id, drop_id, **kwargs)
+
+    monkeypatch.setattr(maintenance, "merge_entities", spy_merge)
+
+    result = rekey_credential_references(db_conn, confirm=True)
+
+    assert result["merged"] == 2
+    assert sorted(merges) == [(meet_id, "ref-a"), (meet_id, "ref-b")]
+    for old_id in ("ref-a", "ref-b"):
+        assert get_entity(db_conn, old_id) is None
+        claim = db_conn.execute(
+            "SELECT subject_id FROM claims WHERE id = ?", (f"c-{old_id}",)
+        ).fetchone()
+        assert claim["subject_id"] == meet_id
+        rel = db_conn.execute(
+            "SELECT object_id FROM relationships WHERE id = ?", (f"r-{old_id}",)
+        ).fetchone()
+        assert rel["object_id"] == meet_id
+    row = db_conn.execute("SELECT aliases FROM entities WHERE id = ?", (meet_id,)).fetchone()
+    assert "AbC123" not in row["aliases"]
+
+
+def test_rekey_credential_references_renames_when_target_missing(db_conn):
+    _seed_credential_references(db_conn)
+    doc_id = _make_id("reference", _DOC_BASE)
+
+    result = rekey_credential_references(db_conn, confirm=True)
+
+    assert result["renamed"] == 2
+    assert result["merged"] == 1
+    assert get_entity(db_conn, "ref-c") is None
+    row = db_conn.execute(
+        "SELECT type, name, first_seen, last_seen FROM entities WHERE id = ?", (doc_id,)
+    ).fetchone()
+    assert row["type"] == "reference"
+    assert row["name"] == _DOC_BASE
+    assert (row["first_seen"], row["last_seen"]) == ("2026-01-01", "2026-01-02")
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c-ref-c'").fetchone()
+    assert claim["subject_id"] == doc_id
+    rel = db_conn.execute("SELECT object_id FROM relationships WHERE id = 'r-ref-c'").fetchone()
+    assert rel["object_id"] == doc_id
+
+    old_ids = ("ref-a", "ref-b", "ref-c")
+    ph = ",".join("?" for _ in old_ids)
+    assert not db_conn.execute(
+        f"SELECT 1 FROM claims WHERE subject_id IN ({ph})", old_ids
+    ).fetchall()
+    assert not db_conn.execute(
+        f"SELECT 1 FROM relationships WHERE subject_id IN ({ph}) OR object_id IN ({ph})",
+        old_ids + old_ids,
+    ).fetchall()
+
+
+def test_rekey_credential_references_confirm_reports_sanitized_only(db_conn):
+    _seed_credential_references(db_conn)
+
+    result = rekey_credential_references(db_conn, confirm=True)
+
+    assert len(result["entities"]) == 3
+    for e in result["entities"]:
+        assert e["old_id"] in {"ref-a", "ref-b", "ref-c"}
+        assert e["new_id"] == _make_id("reference", e["name"])
+        assert e["had_credentials"] is True
+        assert not _CRED_PARAM_RE.search(e["name"])
+    assert "AbC123" not in repr(result)
+    assert "AbC123" not in json.dumps(result)
+
+
+def test_rekey_credential_references_idempotent(db_conn):
+    _seed_credential_references(db_conn)
+    rekey_credential_references(db_conn, confirm=True)
+    after_first = _store_rows(db_conn)
+
+    second = rekey_credential_references(db_conn, confirm=True)
+
+    assert second["renamed"] == 0
+    assert second["merged"] == 0
+    assert second["entities"] == []
+    assert _store_rows(db_conn) == after_first
+
+
+def test_rekey_credential_references_leaves_plain_references(db_conn):
+    _seed_credential_references(db_conn)
+    plain_before = tuple(
+        db_conn.execute("SELECT * FROM entities WHERE id = 'ref-plain'").fetchone()
+    )
+
+    dry = rekey_credential_references(db_conn)
+    assert "ref-plain" not in {e["old_id"] for e in dry["entities"]}
+    rekey_credential_references(db_conn, confirm=True)
+
+    row = db_conn.execute("SELECT * FROM entities WHERE id = 'ref-plain'").fetchone()
+    assert tuple(row) == plain_before
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c-ref-plain'").fetchone()
+    assert claim["subject_id"] == "ref-plain"

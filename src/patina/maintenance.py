@@ -1358,6 +1358,90 @@ def prune_slack_link_entities(
     return result
 
 
+def _store_file_path(conn: sqlite3.Connection) -> Path | None:
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        if row["name"] == "main" and row["file"]:
+            return Path(row["file"])
+    return None
+
+
+def rekey_credential_references(
+    conn: sqlite3.Connection,
+    *,
+    confirm: bool = False,
+) -> dict:
+    """Re-key reference entities whose URL carries credential query parameters.
+
+    Each affected entity is moved to the id of its sanitized URL, or merged into
+    the entity already holding that id. Dry-run by default; with ``confirm`` the
+    store is backed up before the first write. Results never include the
+    original (credential-bearing) URL.
+    """
+    from patina.extraction import _make_id, sanitize_reference_url
+
+    rows = conn.execute(
+        "SELECT id, name FROM entities WHERE type = 'reference' ORDER BY id"
+    ).fetchall()
+    existing_ids = {r["id"] for r in conn.execute("SELECT id FROM entities").fetchall()}
+
+    plan = []
+    for r in rows:
+        sanitized = sanitize_reference_url(r["name"])
+        if sanitized == r["name"]:
+            continue
+        new_id = _make_id("reference", sanitized)
+        action = "merged" if new_id in existing_ids else "renamed"
+        existing_ids.add(new_id)
+        plan.append(
+            {
+                "old_id": r["id"],
+                "new_id": new_id,
+                "name": sanitized,
+                "action": action,
+                "had_credentials": True,
+            }
+        )
+
+    result = {
+        "renamed": sum(1 for p in plan if p["action"] == "renamed"),
+        "merged": sum(1 for p in plan if p["action"] == "merged"),
+        "entities": plan,
+        "backup": None,
+    }
+
+    if not confirm or not plan:
+        return result
+
+    db_path = _store_file_path(conn)
+    if db_path is not None:
+        result["backup"] = str(backup_store(db_path))
+
+    for p in plan:
+        old_id, new_id = p["old_id"], p["new_id"]
+        # Drop the credential URL before merging so it never becomes an alias.
+        conn.execute("UPDATE entities SET name = ? WHERE id = ?", (p["name"], old_id))
+        if p["action"] == "merged":
+            merge_entities(conn, new_id, old_id)
+            continue
+        conn.execute(
+            "INSERT INTO entities (id, type, name, aliases, metadata, first_seen,"
+            " last_seen, decay_rate, is_owner)"
+            " SELECT ?, type, name, aliases, metadata, first_seen, last_seen,"
+            " decay_rate, is_owner FROM entities WHERE id = ?",
+            (new_id, old_id),
+        )
+        rewire_entity_references(conn, new_id, old_id)
+        ensure_entity_alias_provenance_table(conn)
+        conn.execute(
+            "UPDATE entity_alias_provenance SET entity_id = ? WHERE entity_id = ?",
+            (new_id, old_id),
+        )
+        conn.execute("DELETE FROM entities WHERE id = ?", (old_id,))
+
+    conn.commit()
+    return result
+
+
 def find_id_named_entities(conn: sqlite3.Connection) -> list[dict]:
     """Find person entities whose name is a raw Slack ID."""
     rows = conn.execute(

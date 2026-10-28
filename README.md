@@ -62,6 +62,7 @@ patina entity dedup                # deduplicate (hard identifiers only, --confi
 patina entity dedup --dry-run      # preview proposed merges with match reasons
 patina entity prune                # prune non-person entities (protects senders)
 patina entity prune-links          # remove Slack link markup entities
+patina entity rekey-references     # strip credential params from reference URLs (--confirm to apply)
 patina owner merge                 # fold duplicate self-entities (--dry-run available)
 patina doctor                      # includes dangling reference integrity check
 
