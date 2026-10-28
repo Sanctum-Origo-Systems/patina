@@ -1399,6 +1399,12 @@ def entity_repair_multi_identity_cmd(
 
         result = repair_multi_identity_names(conn, dry_run=not confirm)
 
+        for skip in result["skipped"]:
+            typer.echo(
+                f"  Skipped {skip['id'][:8]} '{skip['name']}' ({skip['reason']}):"
+                f" {', '.join(skip['foreign_ids'])}"
+            )
+
         if result["repaired"] == 0:
             typer.echo("No multi-identity entities need name repair.")
             return
@@ -1406,7 +1412,11 @@ def entity_repair_multi_identity_cmd(
         mode = "Repaired" if confirm else "Would repair"
         typer.echo(f"{mode} {result['repaired']} multi-identity entity(ies):")
         for ent in result["entities"]:
-            typer.echo(f"  {ent['id'][:8]}: '{ent['old_name']}' -> '{ent['new_name']}'")
+            stripped = ", ".join(ent["stripped_aliases"]) or "(none)"
+            typer.echo(
+                f"  {ent['id'][:8]}: '{ent['old_name']}' -> '{ent['new_name']}'"
+                f" (stripped aliases: {stripped})"
+            )
         if not confirm:
             typer.echo(f"{result['repaired']} repair(s) proposed — re-run with --confirm to apply")
     finally:

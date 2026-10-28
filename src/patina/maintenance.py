@@ -1726,18 +1726,63 @@ def repair_multi_identity_names(
     Resets the entity name to its original truncated-DN alias if present,
     or otherwise to a neutral non-identity label (e.g. ``/O=SINK/<id>``),
     and strips the stolen name from its aliases.
+
+    A single person carrying one stale Slack ID that another entity holds
+    is not a sink (#522): it is left alone and listed under ``skipped``
+    with reason ``stale_foreign_id`` for the foreign-ID strip path.
     """
-    rows = conn.execute("SELECT id, name, aliases FROM entities WHERE is_owner = 0").fetchall()
+    all_rows = conn.execute("SELECT id, name, aliases, is_owner FROM entities").fetchall()
+
+    slack_holders: dict[str, set[str]] = {}
+    token_holders: dict[str, set[str]] = {}
+    for r in all_rows:
+        tokens = [r["name"], *json.loads(r["aliases"] or "[]")]
+        if not r["is_owner"]:
+            for sid in _collect_slack_ids(tokens):
+                slack_holders.setdefault(sid, set()).add(r["id"])
+        for t in tokens:
+            key = _graph_normalize(normalize_alias(t))
+            if key:
+                token_holders.setdefault(key, set()).add(r["id"])
 
     repaired: list[dict] = []
-    stripped: dict[str, list[str]] = {}
-    for r in rows:
+    skipped: list[dict] = []
+    for r in all_rows:
+        if r["is_owner"]:
+            continue
         aliases = json.loads(r["aliases"] or "[]")
         if not _is_multi_identity(r["name"], aliases):
             continue
 
         if _is_truncated_dn(r["name"]):
             continue
+
+        # A person with a stale foreign ID: once the Slack IDs another entity
+        # holds are dropped, one own ID is left and nobody else holds the name.
+        foreign_ids = {
+            sid
+            for sid in _collect_slack_ids([r["name"], *aliases])
+            if slack_holders[sid] - {r["id"]}
+        }
+        if foreign_ids:
+            own_aliases = [a for a in aliases if not _collect_slack_ids([a]) & foreign_ids]
+            own_ids = _collect_slack_ids([r["name"], *own_aliases])
+            name_key = _graph_normalize(normalize_alias(r["name"]))
+            name_held_elsewhere = bool(token_holders.get(name_key, set()) - {r["id"]})
+            if (
+                len(own_ids) == 1
+                and not name_held_elsewhere
+                and not _is_multi_identity(r["name"], own_aliases)
+            ):
+                skipped.append(
+                    {
+                        "id": r["id"],
+                        "name": r["name"],
+                        "reason": "stale_foreign_id",
+                        "foreign_ids": sorted(foreign_ids),
+                    }
+                )
+                continue
 
         truncated_dn = next((a for a in aliases if _is_truncated_dn(a)), None)
         new_name = truncated_dn if truncated_dn else f"/O=SINK/{r['id'][:8]}"
@@ -1757,9 +1802,9 @@ def repair_multi_identity_names(
                 "old_name": old_name,
                 "new_name": new_name,
                 "aliases": new_aliases,
+                "stripped_aliases": [a for a in aliases if a not in new_aliases],
             }
         )
-        stripped[r["id"]] = [a for a in aliases if a not in new_aliases]
 
     if not dry_run and repaired:
         for item in repaired:
@@ -1767,10 +1812,10 @@ def repair_multi_identity_names(
                 "UPDATE entities SET name = ?, aliases = ? WHERE id = ?",
                 (item["new_name"], json.dumps(item["aliases"]), item["id"]),
             )
-            _record_alias_changes(conn, item["id"], removed=stripped[item["id"]])
+            _record_alias_changes(conn, item["id"], removed=item["stripped_aliases"])
         conn.commit()
 
-    return {"repaired": len(repaired), "entities": repaired}
+    return {"repaired": len(repaired), "entities": repaired, "skipped": skipped}
 
 
 def _is_handle_alias(alias: str) -> bool:

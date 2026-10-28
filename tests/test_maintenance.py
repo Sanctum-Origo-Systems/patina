@@ -3415,6 +3415,7 @@ def test_repair_multi_identity_names_dry_run_zero_writes(db_conn):
     assert result["repaired"] == 1
     assert result["entities"][0]["old_name"] == "user_g"
     assert result["entities"][0]["new_name"] == "/O=EXAMPLEORG/OU=X"
+    assert result["entities"][0]["stripped_aliases"] == ["user_g"]
 
     row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'sink1'").fetchone()
     assert row["name"] == "user_g"
@@ -3605,7 +3606,7 @@ def test_cli_repair_multi_identity(db_path):
     res_dry = runner.invoke(app, ["entity", "repair-multi-identity", "--home", str(home)])
     assert res_dry.exit_code == 0
     assert "Would repair 1 multi-identity entity(ies)" in res_dry.output
-    assert "user_g" in res_dry.output
+    assert "'user_g' -> '/O=EXAMPLEORG/OU=X' (stripped aliases: user_g)" in res_dry.output
 
     conn = connect(db_path)
     row = conn.execute("SELECT name FROM entities WHERE id = 'sink'").fetchone()
@@ -3619,11 +3620,118 @@ def test_cli_repair_multi_identity(db_path):
     )
     assert res_confirm.exit_code == 0
     assert "Repaired 1 multi-identity entity(ies)" in res_confirm.output
+    assert "'user_g' -> '/O=EXAMPLEORG/OU=X' (stripped aliases: user_g)" in res_confirm.output
 
     conn = connect(db_path)
     row = conn.execute("SELECT name FROM entities WHERE id = 'sink'").fetchone()
     assert row["name"] == "/O=EXAMPLEORG/OU=X"
     conn.close()
+
+
+# ── repair_multi_identity_names: person with a stale foreign ID (#522) ──
+
+
+def _seed_stale_foreign_id(conn):
+    """A is user_b carrying user_c's stale Slack ID through an old misroute; C is user_c."""
+    _insert_entity_raw(conn, "ent-a", "user_b", aliases=["user_b", "U0EXAMPLE2", "U0EXAMPLE1"])
+    _insert_entity_raw(conn, "ent-c", "user_c", aliases=["user_c", "U0EXAMPLE1"])
+
+
+def _raw_entity(conn, eid):
+    return tuple(conn.execute("SELECT * FROM entities WHERE id = ?", (eid,)).fetchone())
+
+
+def test_repair_multi_identity_skips_person_with_stale_foreign_id_dry_run(db_conn):
+    _seed_stale_foreign_id(db_conn)
+    a_before, c_before = _raw_entity(db_conn, "ent-a"), _raw_entity(db_conn, "ent-c")
+
+    result = repair_multi_identity_names(db_conn, dry_run=True)
+
+    assert result["repaired"] == 0
+    assert result["entities"] == []
+    assert result["skipped"] == [
+        {
+            "id": "ent-a",
+            "name": "user_b",
+            "reason": "stale_foreign_id",
+            "foreign_ids": ["U0EXAMPLE1"],
+        }
+    ]
+    assert _raw_entity(db_conn, "ent-a") == a_before
+    assert _raw_entity(db_conn, "ent-c") == c_before
+
+
+def test_repair_multi_identity_commit_leaves_stale_foreign_id_person_intact(db_conn):
+    _seed_stale_foreign_id(db_conn)
+    a_before, c_before = _raw_entity(db_conn, "ent-a"), _raw_entity(db_conn, "ent-c")
+
+    result = repair_multi_identity_names(db_conn, dry_run=False)
+
+    assert result["repaired"] == 0
+    assert _raw_entity(db_conn, "ent-a") == a_before
+    assert _raw_entity(db_conn, "ent-c") == c_before
+    assert resolve_entity_id(db_conn, "user_b") == "ent-a"
+
+
+def test_repair_multi_identity_renames_true_sink_named_after_held_handle(db_conn):
+    """A sink with 3 member Slack IDs, named after a handle Dana also holds, is still renamed."""
+    _insert_entity_raw(db_conn, "p-dana", "Dana Brook", aliases=["user_d", "U0EXAMPLE3"])
+    _insert_entity_raw(
+        db_conn,
+        "sink",
+        "user_d",
+        aliases=["user_d", "U0EXAMPLE3", "U0EXAMPLE4", "U0EXAMPLE5", "/O=EXAMPLEORG/OU=X"],
+    )
+
+    result = repair_multi_identity_names(db_conn, dry_run=False)
+
+    assert result["repaired"] == 1
+    assert result["skipped"] == []
+    item = result["entities"][0]
+    assert item["id"] == "sink"
+    assert item["new_name"] == "/O=EXAMPLEORG/OU=X"
+    assert item["stripped_aliases"] == ["user_d"]
+
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'sink'").fetchone()
+    assert row["name"] == "/O=EXAMPLEORG/OU=X"
+    assert json.loads(row["aliases"]) == [
+        "U0EXAMPLE3",
+        "U0EXAMPLE4",
+        "U0EXAMPLE5",
+        "/O=EXAMPLEORG/OU=X",
+    ]
+    assert resolve_entity_id(db_conn, "user_d") == "p-dana"
+
+
+def test_repair_multi_identity_renames_one_own_id_when_name_held_elsewhere(db_conn):
+    """One own Slack ID left does not skip the rename when another entity holds the name."""
+    _insert_entity_raw(db_conn, "p-dana", "Dana Brook", aliases=["user_d", "U0EXAMPLE3"])
+    _insert_entity_raw(db_conn, "sink", "user_d", aliases=["user_d", "U0EXAMPLE3", "U0EXAMPLE4"])
+
+    result = repair_multi_identity_names(db_conn, dry_run=True)
+
+    assert result["skipped"] == []
+    assert [(e["id"], e["new_name"], e["stripped_aliases"]) for e in result["entities"]] == [
+        ("sink", "/O=SINK/sink", ["user_d"])
+    ]
+
+
+def test_cli_repair_multi_identity_lists_skipped_stale_foreign_id(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _seed_stale_foreign_id(conn)
+    conn.close()
+
+    res = CliRunner().invoke(
+        app, ["entity", "repair-multi-identity", "--home", str(db_path.parent)]
+    )
+    assert res.exit_code == 0
+    assert "Skipped ent-a 'user_b' (stale_foreign_id): U0EXAMPLE1" in res.output
+    assert "No multi-identity entities need name repair." in res.output
 
 
 # ── IDENTIFIER_PRECEDENCE contract (#511) ─────────────────────
