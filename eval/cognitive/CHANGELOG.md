@@ -1,3 +1,14 @@
+## v0.30.0 (2026-10-28)
+- #525: Feat: record 'added' alias provenance (adapter + observation id) o ($1.65)
+- #524: Feat: test: alias-subset-of-net-added invariant in the e2e identit ($1.37)
+- #523: Feat: provenance for merge, split_dn_sink and repair_multi_identit ($1.60)
+- #521: Feat: entity_alias_provenance table, idempotent migration, backfil ($0.79)
+- #520: Feat: test: end-to-end identity fixture suite (ingest → resolve → ($4.72)
+- #518: Feat: persist extraction skip and alias-collision counts per run, ($1.90)
+- #517: Feat: centralize IDENTIFIER_PRECEDENCE in graph.py and add identit ($2.76)
+- #516: Fix: DN sink keeps bare handle alias, so handle resolves as ambig ($0.88)
+Total: 8 PRs, $15.67
+
 ## v0.29.2 (2026-10-26)
 - #499: Fix: normalize_name returns empty string for @-prefixed aliases ($0.19)
 Total: 1 PRs, $0.19
@@ -31,12 +42,4 @@ Total: 4 PRs, $9.39
 - #458: Chore: enable worktree isolation for patina implement jobs ($0.00)
 - #457: Fix: add external to triage_labels exclusion list ($0.00)
 Total: 5 PRs, $5.40
-
-## v0.26.0 (2026-10-13)
-- #454: Feat: extraction.py + ingest.py Slack ID precedence ($1.83)
-- #453: Fix: EVAL.md first-attempt chart plots false zeros for no-outcome weeks ($4.81)
-- #452: Feat: preview/commit equivalence invariant for maintenance commands ($1.94)
-- #451: Fix: resolve_entity_id returns wrong entity when duplicate Slack ID exists ($1.50)
-- #450: Feat: shared identity fixtures + graph.py Slack ID contract ($2.34)
-Total: 5 PRs, $12.42
 
