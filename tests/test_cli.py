@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 
 import yaml
@@ -837,3 +838,101 @@ def test_autonomy_status_per_domain_output(tmp_path):
     assert "2" in result.output
     assert "yes" in result.output
     assert "no" in result.output
+
+
+def _setup_credential_references(tmp_path):
+    """Store with 3 credential-bearing reference URLs, two sharing a base URL."""
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    conn = connect(db_path)
+    now = "2026-01-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen)"
+        " VALUES ('p1', 'person', 'Alice Tran', '[]', '{}', ?, ?)",
+        (now, now),
+    )
+    for eid, url in (
+        ("ref-a", "https://meet.example.com/j/123?pwd=AbC123"),
+        ("ref-b", "https://meet.example.com/j/123?pwd=AbC123zz"),
+        ("ref-c", "https://files.example.com/doc?id=7&token=AbC123"),
+    ):
+        conn.execute(
+            "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen)"
+            " VALUES (?, 'reference', ?, '[]', '{}', ?, ?)",
+            (eid, url, now, now),
+        )
+        conn.execute(
+            "INSERT INTO claims (id, subject_id, predicate, object,"
+            " confidence, first_asserted, last_confirmed)"
+            " VALUES (?, ?, 'topic', 'sync', 0.5, ?, ?)",
+            (f"c-{eid}", eid, now, now),
+        )
+        conn.execute(
+            "INSERT INTO relationships (id, subject_id, predicate, object_id,"
+            " first_seen, last_confirmed)"
+            " VALUES (?, 'p1', 'shared', ?, ?, ?)",
+            (f"r-{eid}", eid, now, now),
+        )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def _store_rows(db_path):
+    conn = connect(db_path)
+    try:
+        return {
+            table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+            for table in ("entities", "claims", "relationships")
+        }
+    finally:
+        conn.close()
+
+
+def test_entity_rekey_references_dry_run(tmp_path):
+    db_path = _setup_credential_references(tmp_path)
+    before = _store_rows(db_path)
+
+    result = runner.invoke(app, ["entity", "rekey-references", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Would re-key 3 reference entity(ies) (2 renamed, 1 merged)" in result.stdout
+    assert "https://meet.example.com/j/123" in result.stdout
+    assert "https://files.example.com/doc?id=7" in result.stdout
+    assert "re-run with --confirm" in result.stdout
+    assert "AbC123" not in result.stdout
+    assert "AbC123" not in result.stderr
+    assert _store_rows(db_path) == before
+    assert list(tmp_path.glob("*.bak.*")) == []
+
+
+def test_entity_rekey_references_confirm(tmp_path):
+    db_path = _setup_credential_references(tmp_path)
+
+    result = runner.invoke(
+        app, ["entity", "rekey-references", "--confirm", "--home", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0
+    assert "Backup:" in result.stdout
+    assert "Re-keyed 3 reference entity(ies) (2 renamed, 1 merged)" in result.stdout
+    assert "AbC123" not in result.stdout
+    assert "AbC123" not in result.stderr
+    assert len(list(tmp_path.glob("*.bak.*"))) == 1
+
+    rows = _store_rows(db_path)
+    assert not any("AbC123" in str(r) for r in rows["entities"])
+
+    again = runner.invoke(app, ["entity", "rekey-references", "--confirm", "--home", str(tmp_path)])
+    assert again.exit_code == 0
+    assert "No credential-bearing reference entities found." in again.stdout
+    assert _store_rows(db_path) == rows
+
+
+def test_entity_rekey_references_help_shows_confirm():
+    result = runner.invoke(app, ["entity", "rekey-references", "--help"])
+
+    # CI forces Rich colour, and the escape codes split option names apart.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert result.exit_code == 0
+    assert "--confirm" in plain

@@ -1250,6 +1250,51 @@ def entity_prune_links_cmd(
         conn.close()
 
 
+@entity_app.command("rekey-references")
+def entity_rekey_references_cmd(
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Apply changes (preview only without this flag)"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Re-key reference entities whose URLs carry credential query parameters."""
+    from patina.maintenance import rekey_credential_references
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        result = rekey_credential_references(conn, confirm=confirm)
+
+        if result["backup"]:
+            typer.echo(f"Backup: {result['backup']}")
+
+        if not result["entities"]:
+            typer.echo("No credential-bearing reference entities found.")
+            return
+
+        mode = "Re-keyed" if confirm else "Would re-key"
+        alias_only = (
+            f", {result['aliases_sanitized']} aliases only" if result["aliases_sanitized"] else ""
+        )
+        typer.echo(
+            f"{mode} {len(result['entities'])} reference entity(ies)"
+            f" ({result['renamed']} renamed, {result['merged']} merged{alias_only}):"
+        )
+        for ent in result["entities"]:
+            typer.echo(
+                f"  {ent['old_id'][:8]} -> {ent['new_id'][:8]} ({ent['action']}) {ent['name']}"
+            )
+        if not confirm:
+            n = len(result["entities"])
+            typer.echo(f"{n} re-key(s) proposed — re-run with --confirm to apply")
+    finally:
+        conn.close()
+
+
 @entity_app.command("retype")
 def entity_retype_cmd(
     confirm: bool = typer.Option(

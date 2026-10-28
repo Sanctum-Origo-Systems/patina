@@ -274,3 +274,11 @@ Total: 3 PRs, $10.21
 - #420: Fix: merge DN senders by trailing handle alias ($0.00)
 Total: 4 PRs, $6.52
 
+## v0.26.0 (2026-10-13)
+- #454: Feat: extraction.py + ingest.py Slack ID precedence ($1.83)
+- #453: Fix: EVAL.md first-attempt chart plots false zeros for no-outcome weeks ($4.81)
+- #452: Feat: preview/commit equivalence invariant for maintenance commands ($1.94)
+- #451: Fix: resolve_entity_id returns wrong entity when duplicate Slack ID exists ($1.50)
+- #450: Feat: shared identity fixtures + graph.py Slack ID contract ($2.34)
+Total: 5 PRs, $12.42
+
