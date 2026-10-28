@@ -1148,12 +1148,15 @@ def entity_dedup_cmd(
         for merge in result["merges"]:
             match = merge.get("match_identifier", "")
             suffix = f" (match: {match})" if match else ""
+            if merge.get("shape"):
+                suffix += f" [shape: {merge['shape']}]"
             typer.echo(f"  '{merge['drop_name']}' -> '{merge['keep_name']}'{suffix}")
         for skip in result.get("skipped", []):
             drop, keep = skip["drop_name"], skip["keep_name"]
             typer.echo(f"  SKIP '{drop}' -> '{keep}' ({skip['reason']})")
         for review in needs_review:
-            typer.echo(f"  REVIEW '{review['name']}' (needs review: {review['reason']})")
+            suffix = f" [shape: {review['shape']}]" if review.get("shape") else ""
+            typer.echo(f"  REVIEW '{review['name']}' (needs review: {review['reason']}){suffix}")
         if not confirm and result["entities_merged"] > 0:
             n = result["entities_merged"]
             typer.echo(f"{n} merges proposed — re-run with --confirm to apply")
@@ -1243,6 +1246,51 @@ def entity_prune_links_cmd(
         typer.echo(f"{mode} {result['pruned']} link-markup entity(ies):")
         for ent in result["entities"]:
             typer.echo(f"  {ent['name']}")
+    finally:
+        conn.close()
+
+
+@entity_app.command("rekey-references")
+def entity_rekey_references_cmd(
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Apply changes (preview only without this flag)"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Re-key reference entities whose URLs carry credential query parameters."""
+    from patina.maintenance import rekey_credential_references
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        result = rekey_credential_references(conn, confirm=confirm)
+
+        if result["backup"]:
+            typer.echo(f"Backup: {result['backup']}")
+
+        if not result["entities"]:
+            typer.echo("No credential-bearing reference entities found.")
+            return
+
+        mode = "Re-keyed" if confirm else "Would re-key"
+        alias_only = (
+            f", {result['aliases_sanitized']} aliases only" if result["aliases_sanitized"] else ""
+        )
+        typer.echo(
+            f"{mode} {len(result['entities'])} reference entity(ies)"
+            f" ({result['renamed']} renamed, {result['merged']} merged{alias_only}):"
+        )
+        for ent in result["entities"]:
+            typer.echo(
+                f"  {ent['old_id'][:8]} -> {ent['new_id'][:8]} ({ent['action']}) {ent['name']}"
+            )
+        if not confirm:
+            n = len(result["entities"])
+            typer.echo(f"{n} re-key(s) proposed — re-run with --confirm to apply")
     finally:
         conn.close()
 
@@ -1399,6 +1447,12 @@ def entity_repair_multi_identity_cmd(
 
         result = repair_multi_identity_names(conn, dry_run=not confirm)
 
+        for skip in result["skipped"]:
+            typer.echo(
+                f"  Skipped {skip['id'][:8]} '{skip['name']}' ({skip['reason']}):"
+                f" {', '.join(skip['foreign_ids'])}"
+            )
+
         if result["repaired"] == 0:
             typer.echo("No multi-identity entities need name repair.")
             return
@@ -1406,7 +1460,11 @@ def entity_repair_multi_identity_cmd(
         mode = "Repaired" if confirm else "Would repair"
         typer.echo(f"{mode} {result['repaired']} multi-identity entity(ies):")
         for ent in result["entities"]:
-            typer.echo(f"  {ent['id'][:8]}: '{ent['old_name']}' -> '{ent['new_name']}'")
+            stripped = ", ".join(ent["stripped_aliases"]) or "(none)"
+            typer.echo(
+                f"  {ent['id'][:8]}: '{ent['old_name']}' -> '{ent['new_name']}'"
+                f" (stripped aliases: {stripped})"
+            )
         if not confirm:
             typer.echo(f"{result['repaired']} repair(s) proposed — re-run with --confirm to apply")
     finally:

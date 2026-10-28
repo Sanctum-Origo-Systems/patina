@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
+from patina.extraction import _make_id
 from patina.graph import (
     IDENTIFIER_PRECEDENCE,
     get_entity,
@@ -33,6 +35,7 @@ from patina.maintenance import (
     merge_entities,
     prune_non_person_entities,
     prune_slack_link_entities,
+    rekey_credential_references,
     repair_multi_identity_names,
     repair_sink_handle_aliases,
     reprocess_observations,
@@ -42,6 +45,7 @@ from patina.maintenance import (
     store_snapshot_token,
 )
 from patina.models import Claim, Entity, Observation, Relationship
+from patina.store import record_alias_provenance
 
 
 def _entity(eid, name, aliases=None):
@@ -626,6 +630,207 @@ def test_find_dedup_ambiguous_handle_alias_needs_review(db_conn):
     for c in result["candidates"]:
         all_ids = {c["keep"]["id"]} | {d["id"] for d in c["drop"]}
         assert "e3" not in all_ids
+
+
+# ── Shape A / Shape B: one person split across entities (#527) ──
+
+
+def _members(candidate):
+    return {candidate["keep"]["id"]} | {d["id"] for d in candidate["drop"]}
+
+
+def _review_by_id(result):
+    return {r["id"]: r for r in result["needs_review"]}
+
+
+def test_shape_a_handle_alias_of_person_merges(db_conn):
+    """Shape A: a handle-named sender aliased by one full-name person merges into it."""
+    _insert_entity_raw(db_conn, "h", "jdoe", aliases=["U0000000B1"])
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe", "U0000000B1"])
+    insert_observation(db_conn, _obs("o1", "h"))
+    insert_observation(db_conn, _obs("o2", "h", ts=1001.0))
+    insert_claim(db_conn, _claim("c1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert len(result["candidates"]) == 1
+    candidate = result["candidates"][0]
+    assert candidate["keep"]["id"] == "f"
+    assert [d["id"] for d in candidate["drop"]] == ["h"]
+    assert candidate["shape"] == "handle_alias_of_person"
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 1
+    assert report["merges"][0]["shape"] == "handle_alias_of_person"
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'h'").fetchone() is None
+    senders = {r["sender_entity_id"] for r in db_conn.execute("SELECT * FROM observations")}
+    assert senders == {"f"}
+    subjects = {r["subject_id"] for r in db_conn.execute("SELECT * FROM claims")}
+    assert subjects == {"f"}
+    assert resolve_entity_id(db_conn, "jdoe") == "f"
+
+
+def test_shape_a_matches_at_handle_alias_and_lowercase_full_name(db_conn):
+    """Shape A compares normalize_name forms: '@jdoe' on 'jane doe' holds handle 'jdoe'."""
+    _insert_entity_raw(db_conn, "h", "jdoe")
+    _insert_entity_raw(db_conn, "f", "jane doe", aliases=["@jdoe"])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert len(result["candidates"]) == 1
+    candidate = result["candidates"][0]
+    assert candidate["keep"]["id"] == "f"
+    assert _members(candidate) == {"h", "f"}
+    assert candidate["shape"] == "handle_alias_of_person"
+
+
+def test_shape_a_conflicting_slack_ids_needs_review(db_conn):
+    _insert_entity_raw(db_conn, "h", "jdoe", aliases=["U0000000B1"])
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe", "U0000000B2"])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "conflicting Slack IDs"
+    assert review["shape"] == "handle_alias_of_person"
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 0
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'h'").fetchone() is not None
+
+
+def test_shape_a_handle_aliased_by_two_people_needs_review(db_conn):
+    _insert_entity_raw(db_conn, "h", "jdoe")
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe"])
+    _insert_entity_raw(db_conn, "g", "Jim Doe", aliases=["@jdoe"])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "ambiguous handle alias"
+    assert review["shape"] == "handle_alias_of_person"
+    assert sorted(review["related"]) == ["Jane Doe", "Jim Doe"]
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 0
+
+
+def test_shape_a_multi_identity_holder_needs_review(db_conn):
+    dn_a = "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=JDOE"
+    dn_b = "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=QHALE"
+    _insert_entity_raw(db_conn, "h", "jdoe")
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe", dn_a, dn_b])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "multi-identity"
+    assert review["shape"] == "handle_alias_of_person"
+
+
+def test_shape_a_owner_holder_needs_review(db_conn):
+    _insert_entity_raw(db_conn, "h", "jdoe")
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jdoe"], is_owner=1)
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "owner"
+    assert review["shape"] == "handle_alias_of_person"
+
+
+def test_shape_b_first_name_only_without_shared_id_review_only(db_conn):
+    _insert_entity_raw(db_conn, "j", "Jane")
+    _insert_entity_raw(db_conn, "f", "Jane Doe")
+    insert_observation(db_conn, _obs("o1", "j"))
+    insert_observation(db_conn, _obs("o2", "f"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["j"]
+    assert review["reason"] == "first_name_only"
+    assert review["shape"] == "first_name_only"
+    assert review["related"] == ["Jane Doe"]
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 0
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'j'").fetchone() is not None
+
+
+def test_shape_b_name_alias_alone_never_merges(db_conn):
+    """A first-name alias on the full-name person is still only a name match."""
+    _insert_entity_raw(db_conn, "j", "jane")
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jane"])
+    insert_observation(db_conn, _obs("o1", "j"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    assert _review_by_id(result)["j"]["reason"] == "first_name_only"
+
+
+@pytest.mark.parametrize(
+    "shared",
+    ["U0000000B1", "jane.doe@example.com", "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=JDOE"],
+    ids=["slack-id", "email", "full-dn"],
+)
+def test_shape_b_shared_id_merges(db_conn, shared):
+    _insert_entity_raw(db_conn, "j", "Jane", aliases=[shared])
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=[shared])
+    insert_observation(db_conn, _obs("o1", "j"))
+
+    result = find_dedup_candidates(db_conn)
+    assert len(result["candidates"]) == 1
+    candidate = result["candidates"][0]
+    assert candidate["keep"]["id"] == "f"
+    assert _members(candidate) == {"j", "f"}
+    assert candidate["shape"] == "first_name_only"
+    assert "j" not in _review_by_id(result)
+
+
+def test_shape_b_two_full_name_matches_no_entry(db_conn):
+    _insert_entity_raw(db_conn, "j", "Jane")
+    _insert_entity_raw(db_conn, "f", "Jane Doe")
+    _insert_entity_raw(db_conn, "r", "Jane Roe")
+    insert_observation(db_conn, _obs("o1", "j"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    assert result["needs_review"] == []
+
+
+def test_shape_b_two_first_name_entities_no_entry(db_conn):
+    _insert_entity_raw(db_conn, "j1", "Jane")
+    _insert_entity_raw(db_conn, "j2", "jane")
+    _insert_entity_raw(db_conn, "f", "Jane Doe")
+
+    result = find_dedup_candidates(db_conn)
+    assert all("f" not in _members(c) for c in result["candidates"])
+    assert all(c["shape"] is None for c in result["candidates"])
+    assert result["needs_review"] == []
+
+
+def test_cli_entity_dedup_shows_shape(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "h", "jdoe")
+    _insert_entity_raw(conn, "f", "Jane Doe", aliases=["jdoe"])
+    _insert_entity_raw(conn, "j", "Jim")
+    _insert_entity_raw(conn, "g", "Jim Roe")
+    insert_observation(conn, _obs("o1", "h"))
+    conn.close()
+
+    result = CliRunner().invoke(app, ["entity", "dedup", "--home", str(db_path.parent)])
+    assert result.exit_code == 0, result.output
+    assert "'jdoe' -> 'Jane Doe'" in result.output
+    assert "[shape: handle_alias_of_person]" in result.output
+    assert "REVIEW 'Jim' (needs review: first_name_only) [shape: first_name_only]" in result.output
 
 
 def test_find_dedup_conflicting_id_fixture_needs_review(conflicting_id):
@@ -3415,6 +3620,7 @@ def test_repair_multi_identity_names_dry_run_zero_writes(db_conn):
     assert result["repaired"] == 1
     assert result["entities"][0]["old_name"] == "user_g"
     assert result["entities"][0]["new_name"] == "/O=EXAMPLEORG/OU=X"
+    assert result["entities"][0]["stripped_aliases"] == ["user_g"]
 
     row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'sink1'").fetchone()
     assert row["name"] == "user_g"
@@ -3605,7 +3811,7 @@ def test_cli_repair_multi_identity(db_path):
     res_dry = runner.invoke(app, ["entity", "repair-multi-identity", "--home", str(home)])
     assert res_dry.exit_code == 0
     assert "Would repair 1 multi-identity entity(ies)" in res_dry.output
-    assert "user_g" in res_dry.output
+    assert "'user_g' -> '/O=EXAMPLEORG/OU=X' (stripped aliases: user_g)" in res_dry.output
 
     conn = connect(db_path)
     row = conn.execute("SELECT name FROM entities WHERE id = 'sink'").fetchone()
@@ -3619,11 +3825,118 @@ def test_cli_repair_multi_identity(db_path):
     )
     assert res_confirm.exit_code == 0
     assert "Repaired 1 multi-identity entity(ies)" in res_confirm.output
+    assert "'user_g' -> '/O=EXAMPLEORG/OU=X' (stripped aliases: user_g)" in res_confirm.output
 
     conn = connect(db_path)
     row = conn.execute("SELECT name FROM entities WHERE id = 'sink'").fetchone()
     assert row["name"] == "/O=EXAMPLEORG/OU=X"
     conn.close()
+
+
+# ── repair_multi_identity_names: person with a stale foreign ID (#522) ──
+
+
+def _seed_stale_foreign_id(conn):
+    """A is user_b carrying user_c's stale Slack ID through an old misroute; C is user_c."""
+    _insert_entity_raw(conn, "ent-a", "user_b", aliases=["user_b", "U0EXAMPLE2", "U0EXAMPLE1"])
+    _insert_entity_raw(conn, "ent-c", "user_c", aliases=["user_c", "U0EXAMPLE1"])
+
+
+def _raw_entity(conn, eid):
+    return tuple(conn.execute("SELECT * FROM entities WHERE id = ?", (eid,)).fetchone())
+
+
+def test_repair_multi_identity_skips_person_with_stale_foreign_id_dry_run(db_conn):
+    _seed_stale_foreign_id(db_conn)
+    a_before, c_before = _raw_entity(db_conn, "ent-a"), _raw_entity(db_conn, "ent-c")
+
+    result = repair_multi_identity_names(db_conn, dry_run=True)
+
+    assert result["repaired"] == 0
+    assert result["entities"] == []
+    assert result["skipped"] == [
+        {
+            "id": "ent-a",
+            "name": "user_b",
+            "reason": "stale_foreign_id",
+            "foreign_ids": ["U0EXAMPLE1"],
+        }
+    ]
+    assert _raw_entity(db_conn, "ent-a") == a_before
+    assert _raw_entity(db_conn, "ent-c") == c_before
+
+
+def test_repair_multi_identity_commit_leaves_stale_foreign_id_person_intact(db_conn):
+    _seed_stale_foreign_id(db_conn)
+    a_before, c_before = _raw_entity(db_conn, "ent-a"), _raw_entity(db_conn, "ent-c")
+
+    result = repair_multi_identity_names(db_conn, dry_run=False)
+
+    assert result["repaired"] == 0
+    assert _raw_entity(db_conn, "ent-a") == a_before
+    assert _raw_entity(db_conn, "ent-c") == c_before
+    assert resolve_entity_id(db_conn, "user_b") == "ent-a"
+
+
+def test_repair_multi_identity_renames_true_sink_named_after_held_handle(db_conn):
+    """A sink with 3 member Slack IDs, named after a handle Dana also holds, is still renamed."""
+    _insert_entity_raw(db_conn, "p-dana", "Dana Brook", aliases=["user_d", "U0EXAMPLE3"])
+    _insert_entity_raw(
+        db_conn,
+        "sink",
+        "user_d",
+        aliases=["user_d", "U0EXAMPLE3", "U0EXAMPLE4", "U0EXAMPLE5", "/O=EXAMPLEORG/OU=X"],
+    )
+
+    result = repair_multi_identity_names(db_conn, dry_run=False)
+
+    assert result["repaired"] == 1
+    assert result["skipped"] == []
+    item = result["entities"][0]
+    assert item["id"] == "sink"
+    assert item["new_name"] == "/O=EXAMPLEORG/OU=X"
+    assert item["stripped_aliases"] == ["user_d"]
+
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'sink'").fetchone()
+    assert row["name"] == "/O=EXAMPLEORG/OU=X"
+    assert json.loads(row["aliases"]) == [
+        "U0EXAMPLE3",
+        "U0EXAMPLE4",
+        "U0EXAMPLE5",
+        "/O=EXAMPLEORG/OU=X",
+    ]
+    assert resolve_entity_id(db_conn, "user_d") == "p-dana"
+
+
+def test_repair_multi_identity_renames_one_own_id_when_name_held_elsewhere(db_conn):
+    """One own Slack ID left does not skip the rename when another entity holds the name."""
+    _insert_entity_raw(db_conn, "p-dana", "Dana Brook", aliases=["user_d", "U0EXAMPLE3"])
+    _insert_entity_raw(db_conn, "sink", "user_d", aliases=["user_d", "U0EXAMPLE3", "U0EXAMPLE4"])
+
+    result = repair_multi_identity_names(db_conn, dry_run=True)
+
+    assert result["skipped"] == []
+    assert [(e["id"], e["new_name"], e["stripped_aliases"]) for e in result["entities"]] == [
+        ("sink", "/O=SINK/sink", ["user_d"])
+    ]
+
+
+def test_cli_repair_multi_identity_lists_skipped_stale_foreign_id(db_path):
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _seed_stale_foreign_id(conn)
+    conn.close()
+
+    res = CliRunner().invoke(
+        app, ["entity", "repair-multi-identity", "--home", str(db_path.parent)]
+    )
+    assert res.exit_code == 0
+    assert "Skipped ent-a 'user_b' (stale_foreign_id): U0EXAMPLE1" in res.output
+    assert "No multi-identity entities need name repair." in res.output
 
 
 # ── IDENTIFIER_PRECEDENCE contract (#511) ─────────────────────
@@ -3833,3 +4146,250 @@ def test_cli_repair_sink_handles(db_path):
     row = conn.execute("SELECT aliases FROM entities WHERE id = 'sink'").fetchone()
     assert "user_a" not in json.loads(row["aliases"])
     conn.close()
+
+
+# ── rekey_credential_references ─────────────────────────────
+
+_CRED_PARAM_RE = re.compile(
+    r"(?i)[?&](pwd|password|passcode|token|access_token|key|api_key|sig|signature|x-amz-[a-z-]+)="
+)
+_MEET_BASE = "https://meet.example.com/j/123"
+_DOC_BASE = "https://files.example.com/doc?id=7"
+_PLAIN_URL = "https://example.com/page?ref=home"
+
+
+def _insert_reference_raw(conn, eid, name):
+    conn.execute(
+        "INSERT INTO entities"
+        " (id, type, name, aliases, metadata, first_seen, last_seen, decay_rate, is_owner)"
+        " VALUES (?, 'reference', ?, '[]', '{}', '2026-01-01', '2026-01-02', 0.02, 0)",
+        (eid, name),
+    )
+    conn.commit()
+
+
+def _seed_credential_references(conn):
+    """3 credential URLs (two sharing a base), one plain URL, one person."""
+    _insert_entity_raw(conn, "p1", "Alice Tran")
+    _insert_reference_raw(conn, "ref-a", f"{_MEET_BASE}?pwd=AbC123")
+    _insert_reference_raw(conn, "ref-b", f"{_MEET_BASE}?PWD=AbC123zz")
+    _insert_reference_raw(conn, "ref-c", f"{_DOC_BASE}&sig=AbC123")
+    _insert_reference_raw(conn, "ref-plain", _PLAIN_URL)
+    for eid in ("ref-a", "ref-b", "ref-c", "ref-plain"):
+        insert_claim(conn, _claim(f"c-{eid}", eid, predicate="topic", obj="sync"))
+        upsert_relationship(conn, _rel(f"r-{eid}", "p1", eid, predicate="shared"))
+    conn.commit()
+
+
+def _store_rows(conn):
+    return {
+        table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+        for table in ("entities", "claims", "relationships")
+    }
+
+
+def _backups(db_path):
+    return list(db_path.parent.glob("*.bak.*"))
+
+
+def test_rekey_credential_references_dry_run_reports(db_conn):
+    _seed_credential_references(db_conn)
+
+    result = rekey_credential_references(db_conn)
+
+    assert len(result["entities"]) == 3
+    assert result["merged"] == 1
+    assert result["renamed"] == 2
+    assert all(e["had_credentials"] is True for e in result["entities"])
+    assert {e["old_id"] for e in result["entities"]} == {"ref-a", "ref-b", "ref-c"}
+    assert {e["name"] for e in result["entities"]} == {_MEET_BASE, _DOC_BASE}
+    assert {e["new_id"] for e in result["entities"]} == {
+        _make_id("reference", _MEET_BASE),
+        _make_id("reference", _DOC_BASE),
+    }
+
+
+def test_rekey_credential_references_dry_run_writes_nothing(db_conn, db_path):
+    _seed_credential_references(db_conn)
+    before = _store_rows(db_conn)
+
+    result = rekey_credential_references(db_conn)
+
+    assert _store_rows(db_conn) == before
+    assert _backups(db_path) == []
+    assert result["backup"] is None
+    assert "AbC123" not in repr(result)
+    assert "AbC123" not in json.dumps(result)
+
+
+def test_rekey_credential_references_backs_up_before_first_write(db_conn, db_path, monkeypatch):
+    import patina.maintenance as maintenance
+
+    _seed_credential_references(db_conn)
+    before = _store_rows(db_conn)
+    calls = []
+    real_backup = maintenance.backup_store
+
+    def spy_backup(path):
+        calls.append(_store_rows(db_conn) == before)
+        return real_backup(path)
+
+    monkeypatch.setattr(maintenance, "backup_store", spy_backup)
+
+    result = rekey_credential_references(db_conn, confirm=True)
+
+    assert calls == [True]
+    assert len(_backups(db_path)) == 1
+    assert result["backup"] == str(_backups(db_path)[0])
+    names = [
+        r["name"]
+        for r in db_conn.execute("SELECT name FROM entities WHERE type = 'reference'").fetchall()
+    ]
+    assert not any(_CRED_PARAM_RE.search(n) for n in names)
+
+
+def test_rekey_credential_references_merges_into_existing(db_conn, monkeypatch):
+    import patina.maintenance as maintenance
+
+    _seed_credential_references(db_conn)
+    meet_id = _make_id("reference", _MEET_BASE)
+    _insert_reference_raw(db_conn, meet_id, _MEET_BASE)
+    merges = []
+    real_merge = maintenance.merge_entities
+
+    def spy_merge(conn, keep_id, drop_id, **kwargs):
+        merges.append((keep_id, drop_id))
+        return real_merge(conn, keep_id, drop_id, **kwargs)
+
+    monkeypatch.setattr(maintenance, "merge_entities", spy_merge)
+
+    result = rekey_credential_references(db_conn, confirm=True)
+
+    assert result["merged"] == 2
+    assert sorted(merges) == [(meet_id, "ref-a"), (meet_id, "ref-b")]
+    for old_id in ("ref-a", "ref-b"):
+        assert get_entity(db_conn, old_id) is None
+        claim = db_conn.execute(
+            "SELECT subject_id FROM claims WHERE id = ?", (f"c-{old_id}",)
+        ).fetchone()
+        assert claim["subject_id"] == meet_id
+        rel = db_conn.execute(
+            "SELECT object_id FROM relationships WHERE id = ?", (f"r-{old_id}",)
+        ).fetchone()
+        assert rel["object_id"] == meet_id
+    row = db_conn.execute("SELECT aliases FROM entities WHERE id = ?", (meet_id,)).fetchone()
+    assert "AbC123" not in row["aliases"]
+
+
+def test_rekey_credential_references_renames_when_target_missing(db_conn):
+    _seed_credential_references(db_conn)
+    doc_id = _make_id("reference", _DOC_BASE)
+
+    result = rekey_credential_references(db_conn, confirm=True)
+
+    assert result["renamed"] == 2
+    assert result["merged"] == 1
+    assert get_entity(db_conn, "ref-c") is None
+    row = db_conn.execute(
+        "SELECT type, name, first_seen, last_seen FROM entities WHERE id = ?", (doc_id,)
+    ).fetchone()
+    assert row["type"] == "reference"
+    assert row["name"] == _DOC_BASE
+    assert (row["first_seen"], row["last_seen"]) == ("2026-01-01", "2026-01-02")
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c-ref-c'").fetchone()
+    assert claim["subject_id"] == doc_id
+    rel = db_conn.execute("SELECT object_id FROM relationships WHERE id = 'r-ref-c'").fetchone()
+    assert rel["object_id"] == doc_id
+
+    old_ids = ("ref-a", "ref-b", "ref-c")
+    ph = ",".join("?" for _ in old_ids)
+    assert not db_conn.execute(
+        f"SELECT 1 FROM claims WHERE subject_id IN ({ph})", old_ids
+    ).fetchall()
+    assert not db_conn.execute(
+        f"SELECT 1 FROM relationships WHERE subject_id IN ({ph}) OR object_id IN ({ph})",
+        old_ids + old_ids,
+    ).fetchall()
+
+
+def test_rekey_credential_references_confirm_reports_sanitized_only(db_conn):
+    _seed_credential_references(db_conn)
+
+    result = rekey_credential_references(db_conn, confirm=True)
+
+    assert len(result["entities"]) == 3
+    for e in result["entities"]:
+        assert e["old_id"] in {"ref-a", "ref-b", "ref-c"}
+        assert e["new_id"] == _make_id("reference", e["name"])
+        assert e["had_credentials"] is True
+        assert not _CRED_PARAM_RE.search(e["name"])
+    assert "AbC123" not in repr(result)
+    assert "AbC123" not in json.dumps(result)
+
+
+def test_rekey_credential_references_idempotent(db_conn):
+    _seed_credential_references(db_conn)
+    rekey_credential_references(db_conn, confirm=True)
+    after_first = _store_rows(db_conn)
+
+    second = rekey_credential_references(db_conn, confirm=True)
+
+    assert second["renamed"] == 0
+    assert second["merged"] == 0
+    assert second["entities"] == []
+    assert _store_rows(db_conn) == after_first
+
+
+def test_rekey_credential_references_leaves_plain_references(db_conn):
+    _seed_credential_references(db_conn)
+    plain_before = tuple(
+        db_conn.execute("SELECT * FROM entities WHERE id = 'ref-plain'").fetchone()
+    )
+
+    dry = rekey_credential_references(db_conn)
+    assert "ref-plain" not in {e["old_id"] for e in dry["entities"]}
+    rekey_credential_references(db_conn, confirm=True)
+
+    row = db_conn.execute("SELECT * FROM entities WHERE id = 'ref-plain'").fetchone()
+    assert tuple(row) == plain_before
+    claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c-ref-plain'").fetchone()
+    assert claim["subject_id"] == "ref-plain"
+
+
+def test_rekey_credential_references_sanitizes_aliases_and_provenance(db_conn):
+    # A clean-named reference that picked up a credential URL as an alias (e.g. via an
+    # earlier merge) is cleaned in place; its id and name stay the same.
+    _insert_reference_raw(db_conn, "ref-clean", _PLAIN_URL)
+    db_conn.execute(
+        "UPDATE entities SET aliases = ? WHERE id = 'ref-clean'",
+        (json.dumps([f"{_MEET_BASE}?pwd=AbC123", "launch-doc"]),),
+    )
+    record_alias_provenance(
+        db_conn, "ref-clean", f"{_MEET_BASE}?pwd=AbC123", adapter="unknown", action="added"
+    )
+    db_conn.commit()
+
+    preview = rekey_credential_references(db_conn)
+    assert preview["aliases_sanitized"] == 1
+    assert preview["entities"][0]["old_id"] == preview["entities"][0]["new_id"] == "ref-clean"
+    assert "AbC123" not in json.dumps(preview)
+
+    rekey_credential_references(db_conn, confirm=True)
+
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'ref-clean'").fetchone()
+    assert row["name"] == _PLAIN_URL
+    assert json.loads(row["aliases"]) == [_MEET_BASE, "launch-doc"]
+    prov = db_conn.execute("SELECT alias FROM entity_alias_provenance").fetchall()
+    assert not any("AbC123" in r["alias"] for r in prov)
+    assert rekey_credential_references(db_conn)["entities"] == []
+
+
+def test_rekey_credential_references_merge_leaves_no_self_alias(db_conn):
+    _seed_credential_references(db_conn)
+
+    rekey_credential_references(db_conn, confirm=True)
+
+    meet_id = _make_id("reference", _MEET_BASE)
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (meet_id,)).fetchone()
+    assert row["name"] == _MEET_BASE
+    assert _MEET_BASE not in json.loads(row["aliases"])
