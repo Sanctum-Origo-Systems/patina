@@ -1,4 +1,8 @@
 ## v0.30.0 (2026-10-28)
+- #538: Feat: dry-run-by-default cleanup command to re-key, merge and repo ($1.56)
+- #536: Feat: sanitize credential query params in reference entity names a ($0.55)
+- #535: Fix: one person split across entities — dedup preview misses hand ($2.97)
+- #534: Fix: repair_multi_identity_names renames a single person carrying ($1.27)
 - #525: Feat: record 'added' alias provenance (adapter + observation id) o ($1.65)
 - #524: Feat: test: alias-subset-of-net-added invariant in the e2e identit ($1.37)
 - #523: Feat: provenance for merge, split_dn_sink and repair_multi_identit ($1.60)
@@ -7,7 +11,7 @@
 - #518: Feat: persist extraction skip and alias-collision counts per run, ($1.90)
 - #517: Feat: centralize IDENTIFIER_PRECEDENCE in graph.py and add identit ($2.76)
 - #516: Fix: DN sink keeps bare handle alias, so handle resolves as ambig ($0.88)
-Total: 8 PRs, $15.67
+Total: 12 PRs, $22.02
 
 ## v0.29.2 (2026-10-26)
 - #499: Fix: normalize_name returns empty string for @-prefixed aliases ($0.19)
