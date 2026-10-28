@@ -926,3 +926,10 @@ def test_entity_rekey_references_confirm(tmp_path):
     assert again.exit_code == 0
     assert "No credential-bearing reference entities found." in again.stdout
     assert _store_rows(db_path) == rows
+
+
+def test_entity_rekey_references_help_shows_confirm():
+    result = runner.invoke(app, ["entity", "rekey-references", "--help"])
+
+    assert result.exit_code == 0
+    assert "--confirm" in result.stdout

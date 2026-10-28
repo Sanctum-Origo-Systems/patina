@@ -1277,9 +1277,12 @@ def entity_rekey_references_cmd(
             return
 
         mode = "Re-keyed" if confirm else "Would re-key"
+        alias_only = (
+            f", {result['aliases_sanitized']} aliases only" if result["aliases_sanitized"] else ""
+        )
         typer.echo(
             f"{mode} {len(result['entities'])} reference entity(ies)"
-            f" ({result['renamed']} renamed, {result['merged']} merged):"
+            f" ({result['renamed']} renamed, {result['merged']} merged{alias_only}):"
         )
         for ent in result["entities"]:
             typer.echo(

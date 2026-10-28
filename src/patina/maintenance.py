@@ -1380,18 +1380,28 @@ def rekey_credential_references(
     from patina.extraction import _make_id, sanitize_reference_url
 
     rows = conn.execute(
-        "SELECT id, name FROM entities WHERE type = 'reference' ORDER BY id"
+        "SELECT id, name, aliases FROM entities WHERE type = 'reference' ORDER BY id"
     ).fetchall()
     existing_ids = {r["id"] for r in conn.execute("SELECT id FROM entities").fetchall()}
 
     plan = []
+    clean_aliases: dict[str, list[str]] = {}
     for r in rows:
         sanitized = sanitize_reference_url(r["name"])
-        if sanitized == r["name"]:
+        aliases = json.loads(r["aliases"] or "[]")
+        alias_hit = any(sanitize_reference_url(a) != a for a in aliases)
+        if sanitized == r["name"] and not alias_hit:
             continue
-        new_id = _make_id("reference", sanitized)
-        action = "merged" if new_id in existing_ids else "renamed"
-        existing_ids.add(new_id)
+        # Credential URLs can also sit in aliases (e.g. from an earlier merge).
+        clean_aliases[r["id"]] = [
+            a for a in dict.fromkeys(sanitize_reference_url(a) for a in aliases) if a != sanitized
+        ]
+        if sanitized == r["name"]:
+            new_id, action = r["id"], "aliases_sanitized"
+        else:
+            new_id = _make_id("reference", sanitized)
+            action = "merged" if new_id in existing_ids else "renamed"
+            existing_ids.add(new_id)
         plan.append(
             {
                 "old_id": r["id"],
@@ -1405,6 +1415,7 @@ def rekey_credential_references(
     result = {
         "renamed": sum(1 for p in plan if p["action"] == "renamed"),
         "merged": sum(1 for p in plan if p["action"] == "merged"),
+        "aliases_sanitized": sum(1 for p in plan if p["action"] == "aliases_sanitized"),
         "entities": plan,
         "backup": None,
     }
@@ -1416,12 +1427,40 @@ def rekey_credential_references(
     if db_path is not None:
         result["backup"] = str(backup_store(db_path))
 
+    ensure_entity_alias_provenance_table(conn)
     for p in plan:
         old_id, new_id = p["old_id"], p["new_id"]
-        # Drop the credential URL before merging so it never becomes an alias.
-        conn.execute("UPDATE entities SET name = ? WHERE id = ?", (p["name"], old_id))
+        # Drop the credential URL from the name and aliases before merging so it
+        # never becomes an alias. Provenance rows are rewritten too: they would
+        # otherwise keep the secret.
+        conn.execute(
+            "UPDATE entities SET name = ?, aliases = ? WHERE id = ?",
+            (p["name"], json.dumps(clean_aliases[old_id]), old_id),
+        )
+        for prov in conn.execute(
+            "SELECT rowid, alias FROM entity_alias_provenance WHERE entity_id = ?", (old_id,)
+        ).fetchall():
+            clean = sanitize_reference_url(prov["alias"])
+            if clean != prov["alias"]:
+                conn.execute(
+                    "UPDATE entity_alias_provenance SET alias = ? WHERE rowid = ?",
+                    (clean, prov["rowid"]),
+                )
+        if p["action"] == "aliases_sanitized":
+            continue
         if p["action"] == "merged":
             merge_entities(conn, new_id, old_id)
+            # merge_entities keeps the dropped name as an alias; here it equals the
+            # survivor's own name, so remove it again.
+            keep = conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (new_id,))
+            keep = keep.fetchone()
+            keep_aliases = json.loads(keep["aliases"] or "[]")
+            if keep["name"] in keep_aliases:
+                conn.execute(
+                    "UPDATE entities SET aliases = ? WHERE id = ?",
+                    (json.dumps([a for a in keep_aliases if a != keep["name"]]), new_id),
+                )
+                _record_alias_changes(conn, new_id, removed=[keep["name"]])
             continue
         conn.execute(
             "INSERT INTO entities (id, type, name, aliases, metadata, first_seen,"
@@ -1431,7 +1470,6 @@ def rekey_credential_references(
             (new_id, old_id),
         )
         rewire_entity_references(conn, new_id, old_id)
-        ensure_entity_alias_provenance_table(conn)
         conn.execute(
             "UPDATE entity_alias_provenance SET entity_id = ? WHERE entity_id = ?",
             (new_id, old_id),

@@ -45,6 +45,7 @@ from patina.maintenance import (
     store_snapshot_token,
 )
 from patina.models import Claim, Entity, Observation, Relationship
+from patina.store import record_alias_provenance
 
 
 def _entity(eid, name, aliases=None):
@@ -4353,3 +4354,42 @@ def test_rekey_credential_references_leaves_plain_references(db_conn):
     assert tuple(row) == plain_before
     claim = db_conn.execute("SELECT subject_id FROM claims WHERE id = 'c-ref-plain'").fetchone()
     assert claim["subject_id"] == "ref-plain"
+
+
+def test_rekey_credential_references_sanitizes_aliases_and_provenance(db_conn):
+    # A clean-named reference that picked up a credential URL as an alias (e.g. via an
+    # earlier merge) is cleaned in place; its id and name stay the same.
+    _insert_reference_raw(db_conn, "ref-clean", _PLAIN_URL)
+    db_conn.execute(
+        "UPDATE entities SET aliases = ? WHERE id = 'ref-clean'",
+        (json.dumps([f"{_MEET_BASE}?pwd=AbC123", "launch-doc"]),),
+    )
+    record_alias_provenance(
+        db_conn, "ref-clean", f"{_MEET_BASE}?pwd=AbC123", adapter="unknown", action="added"
+    )
+    db_conn.commit()
+
+    preview = rekey_credential_references(db_conn)
+    assert preview["aliases_sanitized"] == 1
+    assert preview["entities"][0]["old_id"] == preview["entities"][0]["new_id"] == "ref-clean"
+    assert "AbC123" not in json.dumps(preview)
+
+    rekey_credential_references(db_conn, confirm=True)
+
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'ref-clean'").fetchone()
+    assert row["name"] == _PLAIN_URL
+    assert json.loads(row["aliases"]) == [_MEET_BASE, "launch-doc"]
+    prov = db_conn.execute("SELECT alias FROM entity_alias_provenance").fetchall()
+    assert not any("AbC123" in r["alias"] for r in prov)
+    assert rekey_credential_references(db_conn)["entities"] == []
+
+
+def test_rekey_credential_references_merge_leaves_no_self_alias(db_conn):
+    _seed_credential_references(db_conn)
+
+    rekey_credential_references(db_conn, confirm=True)
+
+    meet_id = _make_id("reference", _MEET_BASE)
+    row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (meet_id,)).fetchone()
+    assert row["name"] == _MEET_BASE
+    assert _MEET_BASE not in json.loads(row["aliases"])
