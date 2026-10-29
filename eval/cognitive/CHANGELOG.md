@@ -1,6 +1,7 @@
 ## v0.31.0 (2026-10-29)
 - #544: Feat: [patina] dedup preview misses Shape A when the alias holder ($1.16)
-Total: 1 PRs, $1.16
+- #543: Feat: [patina] first_name_only dedup label fires on product names ($0.97)
+Total: 2 PRs, $2.13
 
 ## v0.30.0 (2026-10-28)
 - #538: Feat: dry-run-by-default cleanup command to re-key, merge and repo ($1.56)
