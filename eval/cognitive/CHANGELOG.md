@@ -1,3 +1,7 @@
+## v0.31.0 (2026-10-29)
+- #544: Feat: [patina] dedup preview misses Shape A when the alias holder ($1.16)
+Total: 1 PRs, $1.16
+
 ## v0.30.0 (2026-10-28)
 - #538: Feat: dry-run-by-default cleanup command to re-key, merge and repo ($1.56)
 - #536: Feat: sanitize credential query params in reference entity names a ($0.55)
@@ -38,12 +42,4 @@ Total: 1 PRs, $1.53
 - #471: Feat: split_dn_sink routes 0 observations — Outlook adapter sender_dn ($2.09)
 - #469: Fix: truncated DN dedup ($0.00, external contribution)
 Total: 4 PRs, $9.39
-
-## v0.26.1 (2026-10-14)
-- #466: Feat: apply DN rank to maintenance.py and add split command for DN-sink entities ($3.98)
-- #464: Fix: bot sender pattern misses hyphenated -commenter names ($0.67)
-- #463: Feat: rank DNs below handles in _name_type_rank and block truncated-DN matches ($0.75)
-- #458: Chore: enable worktree isolation for patina implement jobs ($0.00)
-- #457: Fix: add external to triage_labels exclusion list ($0.00)
-Total: 5 PRs, $5.40
 
