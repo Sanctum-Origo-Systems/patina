@@ -614,6 +614,21 @@ def _is_full_name(name: str) -> bool:
     return identifier_type(name.strip()) == "display_name"
 
 
+def _is_first_name(name: str) -> bool:
+    """A single capitalized word ("Dana"), unlike a lowercase handle ("dbrook")."""
+    name = name.strip()
+    return len(name) >= 2 and name.isalpha() and name[0].isupper() and name[1:].islower()
+
+
+def _handle_alias_keys(p: dict) -> set[str]:
+    keys = set()
+    for alias in p["aliases"]:
+        clean = normalize_alias(alias).strip().lstrip("@")
+        if clean and identifier_type(clean) == "handle":
+            keys.add(normalize_name(clean))
+    return keys
+
+
 def _find_person_shapes(
     conn: sqlite3.Connection,
     sender_ids: set[str],
@@ -622,7 +637,9 @@ def _find_person_shapes(
     """Find one person split across a handle- or first-name entity and a full-name one.
 
     Shape A (``handle_alias_of_person``): a handle-named person whose normalized
-    name is a handle alias of exactly one full-name person merges into it.
+    name is a handle alias of exactly one full-name person merges into it; when
+    the holder is a first-name-only person ("Dana" holding "dbrook") it goes to
+    review instead, so the first-name entity never survives the handle.
     Shape B (``first_name_only``): a first-name-only person whose first name
     matches exactly one full-name person merges only on a shared Slack ID,
     email or full DN; otherwise it goes to review.
@@ -646,13 +663,17 @@ def _find_person_shapes(
 
     handle_holders: dict[str, list[dict]] = {}
     for p in full_names:
-        keys = set()
-        for alias in p["aliases"]:
-            clean = normalize_alias(alias).strip().lstrip("@")
-            if clean and identifier_type(clean) == "handle":
-                keys.add(normalize_name(clean))
-        for key in keys:
+        for key in _handle_alias_keys(p):
             handle_holders.setdefault(key, []).append(p)
+
+    # A first-name-only person whose only handle alias is another person's handle.
+    first_name_handle_holders: dict[str, list[dict]] = {}
+    for p in persons:
+        if not _is_first_name(p["name"]):
+            continue
+        keys = _handle_alias_keys(p) - {normalize_name(p["name"])}
+        if len(keys) == 1:
+            first_name_handle_holders.setdefault(keys.pop(), []).append(p)
 
     first_name_holders: dict[str, list[dict]] = {}
     for p in full_names:
@@ -731,10 +752,22 @@ def _find_person_shapes(
 
         # Shape A: the handle is an alias of a full-name person.
         holders = [h for h in handle_holders.get(key, []) if h["id"] != ent["id"]]
-        if not holders:
+        first_name_holders_of_key = [
+            h for h in first_name_handle_holders.get(key, []) if h["id"] != ent["id"]
+        ]
+        if len(holders) + len(first_name_holders_of_key) > 1:
+            _review(
+                ent,
+                SHAPE_HANDLE_ALIAS,
+                "ambiguous handle alias",
+                holders + first_name_holders_of_key,
+            )
             continue
-        if len(holders) > 1:
-            _review(ent, SHAPE_HANDLE_ALIAS, "ambiguous handle alias", holders)
+        if first_name_holders_of_key:
+            # The first-name holder must never survive the handle entity: review only.
+            _review(ent, SHAPE_HANDLE_ALIAS, "first-name alias holder", first_name_holders_of_key)
+            continue
+        if not holders:
             continue
         holder = holders[0]
         reason = _blocker(ent, holder)

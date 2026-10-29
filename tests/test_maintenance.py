@@ -20,6 +20,7 @@ from patina.graph import _name_type_rank as _graph_name_type_rank
 from patina.maintenance import (
     StaleSnapshotError,
     _collect_slack_ids,
+    _find_person_shapes,
     _is_junk_sender_name,
     _is_truncated_dn,
     _name_type_rank,
@@ -740,6 +741,59 @@ def test_shape_a_owner_holder_needs_review(db_conn):
     review = _review_by_id(result)["h"]
     assert review["reason"] == "owner"
     assert review["shape"] == "handle_alias_of_person"
+
+
+def test_shape_a_first_name_holder_needs_review_541(db_conn):
+    """Shape A with a first-name-only holder ("Dana" holds "dbrook") is review, never kept."""
+    _insert_entity_raw(db_conn, "h", "dbrook", aliases=["slack:W0EXAMPLE1"])
+    _insert_entity_raw(db_conn, "d", "Dana", aliases=["dbrook"])
+    for i in range(50):
+        insert_observation(db_conn, _obs(f"o{i}", "h", ts=1000.0 + i))
+
+    pairs, review, excluded = _find_person_shapes(db_conn, {"h"}, set())
+    assert all(keep != "d" for _drop, keep, _shape, _match in pairs)
+    assert pairs == []
+    assert len(review) == 1
+    assert review[0]["id"] == "h"
+    assert review[0]["name"] == "dbrook"
+    assert review[0]["related"] == ["Dana"]
+    assert review[0]["shape"] == "handle_alias_of_person"
+    assert review[0]["reason"] == "first-name alias holder"
+    assert excluded == {"h"}
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    assert _review_by_id(result)["h"]["shape"] == "handle_alias_of_person"
+
+    report = dedup_entities(db_conn, snapshot_token=store_snapshot_token(db_conn))
+    assert report["entities_merged"] == 0
+    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'h'").fetchone() is not None
+
+
+@pytest.mark.parametrize(
+    "holder, holder_aliases, handle, handle_aliases",
+    [
+        ("user_c", ["slack:U0CCCC333C", "user_d"], "user_d", ["slack:U0DDD55555D"]),
+        ("user_b", ["U0BBBB222", "user_a"], "user_a", ["U0AAAA111"]),
+        ("dkay", ["@dkim"], "dkim", []),
+    ],
+    ids=["holder-and-handle-own-ids", "conflicting-ids", "lowercase-holder-no-ids"],
+)
+def test_shape_a_handle_to_handle_watch_pair_no_entry_541(
+    db_conn, holder, holder_aliases, handle, handle_aliases
+):
+    """A handle-named holder of another handle is a watch pair: no merge and no review."""
+    _insert_entity_raw(db_conn, "hold", holder, aliases=holder_aliases)
+    _insert_entity_raw(db_conn, "h", handle, aliases=handle_aliases)
+    insert_observation(db_conn, _obs("o1", "hold"))
+    insert_observation(db_conn, _obs("o2", "h", ts=1001.0))
+
+    pairs, review, excluded = _find_person_shapes(db_conn, {"hold", "h"}, set())
+    assert (pairs, review, excluded) == ([], [], set())
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    assert result["needs_review"] == []
 
 
 def test_shape_b_first_name_only_without_shared_id_review_only(db_conn):
