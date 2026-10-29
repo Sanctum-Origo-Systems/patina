@@ -728,6 +728,45 @@ def test_handle_named_person_aliased_by_full_name_merges_obs_2026_10_27_2(identi
     assert {"quinn", "quinn-hale"} <= set(_entity_state(conn))
 
 
+@pytest.mark.parametrize(
+    "shared",
+    ["U0000000C2", "avery.lund@example.com", f"{TRUNC_DN}/CN=RECIPIENTS/CN={_GUID}-ALUND"],
+    ids=["slack-id", "email", "full-dn"],
+)
+def test_capitalized_first_name_with_shared_id_still_merges_542(identity_store, shared):
+    """#542: the first_name_only label guard leaves the shared-identifier merge intact.
+
+    "Avery" and "Avery Lund" share a Slack ID, email or DN and merge; the product
+    name "Slack" and the handle "alund" go to review without the label.
+    """
+    store, conn = identity_store, identity_store.conn
+    _seed_identity_entity(conn, "avery", "Avery", aliases=[shared])
+    _seed_identity_entity(conn, "avery-lund", "Avery Lund", aliases=[shared])
+    _seed_identity_entity(conn, "slack-bot", "Slack")
+    _seed_identity_entity(conn, "slack-hale", "Slack Hale")
+    _seed_identity_entity(conn, "alund", "alund")
+    _seed_identity_entity(conn, "alund-hale", "Alund Hale")
+    conn.commit()
+
+    preview = dedup_entities(conn, dry_run=True)
+    avery = [m for m in preview["merges"] if m["drop_id"] == "avery"]
+    assert len(avery) == 1
+    assert avery[0]["keep_id"] == "avery-lund"
+    assert avery[0]["shape"] == "first_name_only"
+    review = {r["id"]: r for r in preview["needs_review"]}
+    assert "avery" not in review
+    for eid in ("slack-bot", "alund"):
+        assert review[eid]["reason"] == "name match"
+        assert "shape" not in review[eid]
+
+    committed = dedup_entities(conn, dry_run=False, snapshot_token=store_snapshot_token(conn))
+    assert _merge_pairs(committed) == _merge_pairs(preview)
+    _check(store)
+    remaining = set(_entity_state(conn))
+    assert "avery" not in remaining
+    assert {"avery-lund", "slack-bot", "alund"} <= remaining
+
+
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,

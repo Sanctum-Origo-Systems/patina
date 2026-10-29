@@ -18,6 +18,7 @@ from patina.graph import (
 )
 from patina.graph import _name_type_rank as _graph_name_type_rank
 from patina.maintenance import (
+    NON_PERSON_TOKENS,
     StaleSnapshotError,
     _collect_slack_ids,
     _is_junk_sender_name,
@@ -762,13 +763,72 @@ def test_shape_b_first_name_only_without_shared_id_review_only(db_conn):
 
 def test_shape_b_name_alias_alone_never_merges(db_conn):
     """A first-name alias on the full-name person is still only a name match."""
-    _insert_entity_raw(db_conn, "j", "jane")
+    _insert_entity_raw(db_conn, "j", "Jane")
     _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["jane"])
     insert_observation(db_conn, _obs("o1", "j"))
 
     result = find_dedup_candidates(db_conn)
     assert result["candidates"] == []
     assert _review_by_id(result)["j"]["reason"] == "first_name_only"
+
+
+def test_shape_b_lowercase_handle_review_without_first_name_label(db_conn):
+    """#542: a lowercase single token is a handle, not a first name."""
+    _insert_entity_raw(db_conn, "h", "dbrook")
+    _insert_entity_raw(db_conn, "f", "Dbrook Hale", aliases=["dbrook"])
+    insert_observation(db_conn, _obs("o1", "h"))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["h"]
+    assert review["reason"] == "name match"
+    assert "shape" not in review
+    assert review["related"] == ["Dbrook Hale"]
+
+
+@pytest.mark.parametrize("name", ["Jira", "JIRA", "jira"])
+def test_shape_b_product_name_review_without_first_name_label(db_conn, name):
+    """#542: a known product or tool name is matched case-insensitively."""
+    assert "jira" in NON_PERSON_TOKENS
+    _insert_entity_raw(db_conn, "p", name)
+    _insert_entity_raw(db_conn, "f", "Jira Hale")
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["p"]
+    assert review["reason"] == "name match"
+    assert "shape" not in review
+
+
+def test_shape_b_skipped_tokens_stay_in_review_genuine_name_labeled(db_conn, monkeypatch):
+    """#542: 'Quipster' and 'dbrook' stay in review unlabeled; 'Dana' keeps the label."""
+    monkeypatch.setattr("patina.maintenance.NON_PERSON_TOKENS", NON_PERSON_TOKENS | {"quipster"})
+    _insert_entity_raw(db_conn, "q", "Quipster")
+    _insert_entity_raw(db_conn, "qf", "Quipster Support")
+    _insert_entity_raw(db_conn, "h", "dbrook")
+    _insert_entity_raw(db_conn, "hf", "Dbrook Hale")
+    _insert_entity_raw(db_conn, "d", "Dana")
+    _insert_entity_raw(db_conn, "df", "Dana Brook")
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)
+    assert {"q", "h", "d"} <= review.keys()
+    for eid in ("q", "h"):
+        assert review[eid]["reason"] != "first_name_only"
+        assert review[eid].get("shape") != "first_name_only"
+    assert review["q"]["related"] == ["Quipster Support"]
+    assert review["h"]["related"] == ["Dbrook Hale"]
+    assert review["d"]["reason"] == "first_name_only"
+    assert review["d"]["shape"] == "first_name_only"
+
+
+def test_shape_b_skipped_token_keeps_blocker_reason(db_conn):
+    """#542: a skipped token blocked from merging keeps its reason, minus the label."""
+    _insert_entity_raw(db_conn, "h", "dbrook", aliases=["U0000000B1"])
+    _insert_entity_raw(db_conn, "f", "Dbrook Hale", aliases=["U0000000B1"], is_owner=1)
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["h"]
+    assert review["reason"] == "owner"
+    assert "shape" not in review
 
 
 @pytest.mark.parametrize(
@@ -787,6 +847,17 @@ def test_shape_b_shared_id_merges(db_conn, shared):
     assert candidate["keep"]["id"] == "f"
     assert _members(candidate) == {"j", "f"}
     assert candidate["shape"] == "first_name_only"
+    assert "j" not in _review_by_id(result)
+
+
+def test_shape_b_lowercase_shared_id_still_merges(db_conn):
+    """#542: the capitalization guard only changes the review label, not merges."""
+    _insert_entity_raw(db_conn, "j", "jane", aliases=["U0000000B1"])
+    _insert_entity_raw(db_conn, "f", "Jane Doe", aliases=["U0000000B1"])
+
+    result = find_dedup_candidates(db_conn)
+    assert len(result["candidates"]) == 1
+    assert _members(result["candidates"][0]) == {"j", "f"}
     assert "j" not in _review_by_id(result)
 
 

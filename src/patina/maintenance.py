@@ -605,6 +605,32 @@ def _is_truncated_dn(value: str) -> bool:
 SHAPE_HANDLE_ALIAS = "handle_alias_of_person"
 SHAPE_FIRST_NAME = "first_name_only"
 
+# Product and tool names that are never a person's first name (#542). Lowercase,
+# matched case-insensitively; extending the list is a code change.
+NON_PERSON_TOKENS = frozenset(
+    {
+        "asana",
+        "confluence",
+        "docker",
+        "figma",
+        "github",
+        "gitlab",
+        "jira",
+        "notion",
+        "outlook",
+        "slack",
+        "teams",
+        "trello",
+        "zoom",
+    }
+)
+
+
+def _looks_like_first_name(name: str) -> bool:
+    """A capitalized token that is not a known product or tool name."""
+    token = name.strip()
+    return token[:1].isupper() and token.lower() not in NON_PERSON_TOKENS
+
 
 def _collect_dns(tokens: list[str]) -> set[str]:
     return {t.strip().upper() for t in tokens if identifier_type(t.strip()) == "dn"}
@@ -625,7 +651,8 @@ def _find_person_shapes(
     name is a handle alias of exactly one full-name person merges into it.
     Shape B (``first_name_only``): a first-name-only person whose first name
     matches exactly one full-name person merges only on a shared Slack ID,
-    email or full DN; otherwise it goes to review.
+    email or full DN; otherwise it goes to review. Lowercase handles and
+    product names still go to review but without the ``first_name_only`` label.
 
     Returns (merge pairs as (drop_id, keep_id, shape, match), review entries,
     entity ids to keep out of every merge group).
@@ -678,7 +705,7 @@ def _find_person_shapes(
     review: list[dict] = []
     excluded: set[str] = set()
 
-    def _review(ent: dict, shape: str, reason: str, others: list[dict]) -> None:
+    def _review(ent: dict, shape: str | None, reason: str, others: list[dict]) -> None:
         excluded.add(ent["id"])
         review.append(
             {
@@ -686,7 +713,7 @@ def _find_person_shapes(
                 "name": ent["name"],
                 "aliases": ent["aliases"],
                 "reason": reason,
-                "shape": shape,
+                **({"shape": shape} if shape else {}),
                 "related": [o["name"] for o in others],
             }
         )
@@ -719,12 +746,14 @@ def _find_person_shapes(
                 or (_collect_emails(tokens) & _collect_emails(match_tokens))
                 or (_collect_dns(tokens) & _collect_dns(match_tokens))
             )
+            # Only the review label depends on the name looking like a first name.
+            review_shape = SHAPE_FIRST_NAME if _looks_like_first_name(ent["name"]) else None
             if not shared:
-                _review(ent, SHAPE_FIRST_NAME, SHAPE_FIRST_NAME, [match])
+                _review(ent, review_shape, review_shape or "name match", [match])
                 continue
             reason = _blocker(ent, match)
             if reason:
-                _review(ent, SHAPE_FIRST_NAME, reason, [match])
+                _review(ent, review_shape, reason, [match])
                 continue
             pairs.append((ent["id"], match["id"], SHAPE_FIRST_NAME, sorted(shared)[0].lower()))
             continue
