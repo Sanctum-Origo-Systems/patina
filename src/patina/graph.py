@@ -345,14 +345,25 @@ def upsert_entity(
             merge_entities(conn, keep_id=existing_id, drop_id=entity.id)
 
         existing = conn.execute(
-            "SELECT aliases FROM entities WHERE id = ?", (existing_id,)
+            "SELECT name, aliases FROM entities WHERE id = ?", (existing_id,)
         ).fetchone()
         existing_aliases = json.loads(existing["aliases"] or "[]")
         new_aliases = _strip_foreign_slack_ids(conn, entity.aliases, existing_id)
         merged_aliases = list(set(existing_aliases + new_aliases))
+        name = existing["name"]
+        # A sink keeps its name and never collects the incoming name (#547).
+        if not _is_multi_identity(name, merged_aliases):
+            if _name_type_rank(entity.name) < _name_type_rank(name):
+                new_aliases = new_aliases + [name]
+                name = entity.name
+            elif entity.name != name:
+                new_aliases = new_aliases + _strip_foreign_slack_ids(
+                    conn, [entity.name], existing_id
+                )
+            merged_aliases = list(set(existing_aliases + new_aliases))
         conn.execute(
-            "UPDATE entities SET aliases = ?, last_seen = ? WHERE id = ?",
-            (json.dumps(merged_aliases), entity.last_seen, existing_id),
+            "UPDATE entities SET name = ?, aliases = ?, last_seen = ? WHERE id = ?",
+            (name, json.dumps(merged_aliases), entity.last_seen, existing_id),
         )
         record_added_aliases(
             conn,
