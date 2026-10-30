@@ -102,6 +102,18 @@ def _is_multi_identity(name: str, aliases: list[str]) -> bool:
     return len(slack_ids) > 1 or len(dns) > 1
 
 
+def _sole_single_identity_holder(matches: set[str], multi_matches: set[str]) -> str | None:
+    """Pick the one alias holder that is not a multi-identity sink.
+
+    A sink never owns a handle (#547, #553). Resolve only when exactly one
+    single-identity holder remains, alongside at most one sink (#502 tiebreak).
+    """
+    candidates = matches - multi_matches
+    if len(candidates) == 1 and len(multi_matches) <= 1:
+        return next(iter(candidates))
+    return None
+
+
 def normalize_name(name: str) -> str:
     name = name.strip().lstrip("@")
     if "@" in name:
@@ -224,12 +236,9 @@ def resolve_entity_id(
                         if _is_multi_identity(r["name"], r_aliases):
                             multi_matches.add(r["id"])
                         break
-            if len(alias_matches) == 1:
-                return alias_matches.pop()
-            # Tiebreak (#502): one multi-identity sink + one single-identity
-            # holder -> the single-identity holder owns the alias.
-            if len(alias_matches) == 2 and len(multi_matches) == 1:
-                return (alias_matches - multi_matches).pop()
+            holder = _sole_single_identity_holder(alias_matches, multi_matches)
+            if holder is not None:
+                return holder
 
     # --- Phase 5: Provided non-Slack-ID aliases, in IDENTIFIER_PRECEDENCE order ---
     if aliases:
@@ -248,15 +257,23 @@ def resolve_entity_id(
                 continue
             ranked.append((IDENTIFIER_PRECEDENCE.index(kind), stripped))
         ranked.sort(key=lambda item: item[0])
-        for _, stripped in ranked:
+        for rank, stripped in ranked:
+            # Only handles get the sink guard; a sink's DNs and absorbed emails
+            # still resolve to it until split_dn_sink routes them (#485).
+            is_handle = IDENTIFIER_PRECEDENCE[rank] == "handle"
             matches: set[str] = set()
+            multi_matches_2: set[str] = set()
             for r in non_owner_rows:
-                for stored_alias in json.loads(r["aliases"] or "[]"):
+                r_aliases = json.loads(r["aliases"] or "[]")
+                for stored_alias in r_aliases:
                     if normalize_alias(stored_alias) == stripped:
                         matches.add(r["id"])
+                        if is_handle and _is_multi_identity(r["name"], r_aliases):
+                            multi_matches_2.add(r["id"])
                         break
-            if len(matches) == 1:
-                return matches.pop()
+            holder = _sole_single_identity_holder(matches, multi_matches_2)
+            if holder is not None:
+                return holder
             if matches:
                 continue
             norm_alias = normalize_name(stripped)
@@ -345,14 +362,25 @@ def upsert_entity(
             merge_entities(conn, keep_id=existing_id, drop_id=entity.id)
 
         existing = conn.execute(
-            "SELECT aliases FROM entities WHERE id = ?", (existing_id,)
+            "SELECT name, aliases FROM entities WHERE id = ?", (existing_id,)
         ).fetchone()
         existing_aliases = json.loads(existing["aliases"] or "[]")
         new_aliases = _strip_foreign_slack_ids(conn, entity.aliases, existing_id)
         merged_aliases = list(set(existing_aliases + new_aliases))
+        name = existing["name"]
+        # A sink keeps its name and never collects the incoming name (#547).
+        if not _is_multi_identity(name, merged_aliases):
+            if _name_type_rank(entity.name) < _name_type_rank(name):
+                new_aliases = new_aliases + [name]
+                name = entity.name
+            elif entity.name != name:
+                new_aliases = new_aliases + _strip_foreign_slack_ids(
+                    conn, [entity.name], existing_id
+                )
+            merged_aliases = list(set(existing_aliases + new_aliases))
         conn.execute(
-            "UPDATE entities SET aliases = ?, last_seen = ? WHERE id = ?",
-            (json.dumps(merged_aliases), entity.last_seen, existing_id),
+            "UPDATE entities SET name = ?, aliases = ?, last_seen = ? WHERE id = ?",
+            (name, json.dumps(merged_aliases), entity.last_seen, existing_id),
         )
         record_added_aliases(
             conn,

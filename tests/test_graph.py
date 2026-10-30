@@ -1171,6 +1171,93 @@ class TestResolveSinkHandleTiebreak:
         assert resolve_entity_id(db_conn, "user_a") is None
 
 
+class TestResolveSinkOnlyHandleHolder:
+    """#547: a handle held only by a multi-identity sink does not resolve to it."""
+
+    _SINK_ALIASES = ["U0001AAAA", "U0002BBBB", "rstone"]
+
+    def test_sink_only_holder_returns_none(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="sink_1", type="person", name="/O=ACME/OU=CORP", aliases=self._SINK_ALIASES),
+        )
+        assert _is_multi_identity("/O=ACME/OU=CORP", self._SINK_ALIASES)
+        assert resolve_entity_id(db_conn, "rstone", ["U0NEW9999"]) is None
+
+    def test_new_person_not_absorbed_into_sink(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="sink_1", type="person", name="/O=ACME/OU=CORP", aliases=self._SINK_ALIASES),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="new_rstone", type="person", name="rstone", aliases=["U0NEW9999"]),
+        )
+        assert "U0NEW9999" not in get_entity(db_conn, "sink_1").aliases
+        new = get_entity(db_conn, "new_rstone")
+        assert new is not None
+        assert "U0NEW9999" in new.aliases
+
+    def test_single_identity_only_holder_still_resolves(self, db_conn):
+        _raw_insert_entity(
+            db_conn, "p-ruth", "person", "Ruth Stone", aliases=["U0001AAAA", "rstone"]
+        )
+        assert resolve_entity_id(db_conn, "rstone", ["U0NEW9999"]) == "p-ruth"
+        assert resolve_entity_id(db_conn, "rstone") == "p-ruth"
+
+
+class TestResolveSinkOnlyHandleAliasHolder:
+    """#553: a handle alias held only by a multi-identity sink does not resolve to it."""
+
+    _SINK_NAME = "/O=ACME/OU=CORP"
+    _SINK_ALIASES = ["U0001AAAA", "U0002BBBB", "rstone"]
+
+    def _insert_sink(self, conn):
+        upsert_entity(
+            conn,
+            Entity(id="sink_1", type="person", name=self._SINK_NAME, aliases=self._SINK_ALIASES),
+        )
+        assert _is_multi_identity(self._SINK_NAME, self._SINK_ALIASES)
+
+    def test_sink_only_holder_returns_none(self, db_conn):
+        self._insert_sink(db_conn)
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["U0003CCCC", "rstone"]) is None
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["rstone"]) is None
+
+    def test_new_person_not_absorbed_into_sink(self, db_conn):
+        self._insert_sink(db_conn)
+        upsert_entity(
+            db_conn,
+            Entity(id="p1", type="person", name="Ruth Stone", aliases=["U0003CCCC", "rstone"]),
+        )
+        assert "U0003CCCC" not in get_entity(db_conn, "sink_1").aliases
+        new = get_entity(db_conn, "p1")
+        assert new is not None
+        assert "U0003CCCC" in new.aliases
+
+    def test_sink_plus_single_identity_holder_resolves_to_person(self, db_conn):
+        self._insert_sink(db_conn)
+        _raw_insert_entity(db_conn, "p-ruthie", "person", "Ruthie Stone", aliases=["rstone"])
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["U0003CCCC", "rstone"]) == "p-ruthie"
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["rstone"]) == "p-ruthie"
+
+    def test_single_identity_only_holder_still_resolves(self, db_conn):
+        self._insert_sink(db_conn)
+        _raw_insert_entity(
+            db_conn, "p-ruthie", "person", "Ruthie Stone", aliases=["U0004DDDD", "rs_handle"]
+        )
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["rs_handle"]) == "p-ruthie"
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["U0003CCCC", "rs_handle"]) == "p-ruthie"
+
+    def test_sink_only_email_holder_still_resolves(self, db_conn):
+        aliases = self._SINK_ALIASES + ["ruth.stone@example.com"]
+        upsert_entity(
+            db_conn, Entity(id="sink_1", type="person", name=self._SINK_NAME, aliases=aliases)
+        )
+        assert _is_multi_identity(self._SINK_NAME, aliases)
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["ruth.stone@example.com"]) == "sink_1"
+
+
 def _alias_provenance(conn, entity_id):
     from patina.store import ensure_entity_alias_provenance_table
 
@@ -1276,3 +1363,107 @@ class TestUpsertEntityAliasProvenance:
         )
 
         assert _alias_provenance(db_conn, "e1") == [("U0000000A1", "slack", None, "added")]
+
+
+class TestUpsertEntityDifferentIdName:
+    """#548: the different-ID path keeps the better display name."""
+
+    def test_full_name_replaces_handle(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="dchen", aliases=["U001DCHEN"]))
+        incoming = Entity(id="e2", type="person", name="Dana Chen", aliases=["U001DCHEN"])
+        upsert_entity(db_conn, incoming)
+
+        assert incoming.id == "e1"
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Chen"
+        assert "dchen" in ent.aliases
+        assert count_entities(db_conn, "person") == 1
+
+    def test_handle_kept_as_alias_of_full_name(self, db_conn):
+        upsert_entity(
+            db_conn, Entity(id="e1", type="person", name="Dana Chen", aliases=["U001DCHEN"])
+        )
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="dchen", aliases=["U001DCHEN"]))
+
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Chen"
+        assert "dchen" in ent.aliases
+
+    def test_same_name_not_added_as_alias(self, db_conn):
+        upsert_entity(
+            db_conn, Entity(id="e1", type="person", name="Dana Chen", aliases=["U001DCHEN"])
+        )
+        upsert_entity(
+            db_conn, Entity(id="e2", type="person", name="Dana Chen", aliases=["U001DCHEN"])
+        )
+
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Chen"
+        assert "Dana Chen" not in ent.aliases
+
+    def test_existing_entity_gets_better_name(self, db_conn):
+        """When the incoming ID already exists, the survivor still gets the better name."""
+        _raw_insert_entity(db_conn, "e1", "person", "dchen", aliases=["U001DCHEN"])
+        _raw_insert_entity(db_conn, "e2", "person", "Dana Chen")
+        incoming = Entity(id="e2", type="person", name="Dana Chen", aliases=["U001DCHEN"])
+        upsert_entity(db_conn, incoming)
+
+        assert incoming.id == "e1"
+        assert get_entity(db_conn, "e2") is None
+        ent = get_entity(db_conn, "e1")
+        assert ent.name == "Dana Chen"
+        assert "dchen" in ent.aliases
+
+    def test_sink_keeps_name_and_gains_no_incoming_name(self, db_conn):
+        _raw_insert_entity(
+            db_conn,
+            "sink",
+            "person",
+            "/O=EXAMPLEORG/OU=X",
+            aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1", "U0EXAMPLE2", "slack:U0EXAMPLE2"],
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e2",
+                type="person",
+                name="Dana Brook",
+                aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e3",
+                type="person",
+                name="dbrook",
+                aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"],
+            ),
+        )
+
+        ent = get_entity(db_conn, "sink")
+        assert ent.name == "/O=EXAMPLEORG/OU=X"
+        assert "Dana Brook" not in ent.aliases
+        assert "dbrook" not in ent.aliases
+
+    def test_provenance_recorded_for_replaced_name(self, db_conn):
+        _raw_insert_entity(db_conn, "e1", "person", "dchen", aliases=["U001DCHEN"])
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Dana Chen", aliases=["U001DCHEN"]),
+            adapter="slack",
+            observation_id="obs1",
+        )
+
+        assert _alias_provenance(db_conn, "e1") == [("dchen", "slack", "obs1", "added")]
+
+    def test_provenance_recorded_for_incoming_name_alias(self, db_conn):
+        _raw_insert_entity(db_conn, "e1", "person", "Dana Chen", aliases=["U001DCHEN"])
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="dchen", aliases=["U001DCHEN"]),
+            adapter="slack",
+            observation_id="obs1",
+        )
+
+        assert _alias_provenance(db_conn, "e1") == [("dchen", "slack", "obs1", "added")]
