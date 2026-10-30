@@ -1206,6 +1206,58 @@ class TestResolveSinkOnlyHandleHolder:
         assert resolve_entity_id(db_conn, "rstone") == "p-ruth"
 
 
+class TestResolveSinkOnlyHandleAliasHolder:
+    """#553: a handle alias held only by a multi-identity sink does not resolve to it."""
+
+    _SINK_NAME = "/O=ACME/OU=CORP"
+    _SINK_ALIASES = ["U0001AAAA", "U0002BBBB", "rstone"]
+
+    def _insert_sink(self, conn):
+        upsert_entity(
+            conn,
+            Entity(id="sink_1", type="person", name=self._SINK_NAME, aliases=self._SINK_ALIASES),
+        )
+        assert _is_multi_identity(self._SINK_NAME, self._SINK_ALIASES)
+
+    def test_sink_only_holder_returns_none(self, db_conn):
+        self._insert_sink(db_conn)
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["U0003CCCC", "rstone"]) is None
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["rstone"]) is None
+
+    def test_new_person_not_absorbed_into_sink(self, db_conn):
+        self._insert_sink(db_conn)
+        upsert_entity(
+            db_conn,
+            Entity(id="p1", type="person", name="Ruth Stone", aliases=["U0003CCCC", "rstone"]),
+        )
+        assert "U0003CCCC" not in get_entity(db_conn, "sink_1").aliases
+        new = get_entity(db_conn, "p1")
+        assert new is not None
+        assert "U0003CCCC" in new.aliases
+
+    def test_sink_plus_single_identity_holder_resolves_to_person(self, db_conn):
+        self._insert_sink(db_conn)
+        _raw_insert_entity(db_conn, "p-ruthie", "person", "Ruthie Stone", aliases=["rstone"])
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["U0003CCCC", "rstone"]) == "p-ruthie"
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["rstone"]) == "p-ruthie"
+
+    def test_single_identity_only_holder_still_resolves(self, db_conn):
+        self._insert_sink(db_conn)
+        _raw_insert_entity(
+            db_conn, "p-ruthie", "person", "Ruthie Stone", aliases=["U0004DDDD", "rs_handle"]
+        )
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["rs_handle"]) == "p-ruthie"
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["U0003CCCC", "rs_handle"]) == "p-ruthie"
+
+    def test_sink_only_email_holder_still_resolves(self, db_conn):
+        aliases = self._SINK_ALIASES + ["ruth.stone@example.com"]
+        upsert_entity(
+            db_conn, Entity(id="sink_1", type="person", name=self._SINK_NAME, aliases=aliases)
+        )
+        assert _is_multi_identity(self._SINK_NAME, aliases)
+        assert resolve_entity_id(db_conn, "Ruth Stone", ["ruth.stone@example.com"]) == "sink_1"
+
+
 def _alias_provenance(conn, entity_id):
     from patina.store import ensure_entity_alias_provenance_table
 

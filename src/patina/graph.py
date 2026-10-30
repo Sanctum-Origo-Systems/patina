@@ -102,6 +102,18 @@ def _is_multi_identity(name: str, aliases: list[str]) -> bool:
     return len(slack_ids) > 1 or len(dns) > 1
 
 
+def _sole_single_identity_holder(matches: set[str], multi_matches: set[str]) -> str | None:
+    """Pick the one alias holder that is not a multi-identity sink.
+
+    A sink never owns a handle (#547, #553). Resolve only when exactly one
+    single-identity holder remains, alongside at most one sink (#502 tiebreak).
+    """
+    candidates = matches - multi_matches
+    if len(candidates) == 1 and len(multi_matches) <= 1:
+        return next(iter(candidates))
+    return None
+
+
 def normalize_name(name: str) -> str:
     name = name.strip().lstrip("@")
     if "@" in name:
@@ -224,12 +236,9 @@ def resolve_entity_id(
                         if _is_multi_identity(r["name"], r_aliases):
                             multi_matches.add(r["id"])
                         break
-            # A multi-identity sink never owns a handle (#547). Resolve only
-            # when exactly one single-identity holder remains, alongside at
-            # most one sink (#502 tiebreak).
-            candidates = alias_matches - multi_matches
-            if len(candidates) == 1 and len(multi_matches) <= 1:
-                return candidates.pop()
+            holder = _sole_single_identity_holder(alias_matches, multi_matches)
+            if holder is not None:
+                return holder
 
     # --- Phase 5: Provided non-Slack-ID aliases, in IDENTIFIER_PRECEDENCE order ---
     if aliases:
@@ -248,15 +257,23 @@ def resolve_entity_id(
                 continue
             ranked.append((IDENTIFIER_PRECEDENCE.index(kind), stripped))
         ranked.sort(key=lambda item: item[0])
-        for _, stripped in ranked:
+        for rank, stripped in ranked:
+            # Only handles get the sink guard; a sink's DNs and absorbed emails
+            # still resolve to it until split_dn_sink routes them (#485).
+            is_handle = IDENTIFIER_PRECEDENCE[rank] == "handle"
             matches: set[str] = set()
+            multi_matches_2: set[str] = set()
             for r in non_owner_rows:
-                for stored_alias in json.loads(r["aliases"] or "[]"):
+                r_aliases = json.loads(r["aliases"] or "[]")
+                for stored_alias in r_aliases:
                     if normalize_alias(stored_alias) == stripped:
                         matches.add(r["id"])
+                        if is_handle and _is_multi_identity(r["name"], r_aliases):
+                            multi_matches_2.add(r["id"])
                         break
-            if len(matches) == 1:
-                return matches.pop()
+            holder = _sole_single_identity_holder(matches, multi_matches_2)
+            if holder is not None:
+                return holder
             if matches:
                 continue
             norm_alias = normalize_name(stripped)
