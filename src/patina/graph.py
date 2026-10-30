@@ -414,7 +414,6 @@ def upsert_entity(
     observation_id: str | None = None,
 ) -> None:
     # IDs outrank names: no name-only re-resolve may override this match (#555).
-    # IDs outrank names: no name-only re-resolve may override this match (#555).
     existing_id = resolve_entity_id(conn, entity.name, entity.aliases)
 
     if existing_id and existing_id != entity.id:
