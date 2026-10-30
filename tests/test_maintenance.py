@@ -885,6 +885,95 @@ def test_shape_b_skipped_token_keeps_blocker_reason(db_conn):
     assert "shape" not in review
 
 
+def _obs_with_meta(oid, sender_id, metadata, ts=1000.0):
+    obs = _obs(oid, sender_id, source="outlook", ts=ts)
+    obs.metadata = metadata
+    return obs
+
+
+def test_shape_b_automated_sender_without_aliases_unlabeled_546(db_conn):
+    """#546: a product sender not in NON_PERSON_TOKENS, its address only in provenance."""
+    assert "trellio" not in NON_PERSON_TOKENS
+    _insert_entity_raw(db_conn, "p", "Trellio")
+    _insert_entity_raw(db_conn, "f", "Trellio Example")
+    for action in ("added", "removed"):
+        record_alias_provenance(
+            db_conn, "p", "notifications@trellio.example", adapter="outlook", action=action
+        )
+    insert_observation(db_conn, _obs("o1", "p", source="outlook"))
+    insert_observation(db_conn, _obs("o2", "p", source="outlook", ts=1001.0))
+
+    result = find_dedup_candidates(db_conn)
+    assert result["candidates"] == []
+    review = _review_by_id(result)["p"]
+    assert review["reason"] == "name match"
+    assert "shape" not in review
+    assert review["related"] == ["Trellio Example"]
+
+
+@pytest.mark.parametrize(
+    ("aliases", "metadata"),
+    [
+        (["notifications@trellio.example"], {}),
+        (["Trellio", "no-reply@trellio.example"], {}),
+        ([], {"sender_dn": "/O=EXAMPLEORG/OU=EXTERNAL/CN=RECIPIENTS/CN=alerts@trellio.example"}),
+    ],
+    ids=["email-alias", "name-and-noreply-alias", "dn-smtp"],
+)
+def test_shape_b_automated_sender_address_sources_unlabeled_546(db_conn, aliases, metadata):
+    """#546: an automated address on an alias or on the sender DN also drops the label."""
+    _insert_entity_raw(db_conn, "p", "Trellio", aliases=aliases)
+    _insert_entity_raw(db_conn, "f", "Trellio Example")
+    insert_observation(db_conn, _obs_with_meta("o1", "p", metadata))
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["p"]
+    assert review["reason"] == "name match"
+    assert "shape" not in review
+
+
+@pytest.mark.parametrize(
+    ("aliases", "provenance", "metadata"),
+    [
+        ([], [], {}),
+        (["dana.brook@example.com"], [], {}),
+        ([], ["dana.brook@example.com", "notifications@example.com"], {}),
+        (["notifications@example.com", "U0000000D1"], [], {}),
+        (["notifications@example.com"], [], {"sender_slack_id": "U0000000D1"}),
+        ([], [], {"sender_dn": "/O=EXAMPLEORG/OU=EXTERNAL/CN=RECIPIENTS/CN=DBROOK"}),
+    ],
+    ids=[
+        "no-address",
+        "human-email-alias",
+        "mixed-provenance",
+        "slack-id-alias",
+        "slack-sender",
+        "unreadable-dn",
+    ],
+)
+def test_shape_b_single_token_human_keeps_first_name_label_546(
+    db_conn, aliases, provenance, metadata
+):
+    """#546: a human first name keeps the label unless every address is automated."""
+    _insert_entity_raw(db_conn, "d", "Dana", aliases=aliases)
+    _insert_entity_raw(db_conn, "df", "Dana Brook")
+    for alias in provenance:
+        record_alias_provenance(db_conn, "d", alias, adapter="outlook", action="added")
+    insert_observation(db_conn, _obs_with_meta("o1", "d", metadata))
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["d"]
+    assert review["reason"] == "first_name_only"
+    assert review["shape"] == "first_name_only"
+
+
+def test_shape_b_automated_address_without_sender_observations_keeps_label_546(db_conn):
+    """#546: the structural skip needs sender observations, not just an address."""
+    _insert_entity_raw(db_conn, "p", "Trellio", aliases=["notifications@trellio.example"])
+    _insert_entity_raw(db_conn, "f", "Trellio Example")
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["p"]
+    assert review["shape"] == "first_name_only"
+
+
 @pytest.mark.parametrize(
     "shared",
     ["U0000000B1", "jane.doe@example.com", "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=JDOE"],
