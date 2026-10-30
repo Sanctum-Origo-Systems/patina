@@ -632,6 +632,65 @@ def _looks_like_first_name(name: str) -> bool:
     return token[:1].isupper() and token.lower() not in NON_PERSON_TOKENS
 
 
+# Plural and mailer local parts that the word-bounded _NON_PERSON_RE misses (#546).
+_AUTOMATED_LOCAL_RE = re.compile(
+    r"(?:^|[._+-])("
+    r"notifications|alerts|updates|digest|news"
+    r"|bounces?|mailer-daemon|donotreply|do-not-reply|do_not_reply"
+    r")(?:$|[._+-])",
+    re.IGNORECASE,
+)
+
+
+def _is_automated_address(address: str) -> bool:
+    """An email address or mailbox handle whose local part is notification-style."""
+    local = address.strip().split("@", 1)[0]
+    return bool(local) and bool(_NON_PERSON_RE.search(local) or _AUTOMATED_LOCAL_RE.search(local))
+
+
+def _is_automated_sender(conn: sqlite3.Connection, ent: dict) -> bool:
+    """A sender whose every known address is an automated, notification-style one (#546).
+
+    Addresses come from the entity's email aliases, every email alias its
+    provenance ever recorded, and the sender DN on each of its observations.
+    Any other alias (Slack ID, DN, handle), a Slack sender or a DN with no
+    readable mailbox counts as a person signal. With no address at all the
+    entity is not treated as automated.
+    """
+    name_key = normalize_name(ent["name"])
+    addresses: list[str] = []
+    for alias in ent["aliases"]:
+        if "@" in alias:
+            addresses.append(alias)
+        elif normalize_name(normalize_alias(alias)) != name_key:
+            return False
+
+    ensure_entity_alias_provenance_table(conn)
+    rows = conn.execute(
+        "SELECT DISTINCT alias FROM entity_alias_provenance WHERE entity_id = ?",
+        (ent["id"],),
+    ).fetchall()
+    addresses.extend(r["alias"] for r in rows if "@" in r["alias"])
+
+    obs_rows = conn.execute(
+        "SELECT metadata FROM observations WHERE sender_entity_id = ?", (ent["id"],)
+    ).fetchall()
+    if not obs_rows:
+        return False
+    for r in obs_rows:
+        meta = json.loads(r["metadata"] or "{}")
+        if meta.get("sender_slack_id"):
+            return False
+        dn = meta.get("sender_dn")
+        if dn:
+            mailbox = _dn_trailing_smtp(dn) or _dn_trailing_handle(dn)
+            if not mailbox:
+                return False
+            addresses.append(mailbox)
+
+    return bool(addresses) and all(_is_automated_address(a) for a in addresses)
+
+
 def _collect_dns(tokens: list[str]) -> set[str]:
     return {t.strip().upper() for t in tokens if identifier_type(t.strip()) == "dn"}
 
@@ -668,8 +727,9 @@ def _find_person_shapes(
     review instead, so the first-name entity never survives the handle.
     Shape B (``first_name_only``): a first-name-only person whose first name
     matches exactly one full-name person merges only on a shared Slack ID,
-    email or full DN; otherwise it goes to review. Lowercase handles and
-    product names still go to review but without the ``first_name_only`` label.
+    email or full DN; otherwise it goes to review. Lowercase handles, product
+    names and senders seen only from automated addresses still go to review
+    but without the ``first_name_only`` label.
 
     Returns (merge pairs as (drop_id, keep_id, shape, match), review entries,
     entity ids to keep out of every merge group).
@@ -768,7 +828,10 @@ def _find_person_shapes(
                 or (_collect_dns(tokens) & _collect_dns(match_tokens))
             )
             # Only the review label depends on the name looking like a first name.
-            review_shape = SHAPE_FIRST_NAME if _looks_like_first_name(ent["name"]) else None
+            looks_human = _looks_like_first_name(ent["name"]) and not (
+                ent["id"] in sender_ids and _is_automated_sender(conn, ent)
+            )
+            review_shape = SHAPE_FIRST_NAME if looks_human else None
             if not shared:
                 _review(ent, review_shape, review_shape or "name match", [match])
                 continue
