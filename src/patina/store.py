@@ -812,27 +812,67 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
         if backfilled > 0:
             print(f"Migration add_entity_alias_provenance_v1: backfilled {backfilled} aliases")
 
+    row = conn.execute(
+        "SELECT 1 FROM migrations WHERE name = 'alias_provenance_merge_action_v1'"
+    ).fetchone()
+    if not row:
+        _widen_alias_provenance_actions(conn)
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('alias_provenance_merge_action_v1', datetime('now'))"
+        )
+        conn.commit()
 
-ALIAS_PROVENANCE_ACTIONS = ("added", "removed")
+
+# 'merge' rows sit on a merged-away entity ID, one per token it held (#555).
+ALIAS_PROVENANCE_ACTIONS = ("added", "removed", "merge")
+
+_ALIAS_PROVENANCE_COLUMNS = "entity_id, alias, adapter, observation_id, action, created_at"
+
+
+def _create_alias_provenance_table(conn: sqlite3.Connection, table: str) -> None:
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS {table} (
+               entity_id TEXT NOT NULL,
+               alias TEXT NOT NULL,
+               adapter TEXT NOT NULL,
+               observation_id TEXT,
+               action TEXT NOT NULL CHECK(action IN ('added', 'removed', 'merge')),
+               created_at TEXT NOT NULL
+           )"""
+    )
 
 
 def ensure_entity_alias_provenance_table(conn: sqlite3.Connection) -> None:
     # No foreign keys: provenance must outlive entity merges and observation
     # dedup, both of which delete the rows these columns point at.
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS entity_alias_provenance (
-               entity_id TEXT NOT NULL,
-               alias TEXT NOT NULL,
-               adapter TEXT NOT NULL,
-               observation_id TEXT,
-               action TEXT NOT NULL CHECK(action IN ('added', 'removed')),
-               created_at TEXT NOT NULL
-           )"""
-    )
+    _create_alias_provenance_table(conn, "entity_alias_provenance")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_alias_provenance_entity "
         "ON entity_alias_provenance(entity_id, alias)"
     )
+
+
+def _widen_alias_provenance_actions(conn: sqlite3.Connection) -> None:
+    """Rebuild entity_alias_provenance so its CHECK accepts 'merge' (#555).
+
+    SQLite cannot alter a CHECK constraint in place. Rows are copied with their
+    rowids, so the (created_at, rowid) ordering is unchanged.
+    """
+    ensure_entity_alias_provenance_table(conn)
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entity_alias_provenance'"
+    ).fetchone()["sql"]
+    if "'merge'" in sql:
+        return
+    _create_alias_provenance_table(conn, "entity_alias_provenance_new")
+    conn.execute(
+        f"INSERT INTO entity_alias_provenance_new (rowid, {_ALIAS_PROVENANCE_COLUMNS}) "
+        f"SELECT rowid, {_ALIAS_PROVENANCE_COLUMNS} FROM entity_alias_provenance ORDER BY rowid"
+    )
+    conn.execute("DROP TABLE entity_alias_provenance")
+    conn.execute("ALTER TABLE entity_alias_provenance_new RENAME TO entity_alias_provenance")
+    ensure_entity_alias_provenance_table(conn)
 
 
 def _backfill_alias_provenance(conn: sqlite3.Connection) -> int:

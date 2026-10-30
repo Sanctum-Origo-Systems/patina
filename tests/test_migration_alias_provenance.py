@@ -154,7 +154,47 @@ def test_entities_aliases_unchanged(db_path):
     conn.close()
 
 
-@pytest.mark.parametrize("action", ["added", "removed"])
+def test_legacy_table_rebuilt_to_accept_merge_rows(db_path):
+    """#555: a pre-'merge' table keeps its rows and gains the 'merge' action."""
+    conn = connect(db_path)
+    conn.execute(
+        """CREATE TABLE entity_alias_provenance (
+               entity_id TEXT NOT NULL,
+               alias TEXT NOT NULL,
+               adapter TEXT NOT NULL,
+               observation_id TEXT,
+               action TEXT NOT NULL CHECK(action IN ('added', 'removed')),
+               created_at TEXT NOT NULL
+           )"""
+    )
+    for alias, action in [("kai", "added"), ("riku", "added"), ("kai", "removed")]:
+        conn.execute(
+            "INSERT INTO entity_alias_provenance"
+            " (entity_id, alias, adapter, observation_id, action, created_at)"
+            " VALUES ('ent-a', ?, 'slack', NULL, ?, ?)",
+            (alias, action, _NOW),
+        )
+    conn.execute(
+        "INSERT INTO migrations (name, applied_at)"
+        " VALUES ('add_entity_alias_provenance_v1', datetime('now'))"
+    )
+    conn.commit()
+
+    run_pending_migrations(conn)
+
+    rows = conn.execute(
+        "SELECT alias, action FROM entity_alias_provenance ORDER BY created_at, rowid"
+    ).fetchall()
+    assert [tuple(r) for r in rows] == [("kai", "added"), ("riku", "added"), ("kai", "removed")]
+    record_alias_provenance(conn, "ent-a", "kai", adapter="slack", action="merge")
+    conn.commit()
+    indexes = [r[1] for r in conn.execute("PRAGMA index_list(entity_alias_provenance)")]
+    assert "idx_alias_provenance_entity" in indexes
+
+    conn.close()
+
+
+@pytest.mark.parametrize("action", ["added", "removed", "merge"])
 def test_write_helper_accepts_valid_actions(db_path, action):
     conn = connect(db_path)
     run_pending_migrations(conn)

@@ -340,6 +340,72 @@ def record_added_aliases(
         )
 
 
+_STRONG_IDENTIFIERS = frozenset({"slack_id", "dn", "email"})
+
+
+def _strong_identifiers(tokens: list[str]) -> set[str]:
+    """Slack IDs, DNs and emails among *tokens*, prefix-stripped."""
+    result: set[str] = set()
+    for token in tokens:
+        if not token:
+            continue
+        stripped = normalize_alias(token)
+        if identifier_type(stripped) in _STRONG_IDENTIFIERS:
+            result.add(stripped)
+    return result
+
+
+def _ingest_merge_allowed(
+    conn: sqlite3.Connection,
+    keep_id: str,
+    drop: sqlite3.Row,
+    incoming_aliases: list[str],
+) -> bool:
+    """True when ingest may fold the stored *drop* entity into *keep_id* (#555).
+
+    Only an ID match qualifies: *keep_id* must hold an incoming Slack ID, DN or
+    email that *drop* does not. The merge is refused when the two together
+    would hold more than one Slack ID or DN, so a sink is never merged away and
+    no person gains a sink's identities.
+    """
+    keep = conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (keep_id,)).fetchone()
+    keep_tokens = [keep["name"], *json.loads(keep["aliases"] or "[]")]
+    drop_tokens = [drop["name"], *json.loads(drop["aliases"] or "[]")]
+    incoming = _strong_identifiers(incoming_aliases)
+    if not (incoming & _strong_identifiers(keep_tokens)) - _strong_identifiers(drop_tokens):
+        return False
+    return not _is_multi_identity(keep_tokens[0], keep_tokens[1:] + drop_tokens)
+
+
+def _merge_on_ingest(
+    conn: sqlite3.Connection,
+    *,
+    keep_id: str,
+    drop_id: str,
+    drop: sqlite3.Row,
+    adapter: str | None,
+    observation_id: str | None,
+) -> None:
+    """Merge *drop_id* into *keep_id*, recording a 'merge' row per dropped token.
+
+    merge_entities moves the dropped entity's provenance to the survivor, so
+    the 'merge' rows under *drop_id* are what keeps the two apart; the
+    observation they cite is the one now sent by *keep_id*.
+    """
+    from patina.maintenance import merge_entities
+
+    merge_entities(conn, keep_id=keep_id, drop_id=drop_id)
+    for token in dict.fromkeys([drop["name"], *json.loads(drop["aliases"] or "[]")]):
+        record_alias_provenance(
+            conn,
+            drop_id,
+            token,
+            adapter=adapter or "unknown",
+            action="merge",
+            observation_id=observation_id,
+        )
+
+
 def upsert_entity(
     conn: sqlite3.Connection,
     entity: Entity,
@@ -347,20 +413,29 @@ def upsert_entity(
     adapter: str | None = None,
     observation_id: str | None = None,
 ) -> None:
+    # IDs outrank names: no name-only re-resolve may override this match (#555).
+    # IDs outrank names: no name-only re-resolve may override this match (#555).
     existing_id = resolve_entity_id(conn, entity.name, entity.aliases)
 
-    if existing_id and existing_id == entity.id:
-        name_id = resolve_entity_id(conn, entity.name)
-        if name_id and name_id != entity.id:
-            existing_id = name_id
+    if existing_id and existing_id != entity.id:
+        source = conn.execute(
+            "SELECT name, aliases FROM entities WHERE id = ?", (entity.id,)
+        ).fetchone()
+        if source:
+            if _ingest_merge_allowed(conn, existing_id, source, entity.aliases):
+                _merge_on_ingest(
+                    conn,
+                    keep_id=existing_id,
+                    drop_id=entity.id,
+                    drop=source,
+                    adapter=adapter,
+                    observation_id=observation_id,
+                )
+            else:
+                # Leave the conflict to dedup's preview/confirm review.
+                existing_id = entity.id
 
     if existing_id and existing_id != entity.id:
-        source = conn.execute("SELECT 1 FROM entities WHERE id = ?", (entity.id,)).fetchone()
-        if source:
-            from patina.maintenance import merge_entities
-
-            merge_entities(conn, keep_id=existing_id, drop_id=entity.id)
-
         existing = conn.execute(
             "SELECT name, aliases FROM entities WHERE id = ?", (existing_id,)
         ).fetchone()

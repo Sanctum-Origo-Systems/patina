@@ -2686,8 +2686,8 @@ def test_resolve_names_merge_duplicate(db_conn):
     assert claim["subject_id"] == "e_b"
 
 
-def test_upsert_entity_merges_orphan_on_ingest(db_conn):
-    """Ingest-time retry: upsert_entity merges orphaned entity A into B."""
+def test_upsert_entity_keeps_slack_id_orphan_on_ingest(db_conn):
+    """#555: ingest no longer folds A into B on a name match; resolve-names does."""
     _insert_entity_raw(db_conn, "e_a", "U0EXAMPLE1", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1"])
     _insert_entity_raw(db_conn, "e_b", "Dana Brook", aliases=["W0NAMED01"])
 
@@ -2702,16 +2702,15 @@ def test_upsert_entity_merges_orphan_on_ingest(db_conn):
     entity = _entity("e_a", "Dana Brook", aliases=["U0EXAMPLE1", "slack:U0EXAMPLE1", "Dana Brook"])
     upsert_entity(db_conn, entity)
 
-    assert db_conn.execute("SELECT 1 FROM entities WHERE id = 'e_a'").fetchone() is None
+    assert entity.id == "e_a"
+    row = db_conn.execute("SELECT aliases FROM entities WHERE id = 'e_a'").fetchone()
+    assert "U0EXAMPLE1" in json.loads(row["aliases"])
     row = db_conn.execute("SELECT name, aliases FROM entities WHERE id = 'e_b'").fetchone()
     assert row["name"] == "Dana Brook"
-    aliases = json.loads(row["aliases"])
-    assert "U0EXAMPLE1" in aliases
-    assert "slack:U0EXAMPLE1" in aliases
+    assert json.loads(row["aliases"]) == ["W0NAMED01"]
 
     obs = db_conn.execute("SELECT sender_entity_id FROM observations WHERE id = 'obs-a'").fetchone()
-    assert obs["sender_entity_id"] == "e_b"
-    assert entity.id == "e_b"
+    assert obs["sender_entity_id"] == "e_a"
 
 
 def test_no_shared_slack_ids_after_upsert_merge(db_conn):

@@ -1467,3 +1467,164 @@ class TestUpsertEntityDifferentIdName:
         )
 
         assert _alias_provenance(db_conn, "e1") == [("dchen", "slack", "obs1", "added")]
+
+
+def _sender_obs_count(conn, entity_id):
+    return conn.execute(
+        "SELECT COUNT(*) FROM observations WHERE sender_entity_id = ?", (entity_id,)
+    ).fetchone()[0]
+
+
+class TestUpsertEntityNeverMergesSink:
+    """#555: an ID match is never overridden by a name-only match during ingest."""
+
+    _SINK_NAME = "/O=EXAMPLEORG/OU=ADMIN GROUP"
+    _SINK_ALIASES = [
+        "W0EXAMPLE1",
+        "W0EXAMPLE2",
+        "slack:W0EXAMPLE2",
+        "dbrook",
+        "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=DBROOK",
+        "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=EGREY",
+        "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=FHALE",
+    ]
+    _PERSON_ALIASES = ["@dbrook", "Dana Brook"]
+
+    def _seed(self, conn):
+        _raw_insert_entity(conn, "sink", "person", self._SINK_NAME, aliases=self._SINK_ALIASES)
+        _raw_insert_entity(conn, "p-dana", "person", "Dana Brook", aliases=self._PERSON_ALIASES)
+        assert _is_multi_identity(self._SINK_NAME, self._SINK_ALIASES)
+        for i in range(3):
+            insert_observation(
+                conn,
+                Observation(
+                    id=f"obs-sink-{i}",
+                    source="slack",
+                    channel_id="C1",
+                    thread_id=None,
+                    timestamp=1000.0 + i,
+                    sender_entity_id="sink",
+                    text="The quick brown fox",
+                ),
+            )
+
+    def _ingest_slack_message(self, conn, user_id, user_name, obs_id):
+        """Mirror ingest: resolve the sender, upsert it, then attribute the message."""
+        from patina.extraction import extract_sender_entity
+
+        insert_observation(
+            conn,
+            Observation(
+                id=obs_id,
+                source="slack",
+                channel_id="C1",
+                thread_id=None,
+                timestamp=2000.0,
+                sender_entity_id=None,
+                text="The quick brown fox",
+            ),
+        )
+        sender = extract_sender_entity(user_id, user_name, conn=conn)
+        upsert_entity(conn, sender, adapter="slack", observation_id=obs_id)
+        conn.execute(
+            "UPDATE observations SET sender_entity_id = ? WHERE id = ?", (sender.id, obs_id)
+        )
+        conn.commit()
+        return sender
+
+    def test_slack_message_from_sink_only_id_does_not_merge_sink(self, db_conn):
+        self._seed(db_conn)
+
+        sender = self._ingest_slack_message(db_conn, "W0EXAMPLE2", "dbrook", "obs-new")
+
+        assert sender.id == "sink"
+        sink = get_entity(db_conn, "sink")
+        assert sink is not None
+        assert sink.name == self._SINK_NAME
+        assert sorted(sink.aliases) == sorted(self._SINK_ALIASES)
+        assert get_entity(db_conn, "p-dana").aliases == self._PERSON_ALIASES
+        assert _sender_obs_count(db_conn, "sink") == 4
+        assert _sender_obs_count(db_conn, "p-dana") == 0
+
+    def test_sink_as_incoming_id_is_not_merged_into_slack_id_holder(self, db_conn):
+        self._seed(db_conn)
+        _raw_insert_entity(db_conn, "p-evan", "person", "Evan Grey", aliases=["W0EXAMPLE3"])
+
+        incoming = Entity(id="sink", type="person", name="egrey", aliases=["W0EXAMPLE3"])
+        upsert_entity(db_conn, incoming)
+
+        assert incoming.id == "sink"
+        assert sorted(get_entity(db_conn, "sink").aliases) == sorted(self._SINK_ALIASES)
+        assert get_entity(db_conn, "p-evan").aliases == ["W0EXAMPLE3"]
+        assert _sender_obs_count(db_conn, "sink") == 3
+
+    def test_person_is_not_merged_into_sink(self, db_conn):
+        self._seed(db_conn)
+        _raw_insert_entity(db_conn, "p-evan", "person", "Evan Grey", aliases=["W0EXAMPLE3"])
+
+        incoming = Entity(id="p-evan", type="person", name="Evan Grey", aliases=["W0EXAMPLE1"])
+        upsert_entity(db_conn, incoming)
+
+        assert incoming.id == "p-evan"
+        assert sorted(get_entity(db_conn, "sink").aliases) == sorted(self._SINK_ALIASES)
+        assert get_entity(db_conn, "p-evan").aliases == ["W0EXAMPLE3"]
+
+    def test_no_upsert_deletes_entity_with_multiple_slack_ids(self, db_conn):
+        self._seed(db_conn)
+        _raw_insert_entity(db_conn, "p-evan", "person", "Evan Grey", aliases=["W0EXAMPLE3"])
+
+        incoming = [
+            Entity(id="sink", type="person", name="dbrook", aliases=["W0EXAMPLE2"]),
+            Entity(id="sink", type="person", name="Dana Brook", aliases=["W0EXAMPLE3"]),
+            Entity(id="sink", type="person", name="@dbrook", aliases=[]),
+            Entity(id="p-dana", type="person", name="dbrook", aliases=["W0EXAMPLE1"]),
+            Entity(id="p-evan", type="person", name="Evan Grey", aliases=["W0EXAMPLE2"]),
+            Entity(id="new", type="person", name="dbrook", aliases=["W0EXAMPLE2"]),
+        ]
+        for entity in incoming:
+            upsert_entity(db_conn, entity)
+            assert get_entity(db_conn, "sink") is not None, entity
+
+        assert sorted(get_entity(db_conn, "sink").aliases) == sorted(self._SINK_ALIASES)
+        assert _sender_obs_count(db_conn, "sink") == 3
+
+    def test_id_match_beats_name_only_match(self, db_conn):
+        _raw_insert_entity(db_conn, "x", "person", "W0EXAMPLE5", aliases=["W0EXAMPLE5"])
+        _raw_insert_entity(db_conn, "y", "person", "Gale Hart", aliases=["ghart"])
+
+        incoming = Entity(id="x", type="person", name="ghart", aliases=["W0EXAMPLE5"])
+        upsert_entity(db_conn, incoming)
+
+        assert incoming.id == "x"
+        assert "W0EXAMPLE5" in get_entity(db_conn, "x").aliases
+        y = get_entity(db_conn, "y")
+        assert y.name == "Gale Hart"
+        assert y.aliases == ["ghart"]
+
+    def test_id_match_beats_name_only_match_for_new_sender(self, db_conn):
+        _raw_insert_entity(db_conn, "x", "person", "W0EXAMPLE5", aliases=["W0EXAMPLE5"])
+        _raw_insert_entity(db_conn, "y", "person", "Gale Hart", aliases=["ghart"])
+
+        sender = self._ingest_slack_message(db_conn, "W0EXAMPLE5", "ghart", "obs-new")
+
+        assert sender.id == "x"
+        assert get_entity(db_conn, "y").aliases == ["ghart"]
+        assert _sender_obs_count(db_conn, "x") == 1
+        assert _sender_obs_count(db_conn, "y") == 0
+
+    def test_id_merge_records_merge_provenance(self, db_conn):
+        _raw_insert_entity(db_conn, "e1", "person", "dchen", aliases=["U001DCHEN"])
+        _raw_insert_entity(db_conn, "e2", "person", "Dana Chen", aliases=["dana.chen"])
+
+        upsert_entity(
+            db_conn,
+            Entity(id="e2", type="person", name="Dana Chen", aliases=["U001DCHEN"]),
+            adapter="slack",
+            observation_id="obs1",
+        )
+
+        assert get_entity(db_conn, "e2") is None
+        assert _alias_provenance(db_conn, "e2") == [
+            ("Dana Chen", "slack", "obs1", "merge"),
+            ("dana.chen", "slack", "obs1", "merge"),
+        ]
