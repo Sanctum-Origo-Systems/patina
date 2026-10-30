@@ -648,14 +648,78 @@ def _is_automated_address(address: str) -> bool:
     return bool(local) and bool(_NON_PERSON_RE.search(local) or _AUTOMATED_LOCAL_RE.search(local))
 
 
+# Observation sources written before the per-adapter source names (#556).
+_LEGACY_SOURCES = frozenset({"email"})
+
+# Calendar invite and notification subject prefixes (#556).
+_INVITE_SUBJECT_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:updated |new )?invitation(?: from [^:]*)?"
+    r"|accepted|declined|tentative|tentatively accepted"
+    r"|cancell?ed(?: event| meeting)?"
+    r"|(?:new|updated|cancell?ed) event"
+    r"|meeting (?:request|update|cancell?ed)"
+    r")\s*:",
+    re.IGNORECASE,
+)
+_REPLY_SUBJECT_RE = re.compile(r"^\s*(?:re|aw|antw)\s*:", re.IGNORECASE)
+_TEXT_SUBJECT_RE = re.compile(r"^\s*\[Subject:\s*(.*?)\]")
+
+
+def _observation_subject(text: str | None, meta: dict) -> str:
+    """The subject from metadata, a ``[Subject: ...]`` prefix, or the first text line."""
+    if meta.get("subject"):
+        return str(meta["subject"])
+    text = text or ""
+    m = _TEXT_SUBJECT_RE.match(text)
+    if m:
+        return m.group(1)
+    return text.strip().split("\n", 1)[0]
+
+
+def _is_automated_by_structure(conn: sqlite3.Connection, ent: dict, obs_rows: list) -> bool:
+    """An address-less sender whose observations all look like legacy invites (#556).
+
+    Needs at least two observations, every one from a legacy source, with an
+    invite or notification subject, and none in a reply thread: a reply
+    subject, an ``in_reply_to`` header, or a thread another sender posted in.
+    """
+    if len(obs_rows) < 2:
+        return False
+    for r in obs_rows:
+        if r["source"] not in _LEGACY_SOURCES:
+            return False
+        meta = json.loads(r["metadata"] or "{}")
+        subject = _observation_subject(r["text"], meta)
+        if _REPLY_SUBJECT_RE.match(subject) or meta.get("in_reply_to"):
+            return False
+        if not _INVITE_SUBJECT_RE.match(subject):
+            return False
+        if (
+            r["thread_id"]
+            and conn.execute(
+                "SELECT 1 FROM observations WHERE thread_id = ? AND id != ?"
+                " AND (sender_entity_id IS NULL OR sender_entity_id != ?) LIMIT 1",
+                (r["thread_id"], r["id"], ent["id"]),
+            ).fetchone()
+        ):
+            return False
+    return True
+
+
 def _is_automated_sender(conn: sqlite3.Connection, ent: dict) -> bool:
     """A sender whose every known address is an automated, notification-style one (#546).
 
     Addresses come from the entity's email aliases, every email alias its
     provenance ever recorded, and the sender DN on each of its observations.
     Any other alias (Slack ID, DN, handle), a Slack sender or a DN with no
-    readable mailbox counts as a person signal. With no address at all the
-    entity is not treated as automated.
+    readable mailbox counts as a person signal.
+
+    With no address anywhere, the entity is automated only on structural
+    evidence from its observations (#556): at least two, every one from a
+    legacy source (``email``), every one an invite or notification subject
+    ("Invitation: ...", "Accepted: ...") and none in a reply thread. Any one
+    of these signals alone is not enough, and the name is never consulted.
     """
     name_key = normalize_name(ent["name"])
     addresses: list[str] = []
@@ -673,7 +737,8 @@ def _is_automated_sender(conn: sqlite3.Connection, ent: dict) -> bool:
     addresses.extend(r["alias"] for r in rows if "@" in r["alias"])
 
     obs_rows = conn.execute(
-        "SELECT metadata FROM observations WHERE sender_entity_id = ?", (ent["id"],)
+        "SELECT id, source, thread_id, text, metadata FROM observations WHERE sender_entity_id = ?",
+        (ent["id"],),
     ).fetchall()
     if not obs_rows:
         return False
@@ -688,7 +753,9 @@ def _is_automated_sender(conn: sqlite3.Connection, ent: dict) -> bool:
                 return False
             addresses.append(mailbox)
 
-    return bool(addresses) and all(_is_automated_address(a) for a in addresses)
+    if not addresses:
+        return _is_automated_by_structure(conn, ent, obs_rows)
+    return all(_is_automated_address(a) for a in addresses)
 
 
 def _collect_dns(tokens: list[str]) -> set[str]:

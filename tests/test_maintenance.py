@@ -974,6 +974,120 @@ def test_shape_b_automated_address_without_sender_observations_keeps_label_546(d
     assert review["shape"] == "first_name_only"
 
 
+def _legacy_obs(oid, sender_id, text, ts, thread_id=None, source="email", metadata=None):
+    obs = _obs(oid, sender_id, source=source, ts=ts)
+    obs.text = text
+    obs.thread_id = thread_id
+    obs.metadata = metadata or {"channel_name": None, "reactions": []}
+    return obs
+
+
+_INVITE_TEXTS = [
+    "[Subject: Invitation: Quarterly sync @ Tue 10am] [Participants: a, b]\nThe quick brown fox",
+    "Updated invitation: Quarterly sync @ Wed 10am\nThe quick brown fox",
+    "Accepted: Quarterly sync\nThe quick brown fox",
+]
+
+
+def _seed_quillfeather(conn, texts=_INVITE_TEXTS, **kwargs):
+    _insert_entity_raw(conn, "q", "Quillfeather")
+    _insert_entity_raw(conn, "qf", "Quillfeather Example")
+    for i, text in enumerate(texts):
+        insert_observation(conn, _legacy_obs(f"o{i}", "q", text, 1000.0 + i, **kwargs))
+
+
+def test_shape_b_address_less_legacy_invites_unlabeled_556(db_conn):
+    """#556: no address anywhere, but every observation is a legacy, non-reply invite."""
+    assert "quillfeather" not in NON_PERSON_TOKENS
+    _seed_quillfeather(db_conn)
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["q"]
+    assert review["reason"] == "name match"
+    assert "shape" not in review
+    assert review["related"] == ["Quillfeather Example"]
+
+
+def test_shape_b_address_less_subject_from_metadata_unlabeled_556(db_conn):
+    """#556: a subject in observation metadata counts like one in the text."""
+    _insert_entity_raw(db_conn, "q", "Quillfeather")
+    _insert_entity_raw(db_conn, "qf", "Quillfeather Example")
+    for i, subject in enumerate(["Invitation: Sync", "Canceled event: Sync"]):
+        meta = {"channel_name": None, "reactions": [], "subject": subject}
+        insert_observation(
+            db_conn, _legacy_obs(f"o{i}", "q", "The quick brown fox", 1000.0 + i, metadata=meta)
+        )
+
+    assert "shape" not in _review_by_id(find_dedup_candidates(db_conn))["q"]
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        _INVITE_TEXTS[:1],
+        [_INVITE_TEXTS[0], "The quick brown fox jumps over the lazy dog"],
+        [_INVITE_TEXTS[0], "[Subject: Re: Invitation: Quarterly sync] [Participants: a]\nOk"],
+    ],
+    ids=["single-observation", "one-ordinary-message", "one-reply-subject"],
+)
+def test_shape_b_address_less_needs_every_signal_556(db_conn, texts):
+    """#556: one observation, or one that is not a non-reply invite, keeps the label."""
+    _seed_quillfeather(db_conn, texts=texts)
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["q"]
+    assert review["reason"] == "first_name_only"
+    assert review["shape"] == "first_name_only"
+
+
+def test_shape_b_address_less_reply_thread_keeps_label_556(db_conn):
+    """#556: an invite in a thread another sender replied in is a person signal."""
+    _seed_quillfeather(db_conn, texts=_INVITE_TEXTS[:2])
+    db_conn.execute("UPDATE observations SET thread_id = 't1' WHERE id = 'o1'")
+    _insert_entity_raw(db_conn, "r", "Robin Example")
+    insert_observation(db_conn, _legacy_obs("o9", "r", "Sounds good", 2000.0, thread_id="t1"))
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["q"]
+    assert review["shape"] == "first_name_only"
+
+
+def test_shape_b_address_less_in_reply_to_keeps_label_556(db_conn):
+    """#556: an ``in_reply_to`` header on any observation is a reply-thread signal."""
+    _insert_entity_raw(db_conn, "q", "Quillfeather")
+    _insert_entity_raw(db_conn, "qf", "Quillfeather Example")
+    for i, text in enumerate(_INVITE_TEXTS[:2]):
+        meta = {"channel_name": None, "reactions": []}
+        if i:
+            meta["in_reply_to"] = "<msg-1@example.com>"
+        insert_observation(db_conn, _legacy_obs(f"o{i}", "q", text, 1000.0 + i, metadata=meta))
+
+    assert _review_by_id(find_dedup_candidates(db_conn))["q"]["shape"] == "first_name_only"
+
+
+def test_shape_b_address_less_non_legacy_source_keeps_label_556(db_conn):
+    """#556: invites from a current adapter source are not legacy-only evidence."""
+    _seed_quillfeather(db_conn, source="outlook_mcp_email")
+
+    assert _review_by_id(find_dedup_candidates(db_conn))["q"]["shape"] == "first_name_only"
+
+
+def test_shape_b_address_less_own_thread_still_unlabeled_556(db_conn):
+    """#556: invites sharing a thread only with the same sender are not a reply thread."""
+    _seed_quillfeather(db_conn, texts=_INVITE_TEXTS[:2], thread_id="t1")
+
+    assert "shape" not in _review_by_id(find_dedup_candidates(db_conn))["q"]
+
+
+def test_shape_b_real_person_ordinary_legacy_messages_keeps_label_556(db_conn):
+    """#556: a human first name with ordinary legacy email keeps the label."""
+    _insert_entity_raw(db_conn, "d", "Dana")
+    _insert_entity_raw(db_conn, "df", "Dana Brook")
+    for i, text in enumerate(["The quick brown fox", "Lunch on Friday?", "Notes attached"]):
+        insert_observation(db_conn, _legacy_obs(f"o{i}", "d", text, 1000.0 + i))
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["d"]
+    assert review["reason"] == "first_name_only"
+    assert review["shape"] == "first_name_only"
+
+
 @pytest.mark.parametrize(
     "shared",
     ["U0000000B1", "jane.doe@example.com", "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=JDOE"],
