@@ -1171,6 +1171,41 @@ class TestResolveSinkHandleTiebreak:
         assert resolve_entity_id(db_conn, "user_a") is None
 
 
+class TestResolveSinkOnlyHandleHolder:
+    """#547: a handle held only by a multi-identity sink does not resolve to it."""
+
+    _SINK_ALIASES = ["U0001AAAA", "U0002BBBB", "rstone"]
+
+    def test_sink_only_holder_returns_none(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="sink_1", type="person", name="/O=ACME/OU=CORP", aliases=self._SINK_ALIASES),
+        )
+        assert _is_multi_identity("/O=ACME/OU=CORP", self._SINK_ALIASES)
+        assert resolve_entity_id(db_conn, "rstone", ["U0NEW9999"]) is None
+
+    def test_new_person_not_absorbed_into_sink(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(id="sink_1", type="person", name="/O=ACME/OU=CORP", aliases=self._SINK_ALIASES),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="new_rstone", type="person", name="rstone", aliases=["U0NEW9999"]),
+        )
+        assert "U0NEW9999" not in get_entity(db_conn, "sink_1").aliases
+        new = get_entity(db_conn, "new_rstone")
+        assert new is not None
+        assert "U0NEW9999" in new.aliases
+
+    def test_single_identity_only_holder_still_resolves(self, db_conn):
+        _raw_insert_entity(
+            db_conn, "p-ruth", "person", "Ruth Stone", aliases=["U0001AAAA", "rstone"]
+        )
+        assert resolve_entity_id(db_conn, "rstone", ["U0NEW9999"]) == "p-ruth"
+        assert resolve_entity_id(db_conn, "rstone") == "p-ruth"
+
+
 def _alias_provenance(conn, entity_id):
     from patina.store import ensure_entity_alias_provenance_table
 
