@@ -224,12 +224,12 @@ def resolve_entity_id(
                         if _is_multi_identity(r["name"], r_aliases):
                             multi_matches.add(r["id"])
                         break
-            if len(alias_matches) == 1:
-                return alias_matches.pop()
-            # Tiebreak (#502): one multi-identity sink + one single-identity
-            # holder -> the single-identity holder owns the alias.
-            if len(alias_matches) == 2 and len(multi_matches) == 1:
-                return (alias_matches - multi_matches).pop()
+            # A multi-identity sink never owns a handle (#547). Resolve only
+            # when exactly one single-identity holder remains, alongside at
+            # most one sink (#502 tiebreak).
+            candidates = alias_matches - multi_matches
+            if len(candidates) == 1 and len(multi_matches) <= 1:
+                return candidates.pop()
 
     # --- Phase 5: Provided non-Slack-ID aliases, in IDENTIFIER_PRECEDENCE order ---
     if aliases:
