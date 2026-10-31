@@ -4475,6 +4475,89 @@ def test_cli_repair_sink_handles(db_path):
     conn.close()
 
 
+def test_cli_repair_multi_identity_prints_sink_handles(db_path):
+    """repair-multi-identity lists sink-handle strips when no name needs repair (#563)."""
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "sink", _SINK_NAME, aliases=_SINK_ALIASES)
+    _insert_entity_raw(conn, "p-dana", "Dana Brook", aliases=["@user_a"])
+    conn.close()
+
+    runner = CliRunner()
+    home = db_path.parent
+
+    # Dry-run
+    res_dry = runner.invoke(app, ["entity", "repair-multi-identity", "--home", str(home)])
+    assert res_dry.exit_code == 0
+    assert "No multi-identity entities need name repair." not in res_dry.output
+    assert "Would strip 1 handle alias(es) from multi-identity sinks:" in res_dry.output
+    assert f"sink '{_SINK_NAME}': user_a" in res_dry.output
+    assert "1 repair(s) proposed — re-run with --confirm to apply" in res_dry.output
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT aliases FROM entities WHERE id = 'sink'").fetchone()
+    assert "user_a" in json.loads(row["aliases"])
+    conn.close()
+
+    # Confirm
+    res_confirm = runner.invoke(
+        app, ["entity", "repair-multi-identity", "--confirm", "--home", str(home)]
+    )
+    assert res_confirm.exit_code == 0
+    assert "Backup:" in res_confirm.output
+    assert "Stripped 1 handle alias(es) from multi-identity sinks:" in res_confirm.output
+    assert f"sink '{_SINK_NAME}': user_a" in res_confirm.output
+
+    conn = connect(db_path)
+    row = conn.execute("SELECT aliases FROM entities WHERE id = 'sink'").fetchone()
+    assert "user_a" not in json.loads(row["aliases"])
+    conn.close()
+
+    # Nothing left to do
+    res_again = runner.invoke(app, ["entity", "repair-multi-identity", "--home", str(home)])
+    assert res_again.exit_code == 0
+    assert "No multi-identity entities need name repair." in res_again.output
+    assert "handle alias(es)" not in res_again.output
+
+
+def test_cli_repair_multi_identity_prints_name_and_sink_handles(db_path):
+    """repair-multi-identity lists both name repairs and sink-handle strips (#563)."""
+    from typer.testing import CliRunner
+
+    from patina.cli import app
+    from patina.store import connect
+
+    conn = connect(db_path)
+    _insert_entity_raw(conn, "sink", _SINK_NAME, aliases=_SINK_ALIASES)
+    _insert_entity_raw(conn, "p-dana", "Dana Brook", aliases=["@user_a"])
+    _insert_entity_raw(
+        conn,
+        "sink2",
+        "user_g",
+        aliases=[
+            "user_g",
+            "U0EXAMPLE3",
+            "slack:U0EXAMPLE3",
+            "U0EXAMPLE4",
+            "slack:U0EXAMPLE4",
+            "/O=EXAMPLEORG/OU=Y",
+        ],
+    )
+    conn.close()
+
+    runner = CliRunner()
+    res = runner.invoke(app, ["entity", "repair-multi-identity", "--home", str(db_path.parent)])
+    assert res.exit_code == 0
+    assert "Would repair 1 multi-identity entity(ies)" in res.output
+    assert "'user_g' -> '/O=EXAMPLEORG/OU=Y'" in res.output
+    assert "Would strip 1 handle alias(es) from multi-identity sinks:" in res.output
+    assert "2 repair(s) proposed — re-run with --confirm to apply" in res.output
+
+
 # ── rekey_credential_references ─────────────────────────────
 
 _CRED_PARAM_RE = re.compile(

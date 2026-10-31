@@ -1453,20 +1453,34 @@ def entity_repair_multi_identity_cmd(
                 f" {', '.join(skip['foreign_ids'])}"
             )
 
-        if result["repaired"] == 0:
+        sink_handles = result["sink_handles"]
+        if result["repaired"] == 0 and sink_handles["stripped"] == 0:
             typer.echo("No multi-identity entities need name repair.")
             return
 
-        mode = "Repaired" if confirm else "Would repair"
-        typer.echo(f"{mode} {result['repaired']} multi-identity entity(ies):")
-        for ent in result["entities"]:
-            stripped = ", ".join(ent["stripped_aliases"]) or "(none)"
+        if result["repaired"]:
+            mode = "Repaired" if confirm else "Would repair"
+            typer.echo(f"{mode} {result['repaired']} multi-identity entity(ies):")
+            for ent in result["entities"]:
+                stripped = ", ".join(ent["stripped_aliases"]) or "(none)"
+                typer.echo(
+                    f"  {ent['id'][:8]}: '{ent['old_name']}' -> '{ent['new_name']}'"
+                    f" (stripped aliases: {stripped})"
+                )
+
+        # Sink-handle strips run in the same call (#563)
+        if sink_handles["stripped"]:
+            mode = "Stripped" if confirm else "Would strip"
             typer.echo(
-                f"  {ent['id'][:8]}: '{ent['old_name']}' -> '{ent['new_name']}'"
-                f" (stripped aliases: {stripped})"
+                f"{mode} {sink_handles['stripped']} handle alias(es) from multi-identity sinks:"
             )
+            for ent in sink_handles["entities"]:
+                for alias in ent["removed"]:
+                    typer.echo(f"  {ent['id'][:8]} '{ent['name']}': {alias}")
+
         if not confirm:
-            typer.echo(f"{result['repaired']} repair(s) proposed — re-run with --confirm to apply")
+            total = result["repaired"] + sink_handles["stripped"]
+            typer.echo(f"{total} repair(s) proposed — re-run with --confirm to apply")
     finally:
         conn.close()
 
