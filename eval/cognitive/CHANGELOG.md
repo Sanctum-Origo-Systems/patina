@@ -1,3 +1,12 @@
+## v0.32.0 (2026-10-31)
+- #558: Feat: [patina] fix: automated-sender signal never fires for an ent ($0.99)
+- #557: Feat: [patina] fix: upsert_entity merges a multi-identity sink int ($2.67)
+- #554: Feat: [patina] fix: resolve_entity_id Phase 5 resolves a handle al ($0.96)
+- #551: Feat: [patina] fix: first_name_only product-name skip relies on a ($1.64)
+- #550: Feat: [patina] fix: upsert_entity drops a better display name on t ($0.83)
+- #549: Feat: [patina] fix: resolve_entity_id Phase 4 resolves a handle to ($0.68)
+Total: 6 PRs, $7.77
+
 ## v0.31.0 (2026-10-29)
 - #544: Feat: [patina] dedup preview misses Shape A when the alias holder ($1.16)
 - #543: Feat: [patina] first_name_only dedup label fires on product names ($0.97)
