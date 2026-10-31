@@ -2308,7 +2308,15 @@ def repair_multi_identity_names(
             _record_alias_changes(conn, item["id"], removed=item["stripped_aliases"])
         conn.commit()
 
-    return {"repaired": len(repaired), "entities": repaired, "skipped": skipped}
+    # Also strip any member handles on sinks that belong to single-identity entities
+    sink_handles = repair_sink_handle_aliases(conn, dry_run=dry_run)
+
+    return {
+        "repaired": len(repaired),
+        "entities": repaired,
+        "skipped": skipped,
+        "sink_handles": sink_handles,
+    }
 
 
 def _is_handle_alias(alias: str) -> bool:
@@ -2342,7 +2350,8 @@ def repair_sink_handle_aliases(
         if _is_multi_identity(r["name"], aliases):
             sinks.append((r, aliases))
             continue
-        for a in aliases:
+        tokens = [r["name"], *aliases]
+        for a in tokens:
             key = _graph_normalize(normalize_alias(a))
             if key:
                 single_holders.setdefault(key, set()).add(r["id"])
@@ -2366,6 +2375,7 @@ def repair_sink_handle_aliases(
                 "UPDATE entities SET aliases = ? WHERE id = ?",
                 (json.dumps(item["kept"]), item["id"]),
             )
+            _record_alias_changes(conn, item["id"], removed=item["removed"])
         conn.commit()
 
     return {

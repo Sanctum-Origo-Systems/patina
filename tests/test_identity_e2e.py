@@ -767,14 +767,6 @@ def test_capitalized_first_name_with_shared_id_still_merges_542(identity_store, 
     assert {"avery-lund", "slack-bot", "alund"} <= remaining
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "OBS-2026-10-26-1: a DN sink still holding a member handle captures that member "
-        "at ingest and keeps the handle through dedup, split and repair"
-    ),
-)
 def test_dn_sink_holding_member_handle_releases_it_obs_2026_10_26_1(tmp_path, monkeypatch):
     store = _build_store(tmp_path, monkeypatch, sink_aliases=[*SINK_ALIASES, "rstone"])
     conn = store.conn
@@ -792,3 +784,40 @@ def test_dn_sink_holding_member_handle_releases_it_obs_2026_10_26_1(tmp_path, mo
         assert resolve_entity_id(conn, "rstone") == riley
     finally:
         conn.close()
+
+
+def test_dn_sink_does_not_absorb_new_user_at_subsequent_ingest(tmp_path, monkeypatch):
+    """Subsequent ingest from member whose handle was on the sink routes to the person."""
+    store = _build_store(tmp_path, monkeypatch, sink_aliases=[*SINK_ALIASES, "rstone"])
+    conn = store.conn
+
+    dedup_entities(conn, dry_run=False, snapshot_token=store_snapshot_token(conn))
+    split_dn_sink(conn, SINK_ID, dry_run=False)
+    repair_multi_identity_names(conn, dry_run=False)
+
+    riley = _holder(conn, RILEY_SLACK_ID)
+    assert riley != SINK_ID
+
+    # Now a new message arrives from Riley using the handle 'rstone'
+    subsequent_msg = [
+        _slack(100, RILEY_SLACK_ID, "rstone", "Checking in on the project", "D0000000002")
+    ]
+    ingest_live(
+        port=FakeSlackPort(subsequent_msg),
+        source="slack_mcp",
+        home=tmp_path,
+        lookback_days=_LOOKBACK_DAYS,
+    )
+
+    sink_aliases = _aliases(conn, SINK_ID)
+    riley_after = _holder(conn, RILEY_SLACK_ID)
+    assert riley_after == riley
+    assert not [a for a in sink_aliases if normalize_name(normalize_alias(a)) == "rstone"]
+
+    # Verify the observation was credited to Riley, not the sink
+    obs = conn.execute(
+        "SELECT sender_entity_id FROM observations WHERE text = 'Checking in on the project'"
+    ).fetchone()
+    assert obs is not None
+    assert obs["sender_entity_id"] == riley
+    conn.close()

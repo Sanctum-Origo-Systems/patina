@@ -4,6 +4,7 @@ from patina.graph import (
     IDENTIFIER_PRECEDENCE,
     _is_multi_identity,
     _name_type_rank,
+    _strip_foreign_slack_ids,
     count_entities,
     count_observations,
     get_entity,
@@ -1628,3 +1629,118 @@ class TestUpsertEntityNeverMergesSink:
             ("Dana Chen", "slack", "obs1", "merge"),
             ("dana.chen", "slack", "obs1", "merge"),
         ]
+
+
+class TestMultiIdentitySinkProtection:
+    """Tests for multi-identity sink isolation, truncated DNs, and foreign Slack ID stripping."""
+
+    def test_is_multi_identity_truncated_dn_not_counted_as_dn(self):
+        # A truncated DN (/O= without CN=) is an organization label, not a DN identifier
+        assert not _is_multi_identity(
+            "/O=EXAMPLEORG/OU=ADMIN GROUP",
+            ["/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=0123456789abcdef-RSTONE"],
+        )
+
+    def test_is_multi_identity_two_full_dns(self):
+        assert _is_multi_identity(
+            "/O=EXAMPLEORG/OU=ADMIN GROUP",
+            [
+                "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=0123456789abcdef-RSTONE",
+                "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=0123456789abcdef-DBROOK",
+            ],
+        )
+
+    def test_is_multi_identity_handle_not_mistaken_for_slack_id(self):
+        # "WADE2024" = W + 7 chars: matches {6,10}, must not match {8,10}
+        assert not _is_multi_identity("Wade Lin", ["U0123ABCDE", "wade2024"])
+
+    def test_strip_foreign_slack_ids_catches_slack_id_in_name(self, db_conn):
+        # Entity e1 holds Slack ID as its name (before display name is resolved)
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="U012345678", aliases=[]))
+
+        # Entity e2 tries to acquire that Slack ID in its aliases
+        remaining = _strip_foreign_slack_ids(db_conn, ["U012345678"], target_id="e2")
+        assert remaining == []
+
+    def test_strip_foreign_slack_ids_catches_prefixed_slack_id_in_name(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="slack:U012345678", aliases=[]))
+        remaining = _strip_foreign_slack_ids(db_conn, ["U012345678"], target_id="e2")
+        assert remaining == []
+
+    def test_strip_foreign_slack_ids_allows_own_slack_id_in_name(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="U012345678", aliases=[]))
+        remaining = _strip_foreign_slack_ids(db_conn, ["U012345678"], target_id="e1")
+        assert remaining == ["U012345678"]
+
+    def test_resolve_entity_id_handle_does_not_resolve_to_sink(self, db_conn):
+        # Multi-identity sink holds multiple Slack IDs and a member handle
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="sink_1",
+                type="person",
+                name="/O=ACME/OU=CORP",
+                aliases=["U0000000A1", "U0000000A2", "rstone"],
+            ),
+        )
+
+        # Incoming user with handle and distinct new Slack ID must not resolve to the sink
+        resolved = resolve_entity_id(db_conn, "rstone", ["U0000000A3"])
+        assert resolved is None
+
+        # Bare handle must also not resolve to the multi-identity sink
+        assert resolve_entity_id(db_conn, "rstone") is None
+
+    def test_resolve_entity_id_handle_resolves_to_person_over_sink(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="sink_1",
+                type="person",
+                name="/O=ACME/OU=CORP",
+                aliases=["U0000000A1", "U0000000A2", "rstone"],
+            ),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(id="p1", type="person", name="Riley Stone", aliases=["U0000000A3", "rstone"]),
+        )
+
+        assert resolve_entity_id(db_conn, "rstone") == "p1"
+        assert resolve_entity_id(db_conn, "rstone", ["U0000000A3"]) == "p1"
+
+    def test_resolve_entity_id_sink_with_handle_alias_does_not_claim_new_user(self, db_conn):
+        # Sink with multiple Slack IDs holding a handle alias
+        _raw_insert_entity(
+            db_conn,
+            "sink_1",
+            "person",
+            "/O=ACME/OU=CORP",
+            aliases=["U0000000A1", "U0000000A2", "rstone"],
+        )
+        assert resolve_entity_id(db_conn, "rstone") is None
+        assert resolve_entity_id(db_conn, "rstone", ["U0000000A3"]) is None
+
+    def test_upsert_entity_does_not_absorb_new_user_into_sink(self, db_conn):
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="sink_1",
+                type="person",
+                name="/O=ACME/OU=CORP",
+                aliases=["U0000000A1", "U0000000A2", "rstone"],
+            ),
+        )
+
+        new_user = Entity(
+            id="p_new",
+            type="person",
+            name="rstone",
+            aliases=["U0000000A3"],
+        )
+        upsert_entity(db_conn, new_user)
+
+        assert new_user.id == "p_new"
+        sink = get_entity(db_conn, "sink_1")
+        assert "U0000000A3" not in sink.aliases
+        assert get_entity(db_conn, "p_new") is not None

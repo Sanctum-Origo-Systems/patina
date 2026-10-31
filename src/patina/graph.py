@@ -84,21 +84,23 @@ def _name_type_rank(
     return _DISPLAY_ORDER.index(kind)
 
 
-_SLACK_ID_EXTRACT_PAT = re.compile(r"^(?:slack:)?([UW][A-Z0-9]{4,})$", re.IGNORECASE)
-
-
 def _is_multi_identity(name: str, aliases: list[str]) -> bool:
-    """True when tokens contain >1 distinct Slack ID or DN — a known sink."""
+    """True when tokens contain >1 distinct Slack ID or DN — a known sink.
+
+    Truncated DNs (/O= without CN=) are not identifiers, so they are never
+    counted as DNs here.
+    """
     slack_ids: set[str] = set()
     dns: set[str] = set()
     for token in [name] + aliases:
-        t = token.strip()
-        upper = t.upper()
-        m = _SLACK_ID_EXTRACT_PAT.match(t)
-        if m and _SLACK_ID_PAT.match(m.group(1).upper()):
-            slack_ids.add(m.group(1).upper())
-        elif upper.startswith("/O=") or "CN=" in upper:
-            dns.add(upper)
+        if not token:
+            continue
+        clean = normalize_alias(token.strip())
+        upper_clean = clean.upper()
+        if _SLACK_ID_PAT.match(upper_clean):
+            slack_ids.add(upper_clean)
+        elif identifier_type(clean) == "dn":
+            dns.add(upper_clean)
     return len(slack_ids) > 1 or len(dns) > 1
 
 
@@ -302,8 +304,14 @@ def _strip_foreign_slack_ids(
             continue
         row = conn.execute(
             "SELECT id FROM entities WHERE id != ? AND is_owner = 0"
-            " AND (aliases LIKE ? OR aliases LIKE ?)",
-            (target_id, f'%"{stripped}"%', f'%"slack:{stripped}"%'),
+            " AND (UPPER(name) = ? OR UPPER(name) = ? OR aliases LIKE ? OR aliases LIKE ?)",
+            (
+                target_id,
+                stripped.upper(),
+                f"SLACK:{stripped.upper()}",
+                f'%"{stripped}"%',
+                f'%"slack:{stripped}"%',
+            ),
         ).fetchone()
         if row is None:
             result.append(alias)
