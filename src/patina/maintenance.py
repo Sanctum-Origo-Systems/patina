@@ -662,6 +662,15 @@ _INVITE_SUBJECT_RE = re.compile(
     r")\s*:",
     re.IGNORECASE,
 )
+# Share and mention notification subjects: "<anyone> added you to <anything>" (#562).
+_SHARE_SUBJECT_RE = re.compile(
+    r"^\s*\S.*?\s(?:"
+    r"(?:added|invited) you to\s+\S"
+    r"|shared\s+\S.*?\swith you\b"
+    r"|mentioned you in\s+\S"
+    r")",
+    re.IGNORECASE,
+)
 _REPLY_SUBJECT_RE = re.compile(r"^\s*(?:re|aw|antw)\s*:", re.IGNORECASE)
 _TEXT_SUBJECT_RE = re.compile(r"^\s*\[Subject:\s*(.*?)\]")
 
@@ -693,7 +702,7 @@ def _is_automated_by_structure(conn: sqlite3.Connection, ent: dict, obs_rows: li
         subject = _observation_subject(r["text"], meta)
         if _REPLY_SUBJECT_RE.match(subject) or meta.get("in_reply_to"):
             return False
-        if not _INVITE_SUBJECT_RE.match(subject):
+        if not (_INVITE_SUBJECT_RE.match(subject) or _SHARE_SUBJECT_RE.match(subject)):
             return False
         if (
             r["thread_id"]
@@ -718,7 +727,8 @@ def _is_automated_sender(conn: sqlite3.Connection, ent: dict) -> bool:
     With no address anywhere, the entity is automated only on structural
     evidence from its observations (#556): at least two, every one from a
     legacy source (``email``), every one an invite or notification subject
-    ("Invitation: ...", "Accepted: ...") and none in a reply thread. Any one
+    ("Invitation: ...", "Accepted: ...") or a share or mention notification
+    ("... added you to ...", #562) and none in a reply thread. Any one
     of these signals alone is not enough, and the name is never consulted.
     """
     name_key = normalize_name(ent["name"])
