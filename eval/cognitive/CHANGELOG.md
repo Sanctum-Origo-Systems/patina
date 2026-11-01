@@ -1,7 +1,9 @@
-## v0.32.1 (2026-11-01)
+## v0.33.0 (2026-11-01)
+- #565: Feat: [patina] fix: address-less automated-sender check misses sha ($0.64)
+- #566: Feat: [patina] fix: upsert_entity adds an incoming handle or email ($0.94)
 - #564: Fix: print sink_handles changes in repair-multi-identity CLI ($0.00)
-- #560: Fix: Multi-Identity Sink Contamination & Identity Resolution Breakdown ($0.00)
-Total: 2 PRs, $0.00
+- #560: Fix: Multi-Identity Sink Contamination & Identity Resolution Breakdown ($0.00, external contribution)
+Total: 4 PRs, $1.58
 
 ## v0.32.0 (2026-10-31)
 - #558: Feat: [patina] fix: automated-sender signal never fires for an ent ($0.99)
