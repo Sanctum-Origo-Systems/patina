@@ -1,16 +1,16 @@
 # EVAL Report
 
-Report date 2026-10-30: data as of 2026-10-30T12:13:44.100220+00:00, 233 history rows.
+Report date 2026-11-01: data as of 2026-10-31T20:17:04.509768+00:00, 239 history rows.
 
 ## Overall
 
 | Metric | Value | Pending |
 |--------|-------|---------|
-| Total PRs | 133 | — |
-| First-attempt success | 89% (n=127 implement runs) | pending: 0 |
-| Avg cost/run | $1.89 (n=127 implement runs) | included |
-| Avg review cost/run | $0.24 (n=15 implement runs) | included |
-| Human edit rate | 27% (n=133 merged PRs; edited by a human PR within 7 days) | pending: 0 |
+| Total PRs | 137 | — |
+| First-attempt success | 89% (n=131 implement runs) | pending: 0 |
+| Avg cost/run | $1.87 (n=131 implement runs) | included |
+| Avg review cost/run | $0.24 (n=19 implement runs) | included |
+| Human edit rate | 39% (n=137 merged PRs; edited by a human PR within 7 days) | pending: 0 |
 
 ## Definitions
 
@@ -28,8 +28,8 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 | Metric | Value | Threshold |
 |--------|-------|-----------|
 | Success rate | 89% | >90% |
-| Edit rate | 27% | <5% |
-| Clean merges | 97 | ≥10 |
+| Edit rate | 39% | <5% |
+| Clean merges | 83 | ≥10 |
 | **Ready?** | **No** | |
 
 ## Per-Module Breakdown
@@ -37,11 +37,11 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
 | other | insufficient data (n=14 runs) | insufficient data (n=14 runs) | 15 | No |
-| src/patina/ | 94% (n=88 runs) | $1.98 (n=88 runs) | 93 | No |
+| src/patina/ | 97% (n=89 runs) | $1.93 (n=89 runs) | 94 | No |
 | src/patina/adapters/ | insufficient data (n=7 runs) | insufficient data (n=7 runs) | 13 | No |
-| src/patina/autonomy/ | insufficient data (n=3 runs) | insufficient data (n=3 runs) | 3 | No |
-| src/patina/beliefs/ | insufficient data (n=7 runs) | insufficient data (n=7 runs) | 8 | No |
-| src/patina/mcp/ | insufficient data (n=4 runs) | insufficient data (n=4 runs) | 6 | No |
+| src/patina/autonomy/ | insufficient data (n=4 runs) | insufficient data (n=4 runs) | 4 | No |
+| src/patina/beliefs/ | insufficient data (n=8 runs) | insufficient data (n=8 runs) | 9 | No |
+| src/patina/mcp/ | insufficient data (n=5 runs) | insufficient data (n=5 runs) | 7 | No |
 | src/patina/priority/ | insufficient data (n=1 runs) | insufficient data (n=1 runs) | 1 | No |
 
 ## Trend
@@ -94,6 +94,8 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 | 2026-10-28 (baseline break) | 9 | 100% | $1.57 | 28% |
 | 2026-10-29 | 2 | 100% | $1.33 | 0% |
 | 2026-10-30 | 4 | 100% | $0.66 | 0% |
+| 2026-10-31 | 2 | 100% | $1.89 | 0% |
+| 2026-11-01 | 2 | 100% | $0.58 | invalid |
 
 > Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
@@ -102,7 +104,7 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 ```mermaid
 xychart-beta horizontal
     title "Weekly First-Attempt Success Rate (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "10/30 (n=6)"]
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)"]
     y-axis "Success %" 0 --> 100
     bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 43, 50, 100]
 ```
@@ -112,9 +114,9 @@ xychart-beta horizontal
 ```mermaid
 xychart-beta horizontal
     title "Weekly Avg Cost/PR (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "10/30 (n=6)"]
-    y-axis "Cost ($)" 0 --> 1
-    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27, 0.88]
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)"]
+    y-axis "Cost ($)" 0 --> 2
+    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27, 1.24]
 ```
 
 > bars before 10/26 count triage runs as implementations (#400)
@@ -123,10 +125,10 @@ xychart-beta horizontal
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
 pie title Attempt Distribution by Module
     "other (86%, 15 impl)" : 15
-    "src/patina/ (94%, 93 impl)" : 93
+    "src/patina/ (97%, 94 impl)" : 94
     "src/patina/adapters/ (71%, 13 impl)" : 13
-    "src/patina/autonomy/ (100%, 3 impl)" : 3
-    "src/patina/beliefs/ (71%, 8 impl)" : 8
-    "src/patina/mcp/ (100%, 6 impl)" : 6
+    "src/patina/autonomy/ (75%, 4 impl)" : 4
+    "src/patina/beliefs/ (62%, 9 impl)" : 9
+    "src/patina/mcp/ (100%, 7 impl)" : 7
     "src/patina/priority/ (100%, 1 impl)" : 1
 ```
