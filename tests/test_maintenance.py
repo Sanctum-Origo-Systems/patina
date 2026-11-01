@@ -1088,6 +1088,74 @@ def test_shape_b_real_person_ordinary_legacy_messages_keeps_label_556(db_conn):
     assert review["shape"] == "first_name_only"
 
 
+_SHARE_TEXTS = [
+    "[Subject: Rowan Pike added you to Q3 roadmap] [Participants: a, b]\nThe quick brown fox",
+    '[Subject: Rowan Pike shared "Launch notes" with you] [Participants: a]\nThe quick brown fox',
+]
+
+
+def test_shape_b_address_less_share_notifications_unlabeled_562(db_conn):
+    """#562: legacy share notifications count like invites for an address-less sender."""
+    assert "quillfeather" not in NON_PERSON_TOKENS
+    _seed_quillfeather(db_conn, texts=_SHARE_TEXTS)
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["q"]
+    assert review["reason"] == "name match"
+    assert "shape" not in review
+
+
+@pytest.mark.parametrize(
+    "subjects",
+    [
+        ["Rowan Pike mentioned you in Launch notes", "Rowan Pike invited you to Q3 roadmap"],
+        ["Rowan Pike added you to Q3 roadmap", "Invitation: Quarterly sync"],
+    ],
+    ids=["mention-and-invite", "share-and-calendar-invite"],
+)
+def test_shape_b_address_less_notification_subjects_unlabeled_562(db_conn, subjects):
+    """#562: mention and invite-to notifications, alone or mixed with invites, count."""
+    _insert_entity_raw(db_conn, "q", "Quillfeather")
+    _insert_entity_raw(db_conn, "qf", "Quillfeather Example")
+    for i, subject in enumerate(subjects):
+        meta = {"channel_name": None, "reactions": [], "subject": subject}
+        insert_observation(
+            db_conn, _legacy_obs(f"o{i}", "q", "The quick brown fox", 1000.0 + i, metadata=meta)
+        )
+
+    assert "shape" not in _review_by_id(find_dedup_candidates(db_conn))["q"]
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        _SHARE_TEXTS[:1],
+        [_SHARE_TEXTS[0], "[Subject: Re: Rowan Pike added you to Q3 roadmap]\nOk"],
+        ["Lunch on Friday?", "Notes from today"],
+        ["Added the notes to the folder", "Shared drive cleanup"],
+    ],
+    ids=["single-observation", "one-reply-subject", "ordinary-subjects", "bare-added-shared"],
+)
+def test_shape_b_address_less_share_needs_every_signal_562(db_conn, texts):
+    """#562: one share notification, a reply, or ordinary subjects keep the label."""
+    _seed_quillfeather(db_conn, texts=texts)
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["q"]
+    assert review["reason"] == "first_name_only"
+    assert review["shape"] == "first_name_only"
+
+
+def test_shape_b_real_person_ordinary_subjects_keeps_label_562(db_conn):
+    """#562: a human first name with ordinary legacy subjects keeps the label."""
+    _insert_entity_raw(db_conn, "d", "Dana")
+    _insert_entity_raw(db_conn, "df", "Dana Brook")
+    for i, text in enumerate(["Lunch on Friday?", "Notes from today"]):
+        insert_observation(db_conn, _legacy_obs(f"o{i}", "d", text, 1000.0 + i))
+
+    review = _review_by_id(find_dedup_candidates(db_conn))["d"]
+    assert review["reason"] == "first_name_only"
+    assert review["shape"] == "first_name_only"
+
+
 @pytest.mark.parametrize(
     "shared",
     ["U0000000B1", "jane.doe@example.com", "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=JDOE"],
