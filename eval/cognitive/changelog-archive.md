@@ -290,3 +290,10 @@ Total: 5 PRs, $12.42
 - #457: Fix: add external to triage_labels exclusion list ($0.00)
 Total: 5 PRs, $5.40
 
+## v0.27.0 (2026-10-17)
+- #476: Fix: backfill sender keys and multi-source routing for DN sink split ($3.75)
+- #474: Feat: maintenance.py conflicting-ID routing and merge rewire ($3.55)
+- #471: Feat: split_dn_sink routes 0 observations — Outlook adapter sender_dn ($2.09)
+- #469: Fix: truncated DN dedup ($0.00, external contribution)
+Total: 4 PRs, $9.39
+
