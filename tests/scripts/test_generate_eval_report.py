@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date
+from pathlib import Path
 
+import pytest
+import scripts.generate_eval_report as gen
 from scripts.generate_eval_report import (
     WeekBucket,
     bucket_weeks,
+    generate_report,
     render_cost_chart,
     render_success_chart,
     render_trend_table,
@@ -318,3 +323,97 @@ class TestBucketWeeksEdgeCases:
         ]
         weeks = bucket_weeks(runs)
         assert weeks[0].avg_cost_usd == 2.00
+
+
+# ---------------------------------------------------------------------------
+# Report section order (#570)
+# ---------------------------------------------------------------------------
+
+
+def _write_fixtures(tmp_path: Path, runs: list[dict]) -> tuple[Path, Path]:
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    snapshot = {
+        "date": "2026-10-26",
+        "first_attempt_rate": 0.8,
+        "avg_cost_usd": 1.25,
+        "human_edit_rate": 0.1,
+        "modules": {
+            "widgets": {
+                "first_attempt_rate": 0.75,
+                "avg_cost_usd": 1.10,
+                "implementations": 4,
+                "merged_clean_count": 3,
+            },
+        },
+    }
+    (snapshot_dir / "2026-10-26.json").write_text(json.dumps(snapshot))
+    run_history = tmp_path / "run_history.jsonl"
+    run_history.write_text("".join(json.dumps(r) + "\n" for r in runs))
+    return snapshot_dir, run_history
+
+
+class TestReportOrder:
+    """Charts sit right after Overall, ahead of the tables."""
+
+    def test_charts_between_overall_and_tables(self, tmp_path: Path) -> None:
+        runs = [
+            _run("2026-10-19T10:00:00+00:00", 100),
+            _run("2026-10-26T10:00:00+00:00", 101, attempts=2),
+        ]
+        snapshot_dir, run_history = _write_fixtures(tmp_path, runs)
+        report = generate_report(snapshot_dir, run_history)
+
+        markers = [
+            "# EVAL Report",
+            "## Overall",
+            "## Charts",
+            "```mermaid",
+            "## Auto-Merge Gate",
+            "## Per-Module Breakdown",
+            "## Trend",
+        ]
+        positions = [report.index(m) for m in markers]
+        assert positions == sorted(positions)
+        assert report.count("## Charts") == 1
+        # All three charts sit before the Auto-Merge Gate.
+        assert report.count("```mermaid") == 3
+        assert report.rfind("```mermaid") < report.index("## Auto-Merge Gate")
+
+    def test_render_output_unchanged(self, tmp_path: Path) -> None:
+        runs = [_run("2026-10-19T10:00:00+00:00", 100, cost=0.75)]
+        snapshot_dir, run_history = _write_fixtures(tmp_path, runs)
+        report = generate_report(snapshot_dir, run_history)
+
+        snap = gen.load_snapshots(snapshot_dir)[-1]
+        weeks = bucket_weeks(gen.load_runs(run_history))
+        for rendered in (
+            gen.render_overall(snap),
+            render_success_chart(weeks),
+            render_cost_chart(weeks),
+            gen.render_pie_chart(snap),
+            gen.render_auto_merge_gate(snap),
+            gen.render_per_module(snap),
+            render_trend_table(weeks),
+        ):
+            assert rendered in report
+
+    def test_empty_week_charts_leave_no_blank_sections(self, tmp_path: Path) -> None:
+        snapshot_dir, run_history = _write_fixtures(tmp_path, [])
+        report = generate_report(snapshot_dir, run_history)
+
+        assert report.count("```mermaid") == 1  # pie chart only
+        assert "\n\n\n" not in report
+        assert report.index("## Charts") < report.index("```mermaid")
+
+    def test_no_charts_heading_when_no_chart_renders(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gen, "render_pie_chart", lambda snap: "")
+        snapshot_dir, run_history = _write_fixtures(tmp_path, [])
+        report = generate_report(snapshot_dir, run_history)
+
+        assert "## Charts" not in report
+        assert "```mermaid" not in report
+        assert "\n\n\n" not in report
+        assert report.index("## Overall") < report.index("## Auto-Merge Gate")

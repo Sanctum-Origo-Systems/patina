@@ -278,15 +278,24 @@ def generate_report(
     runs = load_runs(run_history_path)
     weeks = bucket_weeks(runs)
 
+    # Charts go near the top; skip empty renders so no blank sections remain.
+    charts = [
+        c
+        for c in (
+            render_success_chart(weeks),
+            render_cost_chart(weeks),
+            render_pie_chart(latest),
+        )
+        if c
+    ]
+
     sections = [
         "# EVAL Report",
         render_overall(latest),
+        *(["## Charts", *charts] if charts else []),
         render_auto_merge_gate(latest),
         render_per_module(latest),
         render_trend_table(weeks),
-        render_success_chart(weeks),
-        render_cost_chart(weeks),
-        render_pie_chart(latest),
         "",
     ]
     return "\n\n".join(sections)
