@@ -1,3 +1,8 @@
+## v0.32.1 (2026-11-01)
+- #564: Fix: print sink_handles changes in repair-multi-identity CLI ($0.00)
+- #560: Fix: Multi-Identity Sink Contamination & Identity Resolution Breakdown ($0.00)
+Total: 2 PRs, $0.00
+
 ## v0.32.0 (2026-10-31)
 - #558: Feat: [patina] fix: automated-sender signal never fires for an ent ($0.99)
 - #557: Feat: [patina] fix: upsert_entity merges a multi-identity sink int ($2.67)
@@ -45,11 +50,4 @@ Total: 4 PRs, $9.09
 ## v0.28.0 (2026-10-18)
 - #481: Feat: Write sender_slack_id and organizer_dn keys at ingest in Sla ($1.53)
 Total: 1 PRs, $1.53
-
-## v0.27.0 (2026-10-17)
-- #476: Fix: backfill sender keys and multi-source routing for DN sink split ($3.75)
-- #474: Feat: maintenance.py conflicting-ID routing and merge rewire ($3.55)
-- #471: Feat: split_dn_sink routes 0 observations — Outlook adapter sender_dn ($2.09)
-- #469: Fix: truncated DN dedup ($0.00, external contribution)
-Total: 4 PRs, $9.39
 
