@@ -318,6 +318,23 @@ def _strip_foreign_slack_ids(
     return result
 
 
+def _sink_held_id_aliases(name: str, held: list[str], incoming: list[str]) -> list[str]:
+    """Incoming aliases a multi-identity sink may take (#561).
+
+    Only forms of a Slack ID or DN the sink already holds in bare form, e.g.
+    ``slack:W0EXAMPLE2`` when ``W0EXAMPLE2`` is held. Handles, emails, names
+    and any Slack ID or DN the sink does not hold are dropped.
+    """
+    bare_ids = {
+        token.upper()
+        for token in [name, *held]
+        if token
+        and normalize_alias(token) == token
+        and identifier_type(token) in _OPAQUE_IDENTIFIERS
+    }
+    return [alias for alias in incoming if alias and normalize_alias(alias).upper() in bare_ids]
+
+
 def record_added_aliases(
     conn: sqlite3.Connection,
     entity_id: str,
@@ -448,8 +465,11 @@ def upsert_entity(
         ).fetchone()
         existing_aliases = json.loads(existing["aliases"] or "[]")
         new_aliases = _strip_foreign_slack_ids(conn, entity.aliases, existing_id)
-        merged_aliases = list(set(existing_aliases + new_aliases))
         name = existing["name"]
+        # A sink never gains a member's handle, email or new ID (#561).
+        if _is_multi_identity(name, existing_aliases):
+            new_aliases = _sink_held_id_aliases(name, existing_aliases, new_aliases)
+        merged_aliases = list(set(existing_aliases + new_aliases))
         # A sink keeps its name and never collects the incoming name (#547).
         if not _is_multi_identity(name, merged_aliases):
             if _name_type_rank(entity.name) < _name_type_rank(name):
@@ -483,6 +503,9 @@ def upsert_entity(
     if existing:
         existing_aliases = json.loads(existing["aliases"] or "[]")
         new_aliases = _strip_foreign_slack_ids(conn, entity.aliases, entity.id)
+        # A sink never gains a member's handle, email or new ID (#561).
+        if _is_multi_identity(existing["name"], existing_aliases):
+            new_aliases = _sink_held_id_aliases(existing["name"], existing_aliases, new_aliases)
         merged_aliases = list(set(existing_aliases + new_aliases))
         if _is_multi_identity(existing["name"], merged_aliases):
             name = existing["name"]

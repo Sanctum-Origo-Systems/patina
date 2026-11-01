@@ -1631,6 +1631,110 @@ class TestUpsertEntityNeverMergesSink:
         ]
 
 
+class TestUpsertEntitySinkGainsNoMemberAlias:
+    """#561: a sink routed by its Slack ID gains no incoming handle or email."""
+
+    _SINK_NAME = "/O=EXAMPLEORG/OU=ADMIN GROUP"
+    _SINK_ALIASES = [
+        "W0EXAMPLE1",
+        "W0EXAMPLE2",
+        "slack:W0EXAMPLE2",
+        "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=AAA",
+        "/O=EXAMPLEORG/OU=ADMIN GROUP/CN=RECIPIENTS/CN=BBB",
+    ]
+    _PERSON_ALIASES = ["@dbrook", "Dana Brook"]
+
+    def _seed(self, conn, extra_sink_aliases=()):
+        sink_aliases = self._SINK_ALIASES + list(extra_sink_aliases)
+        _raw_insert_entity(conn, "sink", "person", self._SINK_NAME, aliases=sink_aliases)
+        _raw_insert_entity(conn, "p-dana", "person", "Dana Brook", aliases=self._PERSON_ALIASES)
+        assert _is_multi_identity(self._SINK_NAME, sink_aliases)
+
+    def _assert_sink_and_person_unchanged(self, conn):
+        sink = get_entity(conn, "sink")
+        assert sink.name == self._SINK_NAME
+        assert sorted(sink.aliases) == sorted(self._SINK_ALIASES)
+        dana = get_entity(conn, "p-dana")
+        assert dana.name == "Dana Brook"
+        assert dana.aliases == self._PERSON_ALIASES
+
+    def test_slack_message_adds_no_handle_to_sink(self, db_conn):
+        from patina.extraction import extract_sender_entity
+
+        self._seed(db_conn)
+        sender = extract_sender_entity("W0EXAMPLE2", "dbrook", conn=db_conn)
+        upsert_entity(db_conn, sender, adapter="slack", observation_id="o1")
+
+        assert sender.id == "sink"
+        self._assert_sink_and_person_unchanged(db_conn)
+        assert _alias_provenance(db_conn, "sink") == []
+
+    def test_different_id_adds_no_handle_or_email_to_sink(self, db_conn):
+        for extra in ["dbrook", "@dbrook", "dbrook@example.com"]:
+            db_conn.execute("DELETE FROM entities")
+            self._seed(db_conn)
+            incoming = Entity(
+                id="new-id", type="person", name="Dana Brook", aliases=["W0EXAMPLE2", extra]
+            )
+            upsert_entity(db_conn, incoming, adapter="calendar", observation_id="o1")
+
+            assert incoming.id == "sink", extra
+            assert get_entity(db_conn, "new-id") is None
+            self._assert_sink_and_person_unchanged(db_conn)
+            assert _alias_provenance(db_conn, "sink") == []
+
+    def test_repaired_handle_is_not_readded_by_slack_message(self, db_conn):
+        from patina.extraction import extract_sender_entity
+        from patina.maintenance import repair_sink_handle_aliases
+
+        self._seed(db_conn, extra_sink_aliases=["dbrook"])
+        repair_sink_handle_aliases(db_conn, dry_run=False)
+        assert "dbrook" not in get_entity(db_conn, "sink").aliases
+
+        sender = extract_sender_entity("W0EXAMPLE2", "dbrook", conn=db_conn)
+        upsert_entity(db_conn, sender, adapter="slack", observation_id="o1")
+
+        assert sender.id == "sink"
+        self._assert_sink_and_person_unchanged(db_conn)
+
+    def test_sink_gains_prefixed_form_of_held_id_only(self, db_conn):
+        self._seed(db_conn)
+        incoming = Entity(
+            id="sink",
+            type="person",
+            name="dbrook",
+            aliases=["slack:W0EXAMPLE1", "W0EXAMPLE9", "dbrook@example.com"],
+        )
+        upsert_entity(db_conn, incoming, adapter="slack", observation_id="o1")
+
+        sink = get_entity(db_conn, "sink")
+        assert sink.name == self._SINK_NAME
+        assert sorted(sink.aliases) == sorted(self._SINK_ALIASES + ["slack:W0EXAMPLE1"])
+        assert _alias_provenance(db_conn, "sink") == [("slack:W0EXAMPLE1", "slack", "o1", "added")]
+
+    def test_non_sink_still_gains_handle_and_email(self, db_conn):
+        _raw_insert_entity(db_conn, "e1", "person", "Dana Chen", aliases=["U001DCHEN"])
+
+        upsert_entity(
+            db_conn,
+            Entity(id="e1", type="person", name="Dana Chen", aliases=["U001DCHEN", "dchen"]),
+        )
+        upsert_entity(
+            db_conn,
+            Entity(
+                id="e2",
+                type="person",
+                name="Dana Chen",
+                aliases=["U001DCHEN", "dana.chen@example.com"],
+            ),
+        )
+
+        ent = get_entity(db_conn, "e1")
+        assert "dchen" in ent.aliases
+        assert "dana.chen@example.com" in ent.aliases
+        assert get_entity(db_conn, "e2") is None
+
+
 class TestMultiIdentitySinkProtection:
     """Tests for multi-identity sink isolation, truncated DNs, and foreign Slack ID stripping."""
 
