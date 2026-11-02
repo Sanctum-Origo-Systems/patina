@@ -2,15 +2,15 @@
 
 > A cognitive framework that builds beliefs about a subject, tracks confidence over time, detects contradictions, and acts on what it notices — with governed autonomy and human gates.
 
-Patina is an architecture for building systems that form, hold, decay, and act on beliefs about a subject. It maintains an epistemically honest model with quantified confidence, temporal decay, contradiction detection, and graduated autonomy earned through accuracy. The framework is subject-agnostic: demonstrated at personal scale (one person's Slack history), designed for team and organizational scale.
+Patina is an architecture for building systems that form, hold, decay, and act on beliefs about a subject. It maintains an epistemically honest model with quantified confidence, temporal decay, contradiction detection, and graduated autonomy earned through accuracy. The framework is subject-agnostic: demonstrated at personal scale (one person's Slack and email history), designed for team and organizational scale.
 
 ![Patina Demo](patina-demo.gif)
 
 ## Quick Start
 
 ```bash
-# Install
-uv tool install patina
+# Install (from GitHub; the "patina" package on PyPI is an unrelated project)
+uv tool install git+https://github.com/Sanctum-Origo-Systems/patina.git
 
 # Initialize
 patina init
@@ -33,11 +33,13 @@ patina catch-up                    # unified view: needs action / new / waiting
 patina priorities                  # grouped by quadrant (Q1-Q4)
 patina dismiss <id>                # dismiss noise, trains the model
 patina objectives add "Ship v2" --keywords "release,deploy"
+patina objectives list             # active objectives
+patina objectives remove <id>      # remove an objective
 
 # Style + drafting
 patina style build                 # build communication profiles from sent messages
 patina style show <name>           # view patterns for a person
-patina draft --to <name> --context "follow up on the timeline"
+patina draft --to <name> --context "follow up on the timeline"  # generate a draft message
 
 # Belief graph
 patina extract                     # extract beliefs from observations via LLM
@@ -49,25 +51,37 @@ patina relationships --top 20      # trust level + activity map
 
 # Graduated autonomy (per-domain)
 patina autonomy status             # per-domain level, accuracy, anti-patterns
+patina autonomy pending            # proposed actions awaiting approval
 patina autonomy evaluate           # evaluate one ladder step
 patina autonomy anti-patterns      # list stored anti-patterns
+patina autonomy clear-pattern <id> # remove an anti-pattern
 patina autonomy set-level <N>      # manual override (0-6)
 patina approve <id>                # approve a proposed action
 patina reject <id>                 # reject (freezes advancement, stores anti-pattern)
+patina backfill-decisions          # backfill decisions from your past reactions (--dry-run available)
 
 # Entity & data maintenance
+# Commands marked (--confirm) preview by default and only write with --confirm.
+patina status                      # database status
 patina entity list                 # list all entities
 patina entity merge <drop> <keep>  # merge entities, rewire references
-patina entity dedup                # deduplicate (hard identifiers only, --confirm to execute)
-patina entity dedup --dry-run      # preview proposed merges with match reasons
+patina entity dedup                # preview merges by hard identifiers, with match reasons (--confirm)
 patina entity prune                # prune non-person entities (protects senders)
 patina entity prune-links          # remove Slack link markup entities
-patina entity rekey-references     # strip credential params from reference URLs (--confirm to apply)
+patina entity cleanup              # remove claims/relationships pointing at deleted entities (--dry-run available)
+patina entity rekey-references     # strip credential params from reference URLs (--confirm)
+patina entity resolve-names        # rename entities still named by a raw Slack ID (--confirm)
+patina entity retype               # retype person entities that look like organizations (--confirm)
+patina entity fix-senders          # merge or retype junk senders: legacy DNs, raw emails (--confirm)
+patina entity clean-slack-aliases  # drop slack: aliases that are not valid Slack IDs (--confirm)
+patina entity repair-multi-identity  # repair multi-identity sinks holding a member's name or handle (--confirm)
+patina entity repair-sink-handles  # strip member handles left on multi-identity sinks (--confirm)
 patina owner merge                 # fold duplicate self-entities (--dry-run available)
 patina doctor                      # includes dangling reference integrity check
 
 # Live adapters
 patina connect slack --token "xoxb-..."
+patina connect email --host imap.example.com --username you@example.com --password "..."  # IMAP
 patina ingest                      # fetch from configured adapters
 
 # Heartbeat (background tasks)
@@ -126,7 +140,7 @@ The observer maintains two belief graphs: beliefs about the world it watches, an
 
 ## MCP Server — Cognitive Layer, Not Standalone Agent
 
-Patina is not a standalone agent competing with autonomous agent projects. It is a cognitive layer — 40 MCP tools — that plugs into any host agent (Claude Code, Kiro, Cursor, or any MCP host). The host agent provides the interface; Patina provides the memory, epistemics, and judgment. Tools include `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
+Patina is not a standalone agent competing with autonomous agent projects. It is a cognitive layer — 32 MCP tools — that plugs into any host agent (Claude Code, Kiro, Cursor, or any MCP host). The host agent provides the interface; Patina provides the memory, epistemics, and judgment. Tools include `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
 
 ```json
 {
@@ -152,6 +166,12 @@ adapters:
   chat:
     - provider: slack
       token: "xoxb-..."
+  email:
+    - provider: imap
+      host: imap.example.com
+      port: 993
+      username: you@example.com
+      password: "..."
 heartbeat:
   enabled: true
   interval_minutes: 30
