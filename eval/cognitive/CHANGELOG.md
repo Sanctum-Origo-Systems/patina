@@ -1,6 +1,7 @@
 ## v0.34.0 (2026-11-02)
+- #572: Feat: [patina] fix: automated share notices should not produce nee ($0.96)
 - #571: Feat: [patina] feat: move charts near the top in generate_eval_rep ($0.66)
-Total: 1 PRs, $0.66
+Total: 2 PRs, $1.62
 
 ## v0.33.0 (2026-11-01)
 - #565: Feat: [patina] fix: address-less automated-sender check misses sha ($0.64)
