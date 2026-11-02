@@ -22,6 +22,7 @@ from patina.maintenance import (
     StaleSnapshotError,
     _collect_slack_ids,
     _find_person_shapes,
+    _is_automated_sender,
     _is_junk_sender_name,
     _is_truncated_dn,
     _name_type_rank,
@@ -1154,6 +1155,23 @@ def test_shape_b_real_person_ordinary_subjects_keeps_label_562(db_conn):
     review = _review_by_id(find_dedup_candidates(db_conn))["d"]
     assert review["reason"] == "first_name_only"
     assert review["shape"] == "first_name_only"
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Ops: Q3 - Launch (draft)", "Planning 計画書"],
+    ids=["punctuated-title", "cjk-title"],
+)
+def test_is_automated_sender_share_titles_569(db_conn, title):
+    """#569: share notices with punctuated or CJK titles flag an address-less sender."""
+    texts = [
+        f"[Subject: Avery Quill added you to {title}] [Participants: a]\nThe quick brown fox",
+        _SHARE_TEXTS[1],
+    ]
+    _seed_quillfeather(db_conn, texts=texts)
+
+    assert _is_automated_sender(db_conn, {"id": "q", "name": "Quillfeather", "aliases": []})
+    assert "shape" not in _review_by_id(find_dedup_candidates(db_conn))["q"]
 
 
 @pytest.mark.parametrize(

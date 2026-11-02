@@ -1,14 +1,31 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from pathlib import Path
 
 from patina.decisions import get_act_on_rate
+from patina.maintenance import _is_automated_sender
 from patina.priority.escalation import escalation_tier
 from patina.priority.objectives import list_objectives
 from patina.priority.scoring import score_item
 from patina.store import connect, get_db_path, init_db
+
+
+def _needs_response(conn: sqlite3.Connection, row: sqlite3.Row, cache: dict[str, bool]) -> bool:
+    """False for an automated, notification-style sender (#569); True otherwise."""
+    sender_id = row["sender_entity_id"]
+    if not sender_id or row["sender_name"] is None:
+        return True
+    if sender_id not in cache:
+        ent = {
+            "id": sender_id,
+            "name": row["sender_name"],
+            "aliases": json.loads(row["sender_aliases"] or "[]"),
+        }
+        cache[sender_id] = not _is_automated_sender(conn, ent)
+    return cache[sender_id]
 
 
 def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]]:
@@ -23,7 +40,7 @@ def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]
         rows = conn.execute(
             """SELECT o.id, o.text, o.timestamp, o.sender_entity_id,
                       o.channel_id, o.metadata, o.source,
-                      e.name AS sender_name
+                      e.name AS sender_name, e.aliases AS sender_aliases
                FROM observations o
                LEFT JOIN entities e ON o.sender_entity_id = e.id
                LEFT JOIN decisions d ON o.id = d.observation_id
@@ -35,6 +52,7 @@ def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]
 
         objectives = list_objectives(active_only=True, home=home)
         act_rate = get_act_on_rate(conn)
+        automated: dict[str, bool] = {}
 
         needs_action: list[dict] = []
         new: list[dict] = []
@@ -72,6 +90,7 @@ def catch_up(*, home: Path | None = None, days: int = 3) -> dict[str, list[dict]
                 "importance": scored.importance,
                 "staleness_days": staleness,
                 "escalation": esc,
+                "needs_response": _needs_response(conn, row, automated),
             }
 
             if scored.quadrant == "Q1" or esc == "urgent":
@@ -106,7 +125,7 @@ def priorities(*, home: Path | None = None, days: int = 7) -> dict[str, list[dic
         rows = conn.execute(
             """SELECT o.id, o.text, o.timestamp, o.sender_entity_id,
                       o.channel_id, o.metadata, o.source,
-                      e.name AS sender_name
+                      e.name AS sender_name, e.aliases AS sender_aliases
                FROM observations o
                LEFT JOIN entities e ON o.sender_entity_id = e.id
                LEFT JOIN decisions d ON o.id = d.observation_id
@@ -118,6 +137,7 @@ def priorities(*, home: Path | None = None, days: int = 7) -> dict[str, list[dic
 
         objectives = list_objectives(active_only=True, home=home)
         act_rate = get_act_on_rate(conn)
+        automated: dict[str, bool] = {}
 
         result: dict[str, list[dict]] = {"Q1": [], "Q2": [], "Q3": [], "Q4": []}
 
@@ -152,6 +172,7 @@ def priorities(*, home: Path | None = None, days: int = 7) -> dict[str, list[dic
                 "importance": scored.importance,
                 "staleness_days": staleness,
                 "escalation": esc,
+                "needs_response": _needs_response(conn, row, automated),
             }
 
             result[scored.quadrant].append(item)
