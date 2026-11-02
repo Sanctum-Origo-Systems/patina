@@ -1,0 +1,103 @@
+{
+  "date": "2026-11-02",
+  "total_prs": 139,
+  "total_implementations": 139,
+  "implement_run_count": 133,
+  "resolved_run_count": 133,
+  "pending_run_count": 0,
+  "first_attempt_count": 119,
+  "first_attempt_rate": 0.89,
+  "avg_cost_usd": 1.85,
+  "avg_review_cost_usd": 0.24,
+  "review_cost_run_count": 21,
+  "avg_duration_seconds": 679,
+  "attempt_distribution": {
+    "1": 120,
+    "2": 10,
+    "3+": 3
+  },
+  "human_edit_rate": 0.39,
+  "human_edit_count": 54,
+  "merged_pr_count": 139,
+  "pending_pr_count": 0,
+  "closed_without_merge": 6,
+  "data_as_of": "2026-11-02T02:08:09.945692+00:00",
+  "history_rows": 243,
+  "modules": {
+    "other": {
+      "implementations": 16,
+      "implement_run_count": 15,
+      "resolved_run_count": 15,
+      "pending_count": 0,
+      "first_attempt_rate": 0.87,
+      "avg_cost_usd": 1.9,
+      "human_edit_rate": 0.07,
+      "merged_clean_count": 14
+    },
+    "src/patina/": {
+      "implementations": 95,
+      "implement_run_count": 90,
+      "resolved_run_count": 90,
+      "pending_count": 0,
+      "first_attempt_rate": 0.94,
+      "avg_cost_usd": 1.97,
+      "human_edit_rate": 0.58,
+      "merged_clean_count": 38
+    },
+    "src/patina/adapters/": {
+      "implementations": 13,
+      "implement_run_count": 7,
+      "resolved_run_count": 7,
+      "pending_count": 0,
+      "first_attempt_rate": 0.71,
+      "avg_cost_usd": 1.23,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 13
+    },
+    "src/patina/autonomy/": {
+      "implementations": 2,
+      "implement_run_count": 2,
+      "resolved_run_count": 2,
+      "pending_count": 0,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 1.77,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 2
+    },
+    "src/patina/beliefs/": {
+      "implementations": 7,
+      "implement_run_count": 6,
+      "resolved_run_count": 6,
+      "pending_count": 0,
+      "first_attempt_rate": 0.67,
+      "avg_cost_usd": 1.84,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 6
+    },
+    "src/patina/mcp/": {
+      "implementations": 10,
+      "implement_run_count": 8,
+      "resolved_run_count": 8,
+      "pending_count": 0,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 0.72,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 10
+    },
+    "src/patina/priority/": {
+      "implementations": 2,
+      "implement_run_count": 2,
+      "resolved_run_count": 2,
+      "pending_count": 0,
+      "first_attempt_rate": 1.0,
+      "avg_cost_usd": 1.33,
+      "human_edit_rate": 0.0,
+      "merged_clean_count": 2
+    }
+  },
+  "fixup_window_days": 7,
+  "period_first_attempt_rate": 1.0,
+  "period_avg_cost_usd": 0.54,
+  "period_human_edit_rate": 0.0,
+  "period_n": 2
+}
