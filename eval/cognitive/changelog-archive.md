@@ -297,3 +297,7 @@ Total: 5 PRs, $5.40
 - #469: Fix: truncated DN dedup ($0.00, external contribution)
 Total: 4 PRs, $9.39
 
+## v0.28.0 (2026-10-18)
+- #481: Feat: Write sender_slack_id and organizer_dn keys at ingest in Sla ($1.53)
+Total: 1 PRs, $1.53
+
