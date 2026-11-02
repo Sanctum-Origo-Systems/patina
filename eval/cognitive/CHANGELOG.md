@@ -1,3 +1,7 @@
+## v0.34.0 (2026-11-02)
+- #571: Feat: [patina] feat: move charts near the top in generate_eval_rep ($0.66)
+Total: 1 PRs, $0.66
+
 ## v0.33.0 (2026-11-01)
 - #565: Feat: [patina] fix: address-less automated-sender check misses sha ($0.64)
 - #566: Feat: [patina] fix: upsert_entity adds an incoming handle or email ($0.94)
@@ -48,8 +52,4 @@ Total: 1 PRs, $0.00
 - #487: Fix: slack_live sender_slack_id guard inconsistency and weak test ($2.98)
 - #484: Feat: Fix backfill channel-peer DN logic in backfill.py and add pr ($2.16)
 Total: 4 PRs, $9.09
-
-## v0.28.0 (2026-10-18)
-- #481: Feat: Write sender_slack_id and organizer_dn keys at ingest in Sla ($1.53)
-Total: 1 PRs, $1.53
 
