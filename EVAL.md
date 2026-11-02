@@ -1,27 +1,50 @@
 # EVAL Report
 
-Report date 2026-11-01: data as of 2026-10-31T20:17:04.509768+00:00, 239 history rows.
+Report date 2026-11-02: data as of 2026-11-02T02:08:09.945692+00:00, 243 history rows.
 
 ## Overall
 
 | Metric | Value | Pending |
 |--------|-------|---------|
-| Total PRs | 137 | — |
-| First-attempt success | 89% (n=131 implement runs) | pending: 0 |
-| Avg cost/run | $1.87 (n=131 implement runs) | included |
-| Avg review cost/run | $0.24 (n=19 implement runs) | included |
-| Human edit rate | 39% (n=137 merged PRs; edited by a human PR within 7 days) | pending: 0 |
+| Total PRs | 139 | — |
+| First-attempt success | 89% (n=133 implement runs) | pending: 0 |
+| Avg cost/run | $1.85 (n=133 implement runs) | included |
+| Avg review cost/run | $0.24 (n=21 implement runs) | included |
+| Human edit rate | 39% (n=139 merged PRs; edited by a human PR within 7 days) | pending: 0 |
 
-## Definitions
+## Charts
 
-| Metric | Numerator | Denominator | Counts | Window |
-|--------|-----------|-------------|--------|--------|
-| First-attempt success | implement runs that succeeded with attempts == 1 | implement runs with an outcome (pending runs excluded) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded) | Overall: lifetime. Trend: change since the previous snapshot (snapshots without outcome counts use the attempt distribution) |
-| Human edit rate | merged PRs with a non-autoloop PR merged within the fixup window that touches the same files (bookkeeping files, release and eval-report PRs are ignored) | merged PRs (open PRs are pending; closed unmerged PRs excluded) | PRs from `autoloop/` branches, up to the 500 most recent | Overall: lifetime. Trend: new edits / new merges since the previous snapshot; invalid when edits exceed merges (older PRs flagged late) |
-| Avg cost/run | sum of implementation cost over implement runs: `impl_cost_usd` when logged, else `cost_usd` (rows before #451 never included review cost) | implement runs, pending included (cost is known when a run ends) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded) | Overall: lifetime. Trend: change in total cost / change in implement runs |
-| Avg review cost/run | sum of `review_cost_usd` over implement runs that logged it | implement runs with `review_cost_usd` (none is imputed for older rows) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded); logged from #451 onward only | Overall: lifetime, shown only when n > 0 |
+```mermaid
+xychart-beta horizontal
+    title "Weekly First-Attempt Success Rate (2026)"
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)", "11/2 (n=2)"]
+    y-axis "Success %" 0 --> 100
+    bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 43, 50, 100, 100]
+```
 
-Pending: a successful implement run whose PR is still open, or an open PR. Pending items are left out of outcome-dependent denominators and shown as a separate pending count. Any rate whose numerator exceeds its denominator renders as invalid.
+> bars before 10/26 count triage runs as implementations (#400)
+
+```mermaid
+xychart-beta horizontal
+    title "Weekly Avg Cost/PR (2026)"
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)", "11/2 (n=2)"]
+    y-axis "Cost ($)" 0 --> 2
+    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27, 1.24, 0.54]
+```
+
+> bars before 10/26 count triage runs as implementations (#400)
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
+pie title Attempt Distribution by Module
+    "other (87%, 16 impl)" : 16
+    "src/patina/ (94%, 95 impl)" : 95
+    "src/patina/adapters/ (71%, 13 impl)" : 13
+    "src/patina/autonomy/ (100%, 2 impl)" : 2
+    "src/patina/beliefs/ (67%, 7 impl)" : 7
+    "src/patina/mcp/ (100%, 10 impl)" : 10
+    "src/patina/priority/ (100%, 2 impl)" : 2
+```
 
 ## Auto-Merge Gate (repo-level)
 
@@ -29,20 +52,20 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 |--------|-------|-----------|
 | Success rate | 89% | >90% |
 | Edit rate | 39% | <5% |
-| Clean merges | 83 | ≥10 |
+| Clean merges | 85 | ≥10 |
 | **Ready?** | **No** | |
 
 ## Per-Module Breakdown
 
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
-| other | insufficient data (n=14 runs) | insufficient data (n=14 runs) | 15 | No |
-| src/patina/ | 97% (n=89 runs) | $1.93 (n=89 runs) | 94 | No |
+| other | insufficient data (n=15 runs) | insufficient data (n=15 runs) | 16 | No |
+| src/patina/ | 94% (n=90 runs) | $1.97 (n=90 runs) | 95 | No |
 | src/patina/adapters/ | insufficient data (n=7 runs) | insufficient data (n=7 runs) | 13 | No |
-| src/patina/autonomy/ | insufficient data (n=4 runs) | insufficient data (n=4 runs) | 4 | No |
-| src/patina/beliefs/ | insufficient data (n=8 runs) | insufficient data (n=8 runs) | 9 | No |
-| src/patina/mcp/ | insufficient data (n=5 runs) | insufficient data (n=5 runs) | 7 | No |
-| src/patina/priority/ | insufficient data (n=1 runs) | insufficient data (n=1 runs) | 1 | No |
+| src/patina/autonomy/ | insufficient data (n=2 runs) | insufficient data (n=2 runs) | 2 | No |
+| src/patina/beliefs/ | insufficient data (n=6 runs) | insufficient data (n=6 runs) | 7 | No |
+| src/patina/mcp/ | insufficient data (n=8 runs) | insufficient data (n=8 runs) | 10 | Yes |
+| src/patina/priority/ | insufficient data (n=2 runs) | insufficient data (n=2 runs) | 2 | No |
 
 ## Trend
 
@@ -96,39 +119,19 @@ Pending: a successful implement run whose PR is still open, or an open PR. Pendi
 | 2026-10-30 | 4 | 100% | $0.66 | 0% |
 | 2026-10-31 | 2 | 100% | $1.89 | 0% |
 | 2026-11-01 | 2 | 100% | $0.58 | invalid |
+| 2026-11-02 | 2 | 100% | $0.54 | 0% |
 
 > Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
 > Baseline break at 2026-10-28: human edits are counted under a 7-day window from this row on, so earlier human edit rates are not comparable with later rows.
 
-```mermaid
-xychart-beta horizontal
-    title "Weekly First-Attempt Success Rate (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)"]
-    y-axis "Success %" 0 --> 100
-    bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 43, 50, 100]
-```
+## Definitions
 
-> bars before 10/26 count triage runs as implementations (#400)
+| Metric | Numerator | Denominator | Counts | Window |
+|--------|-----------|-------------|--------|--------|
+| First-attempt success | implement runs that succeeded with attempts == 1 | implement runs with an outcome (pending runs excluded) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded) | Overall: lifetime. Trend: change since the previous snapshot (snapshots without outcome counts use the attempt distribution) |
+| Human edit rate | merged PRs with a non-autoloop PR merged within the fixup window that touches the same files (bookkeeping files, release and eval-report PRs are ignored) | merged PRs (open PRs are pending; closed unmerged PRs excluded) | PRs from `autoloop/` branches, up to the 500 most recent | Overall: lifetime. Trend: new edits / new merges since the previous snapshot; invalid when edits exceed merges (older PRs flagged late) |
+| Avg cost/run | sum of implementation cost over implement runs: `impl_cost_usd` when logged, else `cost_usd` (rows before #451 never included review cost) | implement runs, pending included (cost is known when a run ends) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded) | Overall: lifetime. Trend: change in total cost / change in implement runs |
+| Avg review cost/run | sum of `review_cost_usd` over implement runs that logged it | implement runs with `review_cost_usd` (none is imputed for older rows) | `run_history` rows with type "implement" and a non-zero issue (triage, review and issue-0 rows are excluded); logged from #451 onward only | Overall: lifetime, shown only when n > 0 |
 
-```mermaid
-xychart-beta horizontal
-    title "Weekly Avg Cost/PR (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)"]
-    y-axis "Cost ($)" 0 --> 2
-    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27, 1.24]
-```
-
-> bars before 10/26 count triage runs as implementations (#400)
-
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
-pie title Attempt Distribution by Module
-    "other (86%, 15 impl)" : 15
-    "src/patina/ (97%, 94 impl)" : 94
-    "src/patina/adapters/ (71%, 13 impl)" : 13
-    "src/patina/autonomy/ (75%, 4 impl)" : 4
-    "src/patina/beliefs/ (62%, 9 impl)" : 9
-    "src/patina/mcp/ (100%, 7 impl)" : 7
-    "src/patina/priority/ (100%, 1 impl)" : 1
-```
+Pending: a successful implement run whose PR is still open, or an open PR. Pending items are left out of outcome-dependent denominators and shown as a separate pending count. Any rate whose numerator exceeds its denominator renders as invalid.
