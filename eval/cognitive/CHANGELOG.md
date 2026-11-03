@@ -1,3 +1,7 @@
+## v0.34.1 (2026-11-03)
+- #576: Docs: fix README install command, tool count and command list ($0.00)
+Total: 1 PRs, $0.00
+
 ## v0.34.0 (2026-11-02)
 - #572: Feat: [patina] fix: automated share notices should not produce nee ($0.96)
 - #571: Feat: [patina] feat: move charts near the top in generate_eval_rep ($0.66)
@@ -46,11 +50,4 @@ Total: 1 PRs, $0.19
 ## v0.29.1 (2026-10-23)
 - #492: Fix: repair multi-identity entities retaining stolen member handles ($0.00)
 Total: 1 PRs, $0.00
-
-## v0.29.0 (2026-10-19)
-- #489: Fix: split_dn_sink calendar branch never fires — live calendar source is outlook_mcp_email ($2.29)
-- #488: Fix: ingest renames DN sink entity to a member's Slack handle via name-type ranking ($1.66)
-- #487: Fix: slack_live sender_slack_id guard inconsistency and weak test ($2.98)
-- #484: Feat: Fix backfill channel-peer DN logic in backfill.py and add pr ($2.16)
-Total: 4 PRs, $9.09
 
