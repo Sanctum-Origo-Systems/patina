@@ -29,6 +29,7 @@ uv run ruff check && uv run ruff format
 - No real message content or user data in GitHub issues — use anonymized examples (e.g. "The quick brown fox" not actual ingested messages)
 - Follow existing patterns in the repo — read before writing
 - Reference files and function names in issues, not line numbers — lines shift as PRs land
+- Every production-derived defect issue must include at least one **anonymized reproduction of the live trigger shape** in its acceptance criteria — same structure and field layout, punctuation and non-ASCII characters where the original had them, but fictitious content (e.g. "The quick brown fox", "Jordan Example"); a generic fixture alone does not satisfy the rule
 
 ## Spec and roadmap
 
