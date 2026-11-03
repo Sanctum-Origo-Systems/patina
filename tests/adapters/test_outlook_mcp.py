@@ -723,6 +723,112 @@ class TestMeetingRequestFilter:
         assert len(emails) == 1
 
 
+def _conversation(item_classes=..., preview: str = "", topic: str = "The quick brown fox sync"):
+    conv = {
+        "conversationId": "CONV_ITEMCLASS001",
+        "topic": topic,
+        "senders": ["Example, Jordan"],
+        "recipients": ["Taylor, Morgan"],
+        "preview": preview,
+        "receivedDateTime": "2026-11-01T15:04:05Z",
+    }
+    if item_classes is not ...:
+        conv["itemClasses"] = item_classes
+    return conv
+
+
+def _inbox_with(*conversations) -> str:
+    return json.dumps({"success": True, "content": {"emails": list(conversations)}})
+
+
+class TestIsMeetingMessageItemClasses:
+    def test_meeting_response_positive(self):
+        assert _is_meeting_message(_conversation(["IPM.Schedule.Meeting.Resp.Pos"]))
+
+    def test_meeting_request(self):
+        assert _is_meeting_message(_conversation(["IPM.Schedule.Meeting.Request"]))
+
+    def test_meeting_canceled(self):
+        assert _is_meeting_message(_conversation(["IPM.Schedule.Meeting.Canceled"]))
+
+    def test_all_meeting_classes(self):
+        classes = ["IPM.Schedule.Meeting.Request", "IPM.Schedule.Meeting.Resp.Pos"]
+        assert _is_meeting_message(_conversation(classes))
+
+    def test_note(self):
+        assert not _is_meeting_message(_conversation(["IPM.Note"]))
+
+    def test_mixed_note_and_meeting(self):
+        classes = ["IPM.Note", "IPM.Schedule.Meeting.Resp.Pos"]
+        assert not _is_meeting_message(_conversation(classes))
+
+    def test_missing(self):
+        assert not _is_meeting_message(_conversation())
+
+    def test_empty_list(self):
+        assert not _is_meeting_message(_conversation([]))
+
+    def test_none(self):
+        assert not _is_meeting_message(_conversation(None))
+
+    def test_non_list_string(self):
+        assert not _is_meeting_message(_conversation("IPM.Schedule.Meeting.Resp.Pos"))
+
+    def test_non_list_dict(self):
+        assert not _is_meeting_message(_conversation({"class": "IPM.Note"}))
+
+    def test_non_string_entry(self):
+        assert not _is_meeting_message(_conversation([None, "IPM.Schedule.Meeting.Request"]))
+
+    def test_falls_back_to_message_class_when_item_classes_empty(self):
+        conv = _conversation([])
+        conv["messageClass"] = "IPM.Schedule.Meeting.Request"
+        assert _is_meeting_message(conv)
+
+
+class TestMeetingFilterItemClasses:
+    def _list_inbox(self, *conversations):
+        bridge = _make_bridge({"email_inbox": _inbox_with(*conversations)})
+        return OutlookMcpAdapter(bridge).list_inbox(since=0.0)
+
+    def test_meeting_acceptance_filtered(self):
+        assert self._list_inbox(_conversation(["IPM.Schedule.Meeting.Resp.Pos"])) == []
+
+    def test_meeting_request_filtered(self):
+        assert self._list_inbox(_conversation(["IPM.Schedule.Meeting.Request"])) == []
+
+    def test_meeting_canceled_filtered(self):
+        assert self._list_inbox(_conversation(["IPM.Schedule.Meeting.Canceled"])) == []
+
+    def test_note_kept(self):
+        emails = self._list_inbox(_conversation(["IPM.Note"], preview="Jumps over the lazy dog."))
+        assert len(emails) == 1
+        assert emails[0].subject == "The quick brown fox sync"
+        assert "Jumps over the lazy dog." in emails[0].text
+
+    def test_mixed_note_and_meeting_kept(self):
+        classes = ["IPM.Note", "IPM.Schedule.Meeting.Resp.Pos"]
+        emails = self._list_inbox(_conversation(classes, preview="Agenda attached."))
+        assert len(emails) == 1
+
+    def test_missing_empty_none_and_non_list_kept(self):
+        emails = self._list_inbox(
+            _conversation(),
+            _conversation([]),
+            _conversation(None),
+            _conversation("IPM.Schedule.Meeting.Resp.Pos"),
+        )
+        assert len(emails) == 4
+
+    def test_mixed_inbox_page(self):
+        emails = self._list_inbox(
+            _conversation(["IPM.Note"], preview="Jumps over the lazy dog.", topic="Fox notes"),
+            _conversation(["IPM.Schedule.Meeting.Resp.Pos"]),
+            _conversation(["IPM.Schedule.Meeting.Request"], topic="Dog walk"),
+        )
+        assert [e.subject for e in emails] == ["Fox notes"]
+
+
 class TestNormalizeSender:
     def test_legacy_dn_returns_empty(self):
         dn = (
