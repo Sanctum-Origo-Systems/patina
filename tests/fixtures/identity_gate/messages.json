@@ -1,0 +1,121 @@
+{
+  "description": "One message per adapter that calls extract_sender_entity, plus the #561 and 10/30 shapes. Fields mirror ChatMessage as it reaches patina.ingest._ingest_messages; metadata mirrors the observation metadata that function writes. Fictitious identities only.",
+  "messages": [
+    {
+      "case": "slack_live_member",
+      "adapter": "slack_live",
+      "source": "slack_live",
+      "user_id": "U0JORDAN01",
+      "user_name": null,
+      "channel_id": "D0EXAMPLE01",
+      "thread_id": null,
+      "channel_name": "",
+      "timestamp": 1761800000.0001,
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "metadata": {
+        "channel_name": "",
+        "reactions": [],
+        "sender_slack_id": "U0JORDAN01"
+      },
+      "expected_entity_id": "ent-jordan"
+    },
+    {
+      "case": "slack_mcp_member",
+      "adapter": "slack_mcp",
+      "source": "slack_mcp",
+      "user_id": "U0JORDAN01",
+      "user_name": "Jordan Example",
+      "channel_id": "C0EXAMPLE01",
+      "thread_id": "1761800100.000200",
+      "channel_name": "example-team",
+      "timestamp": 1761800200.0003,
+      "text": "Pack my box with five dozen liquor jugs.",
+      "metadata": {
+        "channel_name": "example-team",
+        "reactions": [
+          {
+            "name": "thumbsup",
+            "users": [
+              "U0CASEY001"
+            ],
+            "count": 1
+          }
+        ],
+        "sender_slack_id": "U0JORDAN01"
+      },
+      "expected_entity_id": "ent-jordan"
+    },
+    {
+      "case": "outlook_mcp_member",
+      "adapter": "outlook_mcp",
+      "source": "outlook_mcp_email",
+      "user_id": "Sample, Casey",
+      "user_name": "Sample, Casey",
+      "channel_id": "email:AAQkADExampleConversation0001=",
+      "thread_id": "AAQkADExampleConversation0001=",
+      "channel_name": null,
+      "timestamp": 1761800300.0,
+      "text": "[Subject: Quarterly example] [Participants: Sample, Casey]\nHow vexingly quick daft zebras jump.",
+      "metadata": {
+        "channel_name": null,
+        "reactions": [],
+        "sender_dn": "/O=EXAMPLEORG/OU=EXCHANGE ADMINISTRATIVE GROUP (FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN=CASEYSAMPLE3B4"
+      },
+      "expected_entity_id": "ent-casey"
+    },
+    {
+      "case": "imap_member",
+      "adapter": "imap",
+      "source": "imap",
+      "user_id": "casey.sample@example.com",
+      "user_name": null,
+      "channel_id": "email:<example-0001@mail.example.com>",
+      "thread_id": "<example-0001@mail.example.com>",
+      "channel_name": null,
+      "timestamp": 1761800400.0,
+      "text": "Sphinx of black quartz, judge my vow.",
+      "metadata": {
+        "channel_name": null,
+        "reactions": []
+      },
+      "expected_entity_id": "ent-casey"
+    },
+    {
+      "case": "sink_slack_id_with_member_handle",
+      "adapter": "slack_mcp",
+      "source": "slack_mcp",
+      "user_id": "W0SINK0001",
+      "user_name": "jordan.example",
+      "channel_id": "C0EXAMPLE01",
+      "thread_id": null,
+      "channel_name": "example-team",
+      "timestamp": 1761800500.0005,
+      "text": "The five boxing wizards jump quickly.",
+      "metadata": {
+        "channel_name": "example-team",
+        "reactions": [],
+        "sender_slack_id": "W0SINK0001"
+      },
+      "expected_entity_id": "ent-sink",
+      "note": "#561 shape: the sink's own Slack ID carries a member's handle."
+    },
+    {
+      "case": "name_only_vs_identifier",
+      "adapter": "outlook_mcp",
+      "source": "outlook_mcp_email",
+      "user_id": "riley.placeholder@example.com",
+      "user_name": "Riley Placeholder",
+      "channel_id": "email:AAQkADExampleConversation0002=",
+      "thread_id": "AAQkADExampleConversation0002=",
+      "channel_name": null,
+      "timestamp": 1761800600.0,
+      "text": "[Subject: Example follow-up] [Participants: riley.placeholder@example.com]\nJackdaws love my big sphinx of quartz.",
+      "metadata": {
+        "channel_name": null,
+        "reactions": []
+      },
+      "expected_entity_id": "ent-riley-email",
+      "note": "10/30 failure shape: a name-only match competes with an identifier match for the same sender."
+    }
+  ]
+}
