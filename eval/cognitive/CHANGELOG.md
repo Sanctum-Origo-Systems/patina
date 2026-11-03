@@ -1,6 +1,10 @@
-## v0.34.1 (2026-11-03)
+## v0.35.0 (2026-11-03)
+- #588: Feat: [patina] feat: identity gate fixtures, loader and scratch-st ($1.55)
+- #589: Feat: [patina] fix: contradictions flags temporary locations and o ($0.81)
+- #587: Feat: [patina] fix: Outlook MCP meeting filter reads messageClass ($0.60)
+- #590: Feat: [patina] Require an anonymized production trigger shape in a ($0.71)
 - #576: Docs: fix README install command, tool count and command list ($0.00)
-Total: 1 PRs, $0.00
+Total: 5 PRs, $3.67
 
 ## v0.34.0 (2026-11-02)
 - #572: Feat: [patina] fix: automated share notices should not produce nee ($0.96)
