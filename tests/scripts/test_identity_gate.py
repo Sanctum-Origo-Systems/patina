@@ -1,20 +1,29 @@
-"""Tests for scripts/identity_gate.py — fixtures, loader and scratch copy (#584)."""
+"""Tests for scripts/identity_gate.py.
+
+Fixtures, loader and scratch copy (#584); replay, invariants and report (#585).
+"""
 
 from __future__ import annotations
 
+import io
 import json
 import re
+import shutil
 
 import pytest
 import scripts.identity_gate as gate
 from scripts.identity_gate import (
     FIXTURES_DIR,
+    INVARIANTS,
     build_seed_store,
     load_fixtures,
+    main,
+    run_gate,
     scratch_copy,
     sha256_file,
 )
 
+import patina.graph as graph_module
 from patina.graph import _is_multi_identity, identifier_type
 from patina.owner import normalize_alias
 from patina.store import connect, init_db, run_pending_migrations
@@ -295,3 +304,251 @@ class TestScratchCopy:
         with pytest.raises(FileNotFoundError):
             scratch_copy(missing)
         assert not missing.exists()
+
+
+_SECTIONS = (
+    "== 1. Identifier precedence ==",
+    "== 2. Sink alias diff ==",
+    "== 3. Provenance ==",
+    "== 4. Identity counts ==",
+)
+
+# 10/30 shape: on main a name-only match still beats the email holder.
+_NAME_ONLY_CASE = "name_only_vs_identifier"
+
+
+def _gate(**kwargs) -> tuple[int, str]:
+    out = io.StringIO()
+    code = run_gate(out=out, **kwargs)
+    return code, out.getvalue()
+
+
+def _fixtures_without(tmp_path, *cases: str):
+    """Copy the fixture set to *tmp_path*, dropping the messages for *cases*."""
+    dest = tmp_path / "fixtures"
+    dest.mkdir()
+    shutil.copy(FIXTURES_DIR / "seed.json", dest / "seed.json")
+    data = json.loads((FIXTURES_DIR / "messages.json").read_text())
+    data["messages"] = [m for m in data["messages"] if m["case"] not in cases]
+    (dest / "messages.json").write_text(json.dumps(data))
+    return dest
+
+
+@pytest.fixture
+def clean_fixtures(tmp_path):
+    return _fixtures_without(tmp_path, _NAME_ONLY_CASE)
+
+
+def _failed(output: str) -> set[str]:
+    return set(re.findall(r"^FAIL (\S+)", output, re.MULTILINE))
+
+
+class TestReport:
+    def test_prints_all_four_sections_in_order(self):
+        _, output = _gate()
+        positions = [output.index(s) for s in _SECTIONS]
+        assert positions == sorted(positions)
+        assert "== Invariants ==" in output
+
+    def test_every_fixture_message_reported(self, fixtures):
+        _, output = _gate()
+        section = output.split(_SECTIONS[1])[0]
+        for msg in fixtures["messages"]:
+            assert re.search(rf"^{msg['case']}\s+-> \S+  \[", section, re.MULTILINE), msg["case"]
+
+    def test_identifier_matches_are_labelled(self):
+        _, output = _gate()
+        expected = {
+            "slack_live_member": ("ent-jordan", "identifier (slack_id)"),
+            "slack_mcp_member": ("ent-jordan", "identifier (slack_id)"),
+            "outlook_mcp_member": ("ent-casey", "name only"),
+            "imap_member": ("ent-casey", "identifier (email)"),
+            "sink_slack_id_with_member_handle": ("ent-sink", "identifier (slack_id)"),
+        }
+        for case, (entity, kind) in expected.items():
+            line = rf"^{case}\s+-> {entity}  \[{re.escape(kind)}\]$"
+            assert re.search(line, output, re.MULTILINE), case
+
+    def test_sink_diff_lists_aliases_and_sink_handles(self):
+        _, output = _gate()
+        section = output.split(_SECTIONS[1])[1].split(_SECTIONS[2])[0]
+        assert "ent-sink" in section
+        assert "  before: " in section and "  after:  " in section
+        assert "sink_handles before: " in section and "sink_handles after:  " in section
+        assert "ent-jordan" not in section
+
+    def test_provenance_rows_grouped_by_entity(self):
+        _, output = _gate()
+        section = output.split(_SECTIONS[2])[1].split(_SECTIONS[3])[0]
+        assert "ent-casey: 1 row(s)" in section
+        assert "added 'Sample, Casey' (adapter=outlook" in section
+
+    def test_identity_counts_before_and_after(self, fixtures):
+        _, output = _gate()
+        section = output.split(_SECTIONS[3])[1]
+        seed = fixtures["entities"]
+        entities = re.search(r"^entities\s+(\d+)\s+(\d+)$", section, re.M)
+        assert entities.groups() == (str(len(seed)), str(len(seed)))
+        aliases = re.search(r"^aliases\s+(\d+)\s+(\d+)$", section, re.M)
+        assert int(aliases.group(1)) == sum(len(e["aliases"]) for e in seed)
+        multi = re.search(r"^entities with >1 ID\s+(\d+)\s+(\d+)$", section, re.M)
+        assert multi.groups() == ("1", "1")
+
+
+class TestInvariants:
+    @pytest.mark.xfail(
+        strict=True,
+        reason="#585: on main a name-only match beats the email holder for the 10/30 shape",
+    )
+    def test_fixture_store_exits_zero(self):
+        code, output = _gate()
+        assert code == 0, output
+
+    def test_fixture_store_fails_only_on_the_10_30_shape(self):
+        # Flip together with test_fixture_store_exits_zero once the resolver is fixed.
+        code, output = _gate()
+        assert code == 1
+        fails = re.findall(r"^FAIL .*$", output, re.MULTILINE)
+        assert len(fails) == 1
+        assert fails[0].startswith("FAIL identifier-precedence ")
+        assert (
+            f"{_NAME_ONLY_CASE}: matched ent-riley-name by name only, but email "
+            "riley.placeholder@example.com is held by ent-riley-email"
+        ) in fails[0]
+        assert "RESULT: FAIL (identifier-precedence)" in output
+
+    def test_clean_fixtures_exit_zero(self, clean_fixtures):
+        code, output = _gate(fixtures_dir=clean_fixtures)
+        assert code == 0, output
+        assert _failed(output) == set()
+        for name in INVARIANTS:
+            assert f"PASS {name}" in output
+        assert "RESULT: PASS" in output
+
+    def test_force_violation_names_invariant(self, clean_fixtures):
+        code, output = _gate(fixtures_dir=clean_fixtures, force_violation=True)
+        assert code == 1
+        assert _failed(output) == {"sink-no-member-identity"}
+        assert "FAIL sink-no-member-identity" in output
+        assert "ent-sink gained ['jordan.example']" in output
+        assert "RESULT: FAIL (sink-no-member-identity)" in output
+
+    def test_force_violation_does_not_leak_past_the_run(self, clean_fixtures):
+        guard = graph_module._sink_held_id_aliases
+        _gate(fixtures_dir=clean_fixtures, force_violation=True)
+        assert graph_module._sink_held_id_aliases is guard
+        code, _ = _gate(fixtures_dir=clean_fixtures)
+        assert code == 0
+
+    def test_identifier_lost_to_name_is_named(self, clean_fixtures, monkeypatch):
+        real = graph_module.resolve_entity_id
+
+        def prefer_name(conn, name, aliases=None):
+            if name == "casey.sample@example.com":
+                return "ent-jordan"
+            return real(conn, name, aliases)
+
+        monkeypatch.setattr(graph_module, "resolve_entity_id", prefer_name)
+        code, output = _gate(fixtures_dir=clean_fixtures)
+        assert code == 1
+        assert _failed(output) == {"identifier-precedence"}
+        assert re.search(
+            r"FAIL identifier-precedence .*imap_member: matched ent-jordan by name only, "
+            r"but email casey\.sample@example\.com is held by ent-casey",
+            output,
+        )
+
+    def test_deleted_sink_is_named(self, clean_fixtures, monkeypatch):
+        real = gate._ingest_messages
+
+        def ingest_then_drop_sink(conn, messages, source, **kwargs):
+            result = real(conn, messages, source, **kwargs)
+            conn.execute("DELETE FROM entities WHERE id = 'ent-sink'")
+            conn.commit()
+            return result
+
+        monkeypatch.setattr(gate, "_ingest_messages", ingest_then_drop_sink)
+        code, output = _gate(fixtures_dir=clean_fixtures)
+        assert code == 1
+        assert "sink-preserved" in _failed(output)
+        assert "ent-sink was deleted" in output
+        assert "(absent)" in output
+
+    def test_collapsed_sink_is_named(self, clean_fixtures, monkeypatch):
+        real = gate._ingest_messages
+
+        def ingest_then_collapse_sink(conn, messages, source, **kwargs):
+            result = real(conn, messages, source, **kwargs)
+            conn.execute(
+                "UPDATE entities SET name = 'Jordan Example', aliases = ? WHERE id = 'ent-sink'",
+                (json.dumps(["W0SINK0001"]),),
+            )
+            conn.commit()
+            return result
+
+        monkeypatch.setattr(gate, "_ingest_messages", ingest_then_collapse_sink)
+        code, output = _gate(fixtures_dir=clean_fixtures)
+        assert code == 1
+        assert "ent-sink collapsed into a single-person entity" in output
+        assert "sink-no-member-identity" in _failed(output)
+
+    def test_source_hash_change_is_named(self, clean_fixtures, monkeypatch):
+        real = gate.sha256_file
+        calls = []
+
+        def drifting_hash(path):
+            calls.append(path)
+            # run_gate before, scratch_copy before/after, then run_gate after.
+            return real(path) if len(calls) < 4 else "0" * 64
+
+        monkeypatch.setattr(gate, "sha256_file", drifting_hash)
+        code, output = _gate(fixtures_dir=clean_fixtures)
+        assert code == 1
+        assert _failed(output) == {"source-unchanged"}
+
+    def test_source_change_during_copy_is_named(self, clean_fixtures, monkeypatch):
+        digests = iter(["aaa", "aaa", "bbb", "bbb"])
+        monkeypatch.setattr(gate, "sha256_file", lambda _path: next(digests))
+        code, output = _gate(fixtures_dir=clean_fixtures)
+        assert code == 1
+        assert _failed(output) == {"source-unchanged"}
+        assert "changed during scratch copy" in output
+
+
+class TestSourceUntouched:
+    @pytest.mark.parametrize("force_violation", [False, True])
+    def test_source_byte_identical(self, seed_store, force_violation):
+        before = seed_store.read_bytes()
+        digest = sha256_file(seed_store)
+
+        _gate(source=seed_store, force_violation=force_violation)
+
+        assert sha256_file(seed_store) == digest
+        assert seed_store.read_bytes() == before
+
+    def test_report_shows_matching_source_hashes(self, seed_store):
+        digest = sha256_file(seed_store)
+        _, output = _gate(source=seed_store)
+        assert f"source sha256 before: {digest}" in output
+        assert f"source sha256 after:  {digest}" in output
+
+
+class TestMain:
+    def test_default_runs_on_fixture_store(self, capsys):
+        main([])
+        output = capsys.readouterr().out
+        for section in _SECTIONS:
+            assert section in output
+
+    def test_force_violation_flag_exits_non_zero(self, capsys):
+        assert main(["--force-violation"]) == 1
+        assert "FAIL sink-no-member-identity" in capsys.readouterr().out
+
+    def test_source_flag(self, seed_store, capsys):
+        main(["--source", str(seed_store)])
+        assert f"source sha256 before: {sha256_file(seed_store)}" in capsys.readouterr().out
+
+    def test_missing_source_errors(self, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            main(["--source", str(tmp_path / "missing.db")])
+        assert exc.value.code == 2
