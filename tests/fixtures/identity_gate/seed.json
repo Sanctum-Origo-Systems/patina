@@ -1,0 +1,63 @@
+{
+  "description": "Seed store for scripts/identity_gate.py (#577). Fictitious identities only.",
+  "entities": [
+    {
+      "id": "ent-sink",
+      "type": "person",
+      "name": "/O=EXAMPLEORG/OU=EXCHANGE ADMINISTRATIVE GROUP (FYDIBOHF23SPDLT)",
+      "aliases": [
+        "/O=EXAMPLEORG/OU=EXCHANGE ADMINISTRATIVE GROUP (FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN=JORDANEXAMPLE1A2",
+        "/O=EXAMPLEORG/OU=EXCHANGE ADMINISTRATIVE GROUP (FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN=CASEYSAMPLE3B4",
+        "W0SINK0001",
+        "slack:W0SINK0001"
+      ],
+      "metadata": {},
+      "note": "Multi-identity sink: two DNs plus a Slack ID only it holds."
+    },
+    {
+      "id": "ent-jordan",
+      "type": "person",
+      "name": "Jordan Example",
+      "aliases": [
+        "U0JORDAN01",
+        "slack:U0JORDAN01",
+        "Jordan Example",
+        "jordan.example",
+        "@jordan.example"
+      ],
+      "metadata": {},
+      "note": "Single person who holds a handle."
+    },
+    {
+      "id": "ent-casey",
+      "type": "person",
+      "name": "Casey Sample",
+      "aliases": [
+        "Casey Sample",
+        "casey.sample@example.com"
+      ],
+      "metadata": {},
+      "note": "Single person who holds an email."
+    },
+    {
+      "id": "ent-riley-name",
+      "type": "person",
+      "name": "Riley Placeholder",
+      "aliases": [
+        "Riley Placeholder"
+      ],
+      "metadata": {},
+      "note": "Name-only entity (10/30 failure shape): no identifier."
+    },
+    {
+      "id": "ent-riley-email",
+      "type": "person",
+      "name": "riley.placeholder@example.com",
+      "aliases": [
+        "riley.placeholder@example.com"
+      ],
+      "metadata": {},
+      "note": "Identifier holder for the same sender as ent-riley-name (10/30 failure shape)."
+    }
+  ]
+}
