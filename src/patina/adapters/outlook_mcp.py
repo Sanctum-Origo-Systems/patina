@@ -75,6 +75,18 @@ _MEETING_CLASS_PREFIX = "IPM.Schedule.Meeting."
 
 
 def _is_meeting_message(raw: dict) -> bool:
+    """Return True when the item is a meeting request, response or cancellation.
+
+    Live ``email_inbox`` conversations carry ``itemClasses``, a list of the
+    message classes in the thread. A conversation counts as a meeting only when
+    *every* entry starts with ``IPM.Schedule.Meeting.``; any other entry (such as
+    ``IPM.Note``) means a real email is in the thread, so it is kept. A missing,
+    empty or non-list ``itemClasses`` falls back to the single-message
+    ``messageClass`` / ``message_class`` field.
+    """
+    item_classes = raw.get("itemClasses")
+    if isinstance(item_classes, list) and item_classes:
+        return all(isinstance(c, str) and c.startswith(_MEETING_CLASS_PREFIX) for c in item_classes)
     msg_class = raw.get("messageClass", raw.get("message_class", ""))
     return isinstance(msg_class, str) and msg_class.startswith(_MEETING_CLASS_PREFIX)
 
