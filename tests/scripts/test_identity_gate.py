@@ -1,6 +1,7 @@
 """Tests for scripts/identity_gate.py.
 
-Fixtures, loader and scratch copy (#584); replay, invariants and report (#585).
+Fixtures, loader and scratch copy (#584); replay, invariants and report (#585);
+CI gate and forced revert of the 10/30 fix (#586).
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ import io
 import json
 import re
 import shutil
+from unittest import mock
 
 import pytest
 import scripts.identity_gate as gate
@@ -24,7 +26,10 @@ from scripts.identity_gate import (
 )
 
 import patina.graph as graph_module
-from patina.graph import _is_multi_identity, identifier_type
+import patina.ingest as ingest_module
+from patina.extraction import extract_sender_entity
+from patina.graph import _is_multi_identity, _strong_identifiers, identifier_type
+from patina.ingest import _source_family
 from patina.owner import normalize_alias
 from patina.store import connect, init_db, run_pending_migrations
 
@@ -513,6 +518,140 @@ class TestInvariants:
         assert code == 1
         assert _failed(output) == {"source-unchanged"}
         assert "changed during scratch copy" in output
+
+
+_MATCH_LINE = re.compile(r"^(\S+)\s+-> (\S+)  \[(.+)\]$", re.MULTILINE)
+
+
+def _matches(output: str) -> dict[str, tuple[str, str]]:
+    """``{case: (matched entity, match kind)}`` from report section 1."""
+    section = output.split(_SECTIONS[1])[0]
+    return {case: (entity, kind) for case, entity, kind in _MATCH_LINE.findall(section)}
+
+
+def _carries_held_identifier(msg: dict, seed: list[dict]) -> bool:
+    """True when the sender carries a Slack ID, DN or email a seed entity holds."""
+    sender = extract_sender_entity(
+        msg["user_id"], msg["user_name"], source_family=_source_family(msg["source"])
+    )
+    incoming = _strong_identifiers([sender.name, *sender.aliases])
+    held = set().union(*(_strong_identifiers([e["name"], *e["aliases"]]) for e in seed))
+    return bool(incoming & held)
+
+
+def _revert_10_30_fix(monkeypatch, *, unguarded_merge: bool = True) -> None:
+    """Force the pre-#555 upsert_entity path without editing upsert_entity.
+
+    Before the 10/30 fix, upsert_entity re-resolved the sender by name alone
+    after an identifier match, let the name match win, and merged the
+    identifier holder into it unconditionally. Both are restored here: the
+    re-resolve by wrapping resolve_entity_id for the duration of each ingest
+    upsert, and the merge by bypassing _ingest_merge_allowed.
+    """
+    real_upsert = ingest_module.upsert_entity
+    real_resolve = graph_module.resolve_entity_id
+
+    def upsert_with_name_reresolve(conn, entity, **kwargs):
+        def resolve(c, name, aliases=None):
+            existing_id = real_resolve(c, name, aliases)
+            if aliases is not None and existing_id and existing_id == entity.id:
+                name_id = real_resolve(c, name)
+                if name_id and name_id != entity.id:
+                    return name_id
+            return existing_id
+
+        with mock.patch.object(graph_module, "resolve_entity_id", resolve):
+            return real_upsert(conn, entity, **kwargs)
+
+    monkeypatch.setattr(ingest_module, "upsert_entity", upsert_with_name_reresolve)
+    if unguarded_merge:
+        monkeypatch.setattr(graph_module, "_ingest_merge_allowed", lambda *_a, **_k: True)
+
+
+class TestCIGate:
+    """The gate as CI runs it: fixture store, real schema, real ingest path (#586)."""
+
+    @pytest.mark.parametrize(
+        "adapter",
+        [
+            "imap",
+            pytest.param(
+                "outlook_mcp",
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason="#585: on main a name-only match beats the email holder "
+                    "for the 10/30 shape",
+                ),
+            ),
+            "slack_live",
+            "slack_mcp",
+        ],
+    )
+    def test_identifier_outranks_name_per_adapter(self, fixtures, adapter):
+        _, output = _gate()
+        matches = _matches(output)
+        msgs = [m for m in fixtures["messages"] if m["adapter"] == adapter]
+        assert msgs
+        for msg in msgs:
+            entity, kind = matches[msg["case"]]
+            assert entity == msg["expected_entity_id"], (msg["case"], kind)
+            if _carries_held_identifier(msg, fixtures["entities"]):
+                assert kind.startswith("identifier ("), (msg["case"], kind)
+
+    def test_every_adapter_has_an_identifier_case(self, fixtures):
+        adapters = {
+            m["adapter"]
+            for m in fixtures["messages"]
+            if _carries_held_identifier(m, fixtures["entities"])
+        }
+        assert adapters == _ADAPTERS
+
+    def test_sink_invariants_hold_on_fixture_store(self, fixtures):
+        _, output = _gate()
+        assert "PASS sink-preserved" in output
+        assert "PASS sink-no-member-identity" in output
+        (sink,) = [e for e in fixtures["entities"] if e["id"] == "ent-sink"]
+        section = output.split(_SECTIONS[1])[1].split(_SECTIONS[2])[0]
+        assert f"  after:  {json.dumps(sorted(sink['aliases']))}" in section
+        assert "  added:  []" in section
+
+    def test_sink_slack_id_routes_to_sink_without_member_handle(self):
+        _, output = _gate()
+        assert _matches(output)["sink_slack_id_with_member_handle"] == (
+            "ent-sink",
+            "identifier (slack_id)",
+        )
+        section = output.split(_SECTIONS[2])[1].split(_SECTIONS[3])[0]
+        assert "ent-sink:" not in section
+
+    def test_reverted_10_30_fix_fails(self, clean_fixtures, monkeypatch):
+        _revert_10_30_fix(monkeypatch)
+        code, output = _gate(fixtures_dir=clean_fixtures)
+        assert code == 1
+        assert _failed(output) == {"identifier-precedence", "sink-preserved"}
+        assert _matches(output)["sink_slack_id_with_member_handle"] == (
+            "ent-jordan",
+            "name only",
+        )
+        assert re.search(
+            r"FAIL identifier-precedence .*sink_slack_id_with_member_handle: matched "
+            r"ent-jordan by name only, but slack_id W0SINK0001 is held by ent-sink",
+            output,
+        )
+        assert "FAIL sink-preserved" in output
+        assert "ent-sink was merged away" in output
+        assert "RESULT: FAIL (identifier-precedence, sink-preserved)" in output
+
+    def test_merge_guard_keeps_sink_when_name_reresolve_returns(self, clean_fixtures, monkeypatch):
+        # The name-only re-resolve alone is refused by _ingest_merge_allowed, so
+        # the identifier match stands; the guard is what keeps the sink.
+        _revert_10_30_fix(monkeypatch, unguarded_merge=False)
+        code, output = _gate(fixtures_dir=clean_fixtures)
+        assert code == 0, output
+        assert _matches(output)["sink_slack_id_with_member_handle"] == (
+            "ent-sink",
+            "identifier (slack_id)",
+        )
 
 
 class TestSourceUntouched:

@@ -66,6 +66,9 @@ Many unrelated senders share it. `identifier_type` returns `None` for it, and
 - **`dedup_entities`** and **`repair_multi_identity_names`** use
   `_name_type_rank` and the shared truncated-DN rule.
 
+A change to any of these is identity-critical. The ingest release that follows
+it must attach the [identity gate](identity-gate.md) report.
+
 ## Display-label rank
 
 `_name_type_rank` picks which name an entity *displays*, not which identifier
