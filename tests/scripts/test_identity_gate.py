@@ -10,6 +10,7 @@ import io
 import json
 import re
 import shutil
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -691,3 +692,37 @@ class TestMain:
         with pytest.raises(SystemExit) as exc:
             main(["--source", str(tmp_path / "missing.db")])
         assert exc.value.code == 2
+
+
+_FEATURES_DIR = Path(__file__).resolve().parents[2] / "docs" / "features"
+_GATE_DOC = _FEATURES_DIR / "identity-gate.md"
+
+
+def _section(text: str, heading: str) -> str:
+    match = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    assert match, f"missing '## {heading}' section"
+    return " ".join(match.group(1).split())
+
+
+class TestReleaseRuleDocs:
+    def test_release_rule_requires_report_before_release(self):
+        rule = _section(_GATE_DOC.read_text(), "Release rule")
+        assert "identity-critical change" in rule
+        assert "must attach the `scripts/identity_gate.py` report before it ships" in rule
+        assert "scratch copy of the live store" in rule
+
+    def test_documents_running_against_scratch_copy(self):
+        running = _section(_GATE_DOC.read_text(), "Running against the live store")
+        assert "uv run python scripts/identity_gate.py --source ~/.patina/store.db" in running
+        assert "never writes to the store passed to `--source`" in running
+        assert "--force-violation" in _GATE_DOC.read_text()
+
+    def test_every_invariant_documented(self):
+        text = _GATE_DOC.read_text()
+        for name, fails_when in INVARIANTS.items():
+            assert f"`{name}`" in text
+            assert fails_when in text
+
+    def test_linked_from_identity_precedence(self):
+        precedence = (_FEATURES_DIR / "identity-precedence.md").read_text()
+        assert "[identity gate](identity-gate.md)" in precedence
