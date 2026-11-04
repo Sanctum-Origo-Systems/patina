@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 from datetime import date, timedelta
@@ -19,6 +20,14 @@ MINOR_PREFIXES = ("feat:",)
 PATCH_PREFIXES = ("fix:", "refactor:", "test:", "docs:")
 
 _COMMIT_PREFIXES = ("fix", "feat", "refactor", "test", "docs", "chore")
+
+DEFAULT_LOOKBACK_DAYS = 7
+
+_ENTRY_RE = re.compile(r"^- #(\d+): (.*)$")
+_HEADER_RE = re.compile(r"^## v(\d+\.\d+\.\d+)\b")
+
+_BOT_NAME = "github-actions[bot]"
+_BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 
 
 def clean_title(title: str) -> str:
@@ -179,6 +188,14 @@ def highest_bump_type(titles: list[str]) -> str | None:
     return None
 
 
+def next_version(version: str, kind: str) -> str:
+    """Return version bumped by kind (minor or patch), without touching any file."""
+    major, minor, patch = (int(part) for part in version.split("."))
+    if kind == "minor":
+        return f"{major}.{minor + 1}.0"
+    return f"{major}.{minor}.{patch + 1}"
+
+
 def bump_version(
     kind: str,
     *,
@@ -192,15 +209,85 @@ def bump_version(
         return None
 
     major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
-    if kind == "minor":
-        new = f"{major}.{minor + 1}.0"
-    else:
-        new = f"{major}.{minor}.{patch + 1}"
+    new = next_version(f"{major}.{minor}.{patch}", kind)
 
     old_version = f'version = "{major}.{minor}.{patch}"'
     new_version = f'version = "{new}"'
     path.write_text(text.replace(old_version, new_version, 1))
     return new
+
+
+def set_version(new: str, *, pyproject_path: Path | None = None) -> None:
+    """Overwrite the pyproject.toml version with new."""
+    path = pyproject_path or PYPROJECT_PATH
+    text = path.read_text()
+    path.write_text(
+        re.sub(
+            r'^(version\s*=\s*)"\d+\.\d+\.\d+"',
+            rf'\g<1>"{new}"',
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    )
+
+
+def top_block(changelog_path: Path | None = None) -> tuple[str | None, list[tuple[int, str]]]:
+    """Return the top version block's version and its (number, title) entries."""
+    path = changelog_path or CHANGELOG_PATH
+    if not path.exists():
+        return None, []
+    version = None
+    entries: list[tuple[int, str]] = []
+    for line in path.read_text().splitlines():
+        if line.startswith("## "):
+            if version is not None:
+                break
+            match = _HEADER_RE.match(line)
+            if match:
+                version = match.group(1)
+            continue
+        entry = _ENTRY_RE.match(line)
+        if version is not None and entry:
+            entries.append((int(entry.group(1)), entry.group(2)))
+    return version, entries
+
+
+def rename_top_block(old: str, new: str, *, changelog_path: Path | None = None) -> None:
+    """Rename the first `## v{old} (...)` header to `## v{new} (...)`, keeping its date."""
+    path = changelog_path or CHANGELOG_PATH
+    text = path.read_text()
+    path.write_text(
+        re.sub(rf"^## v{re.escape(old)}\b", f"## v{new}", text, count=1, flags=re.MULTILINE)
+    )
+
+
+def latest_block_date(changelog_path: Path | None = None) -> date | None:
+    """Return the date of the newest dated version block in the changelog."""
+    path = changelog_path or CHANGELOG_PATH
+    if not path.exists():
+        return None
+    for block_date, _ in _parse_version_blocks(path.read_text()):
+        if block_date is not None:
+            return block_date
+    return None
+
+
+def lookback_days(
+    since_days: int = 1,
+    *,
+    changelog_path: Path | None = None,
+    today: date | None = None,
+) -> int:
+    """Days to look back: everything since the latest changelog block, at least since_days.
+
+    Falls back to DEFAULT_LOOKBACK_DAYS when the changelog has no dated block.
+    Repeat coverage is safe because daily() skips PRs already listed.
+    """
+    latest = latest_block_date(changelog_path)
+    ref = today or date.today()
+    days = (ref - latest).days if latest else DEFAULT_LOOKBACK_DAYS
+    return max(since_days, days)
 
 
 def existing_pr_numbers(changelog_path: Path | None = None) -> set[int]:
@@ -214,8 +301,8 @@ def existing_pr_numbers(changelog_path: Path | None = None) -> set[int]:
     return numbers
 
 
-def has_open_changelog_pr(repo: str) -> bool:
-    """Check if an open PR already exists from a chore/changelog-* branch."""
+def find_open_changelog_pr(repo: str) -> dict | None:
+    """Return the open chore/changelog-* PR as {"number", "headRefName"}, or None."""
     result = subprocess.run(
         [
             "gh",
@@ -228,17 +315,22 @@ def has_open_changelog_pr(repo: str) -> bool:
             "--search",
             "head:chore/changelog-",
             "--json",
-            "number",
+            "number,headRefName",
             "--limit",
             "1",
         ],
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
-        return False
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
     prs = json.loads(result.stdout)
-    return len(prs) > 0
+    return prs[0] if prs else None
+
+
+def has_open_changelog_pr(repo: str) -> bool:
+    """Check if an open PR already exists from a chore/changelog-* branch."""
+    return find_open_changelog_pr(repo) is not None
 
 
 def fetch_merged_prs(repo: str, since_days: int = 1) -> list[dict]:
@@ -274,15 +366,134 @@ def extract_cost(body: str) -> float:
     return float(match.group(1)) if match else 0.0
 
 
-def daily(repo: str, since_days: int = 1) -> None:
-    """Batch changelog + version bump for all PRs merged since last run."""
-    if has_open_changelog_pr(repo):
-        print("Open changelog PR already exists — skipping.")
+def _bot_env() -> dict[str, str]:
+    return {
+        **os.environ,
+        "GIT_AUTHOR_NAME": _BOT_NAME,
+        "GIT_AUTHOR_EMAIL": _BOT_EMAIL,
+        "GIT_COMMITTER_NAME": _BOT_NAME,
+        "GIT_COMMITTER_EMAIL": _BOT_EMAIL,
+    }
+
+
+def update_open_pr(repo: str, open_pr: dict, prs: list[dict]) -> None:
+    """Add new merged PRs to an open changelog PR's branch, building on its head.
+
+    The version is recomputed from main's pyproject.toml over every PR in the
+    branch's top block, so bumps never stack. Never force-pushes or resets.
+    """
+    number = open_pr["number"]
+    branch = open_pr["headRefName"]
+
+    # Read main's state before switching to the branch.
+    main_existing = existing_pr_numbers()
+    main_version = current_version()
+
+    candidates = [pr for pr in prs if pr["number"] not in main_existing]
+    if not candidates:
+        print("All merged PRs already in changelog.")
         return
 
-    prs = fetch_merged_prs(repo, since_days)
+    for cmd in (
+        ["git", "fetch", "origin", branch],
+        ["git", "checkout", branch],
+        ["git", "merge", "--ff-only", f"origin/{branch}"],
+    ):
+        result = subprocess.run(cmd, cwd=REPO_DIR)
+        if result.returncode != 0:
+            print(f"Could not sync {branch} ({' '.join(cmd)} failed) — leaving PR #{number}.")
+            subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
+            return
+
+    branch_existing = existing_pr_numbers()
+    new_prs = [pr for pr in candidates if pr["number"] not in branch_existing]
+    if not new_prs:
+        print(f"All merged PRs already in changelog PR #{number}.")
+        subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
+        return
+
+    block_version, block_entries = top_block()
+    titles = [title for n, title in block_entries if n not in main_existing]
+    titles += [pr["title"] for pr in new_prs]
+    kind = highest_bump_type(titles)
+    version = next_version(main_version, kind) if kind else (block_version or main_version)
+
+    if block_version and block_version not in (main_version, version):
+        rename_top_block(block_version, version)
+        print(f"  Renamed block v{block_version} -> v{version}")
+
+    version_changed = current_version() != version
+    if version_changed:
+        set_version(version)
+        subprocess.run(["uv", "lock"], cwd=REPO_DIR, check=True)
+        print(f"  Set version to {version}")
+
+    for pr in new_prs:
+        cost = extract_cost(pr.get("body", ""))
+        append_entry(pr["number"], pr["title"], cost, version=version)
+        print(f"  Added #{pr['number']}: {pr['title']}")
+
+    trim_changelog()
+
+    subprocess.run(["git", "add", "eval/cognitive/CHANGELOG.md"], cwd=REPO_DIR)
+    subprocess.run(
+        ["git", "add", "eval/cognitive/changelog-archive.md"],
+        cwd=REPO_DIR,
+        capture_output=True,
+    )
+    if version_changed:
+        subprocess.run(["git", "add", "pyproject.toml"], cwd=REPO_DIR)
+        subprocess.run(["git", "add", "uv.lock"], cwd=REPO_DIR)
+
+    diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_DIR, capture_output=True)
+    if diff.returncode == 0:
+        print("No changes to commit.")
+        subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
+        return
+
+    refs = ", ".join(f"#{pr['number']}" for pr in new_prs)
+    commit_msg = f"chore: add {refs} to v{version} changelog"
+    subprocess.run(["git", "commit", "-m", commit_msg], cwd=REPO_DIR, env=_bot_env())
+    subprocess.run(["git", "push", "origin", branch], cwd=REPO_DIR)
+
+    added = len([n for n, _ in top_block()[1] if n not in main_existing])
+    stamp = date.today().isoformat()
+    pr_title = f"chore: update changelog and version (v{version})"
+    pr_body = f"Daily changelog update ({stamp}). {added} PR(s) added."
+    subprocess.run(
+        [
+            "gh",
+            "pr",
+            "edit",
+            str(number),
+            "--repo",
+            repo,
+            "--title",
+            pr_title,
+            "--body",
+            pr_body,
+        ],
+        cwd=REPO_DIR,
+    )
+    subprocess.run(["git", "checkout", "main"], cwd=REPO_DIR)
+    print(f"Updated PR #{number}: {pr_title}")
+
+
+def daily(repo: str, since_days: int = 1) -> None:
+    """Batch changelog + version bump for all PRs merged since last run.
+
+    With an open chore/changelog-* PR, the new PRs are added to that PR's
+    branch; otherwise a new branch and PR are created.
+    """
+    open_pr = find_open_changelog_pr(repo)
+
+    prs = fetch_merged_prs(repo, lookback_days(since_days))
     if not prs:
         print("No new merged PRs.")
+        return
+
+    if open_pr:
+        update_open_pr(repo, open_pr, prs)
         return
 
     existing = existing_pr_numbers()
@@ -330,17 +541,7 @@ def daily(repo: str, since_days: int = 1) -> None:
 
     version_suffix = f" (v{new_version})" if new_version else ""
     commit_msg = f"chore: update changelog and version{version_suffix}"
-    subprocess.run(
-        ["git", "commit", "-m", commit_msg],
-        cwd=REPO_DIR,
-        env={
-            **__import__("os").environ,
-            "GIT_AUTHOR_NAME": "github-actions[bot]",
-            "GIT_AUTHOR_EMAIL": "41898282+github-actions[bot]@users.noreply.github.com",
-            "GIT_COMMITTER_NAME": "github-actions[bot]",
-            "GIT_COMMITTER_EMAIL": "41898282+github-actions[bot]@users.noreply.github.com",
-        },
-    )
+    subprocess.run(["git", "commit", "-m", commit_msg], cwd=REPO_DIR, env=_bot_env())
     subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_DIR)
 
     pr_title = f"chore: update changelog and version{version_suffix}"
@@ -365,7 +566,12 @@ def main(argv: list[str] | None = None) -> None:
 
     batch = sub.add_parser("daily", help="Batch update from merged PRs and create PR")
     batch.add_argument("--repo", required=True, help="GitHub owner/repo")
-    batch.add_argument("--since-days", type=int, default=1, help="Look back N days (default: 1)")
+    batch.add_argument(
+        "--since-days",
+        type=int,
+        default=1,
+        help="Look back at least N days (default: 1; widened to the latest changelog block date)",
+    )
 
     args = parser.parse_args(argv)
 
