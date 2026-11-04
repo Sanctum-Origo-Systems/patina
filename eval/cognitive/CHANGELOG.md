@@ -1,3 +1,7 @@
+## v0.36.0 (2026-11-04)
+- #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
+Total: 1 PRs, $2.68
+
 ## v0.35.0 (2026-11-03)
 - #588: Feat: [patina] feat: identity gate fixtures, loader and scratch-st ($1.55)
 - #589: Feat: [patina] fix: contradictions flags temporary locations and o ($0.81)
