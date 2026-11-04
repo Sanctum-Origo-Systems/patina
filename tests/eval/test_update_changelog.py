@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import date, timedelta
 from pathlib import Path
@@ -12,8 +13,11 @@ from eval.cognitive.update_changelog import (
     append_entry,
     clean_title,
     daily,
+    find_open_changelog_pr,
     has_open_changelog_pr,
+    lookback_days,
     main,
+    top_block,
     trim_changelog,
 )
 
@@ -381,25 +385,47 @@ class TestHasOpenChangelogPr:
             assert has_open_changelog_pr("owner/repo") is False
 
 
-class TestDailySkipsOnOpenPr:
-    def test_skips_when_open_changelog_pr_exists(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with (
-            patch(
-                "eval.cognitive.update_changelog.has_open_changelog_pr", return_value=True
-            ) as mock_check,
-            patch("eval.cognitive.update_changelog.fetch_merged_prs") as mock_fetch,
-        ):
-            from eval.cognitive.update_changelog import daily
+class TestFindOpenChangelogPr:
+    def test_returns_number_and_branch(self) -> None:
+        fake = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='[{"number": 591, "headRefName": "chore/changelog-2026-11-03"}]',
+            stderr="",
+        )
+        with patch("eval.cognitive.update_changelog.subprocess.run", return_value=fake) as mock:
+            assert find_open_changelog_pr("owner/repo") == {
+                "number": 591,
+                "headRefName": "chore/changelog-2026-11-03",
+            }
+        args = mock.call_args[0][0]
+        assert "number,headRefName" in args
 
-            daily("owner/repo")
+    def test_returns_none_when_no_open_pr(self) -> None:
+        fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="[]", stderr="")
+        with patch("eval.cognitive.update_changelog.subprocess.run", return_value=fake):
+            assert find_open_changelog_pr("owner/repo") is None
 
-        mock_check.assert_called_once_with("owner/repo")
-        mock_fetch.assert_not_called()
-        assert "skipping" in capsys.readouterr().out.lower()
 
+class TestLookbackDays:
+    def test_covers_since_latest_block(self, changelog: Path) -> None:
+        today = date(2026, 11, 3)
+        changelog.write_text("## v0.34.0 (2026-10-31)\n- #1: Fix: a ($0.10)\nTotal: 1 PRs, $0.10\n")
+        assert lookback_days(1, changelog_path=changelog, today=today) == 3
+
+    def test_never_shorter_than_since_days(self, changelog: Path) -> None:
+        today = date(2026, 11, 3)
+        changelog.write_text("## v0.34.0 (2026-11-03)\n- #1: Fix: a ($0.10)\nTotal: 1 PRs, $0.10\n")
+        assert lookback_days(1, changelog_path=changelog, today=today) == 1
+
+    def test_falls_back_to_seven_days(self, changelog: Path) -> None:
+        assert lookback_days(1, changelog_path=changelog, today=date(2026, 11, 3)) == 7
+
+
+class TestDailyNoOpenPr:
     def test_proceeds_when_no_open_changelog_pr(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
-            patch("eval.cognitive.update_changelog.has_open_changelog_pr", return_value=False),
+            patch("eval.cognitive.update_changelog.find_open_changelog_pr", return_value=None),
             patch("eval.cognitive.update_changelog.fetch_merged_prs", return_value=[]),
         ):
             from eval.cognitive.update_changelog import daily
@@ -433,7 +459,7 @@ class TestUvLockSync:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
         with (
-            patch("eval.cognitive.update_changelog.has_open_changelog_pr", return_value=False),
+            patch("eval.cognitive.update_changelog.find_open_changelog_pr", return_value=None),
             patch("eval.cognitive.update_changelog.fetch_merged_prs", return_value=[fake_pr]),
             patch("eval.cognitive.update_changelog.existing_pr_numbers", return_value=set()),
             patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
@@ -471,7 +497,7 @@ class TestUvLockSync:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
         with (
-            patch("eval.cognitive.update_changelog.has_open_changelog_pr", return_value=False),
+            patch("eval.cognitive.update_changelog.find_open_changelog_pr", return_value=None),
             patch("eval.cognitive.update_changelog.fetch_merged_prs", return_value=[fake_pr]),
             patch("eval.cognitive.update_changelog.existing_pr_numbers", return_value=set()),
             patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
@@ -506,3 +532,305 @@ class TestUvLockSync:
 
         uv_lock_calls = [c for c in calls if c[:2] == ["uv", "lock"]]
         assert uv_lock_calls, "uv lock must be called after bump_version() in single path"
+
+
+BRANCH = "chore/changelog-2026-11-03"
+TODAY = date.today()
+YESTERDAY = TODAY - timedelta(days=1)
+
+MAIN_CHANGELOG = (
+    f"## v0.34.0 ({YESTERDAY.isoformat()})\n"
+    "- #572: Feat: add the quick brown fox ($0.96)\n"
+    "- #571: Feat: jump over the lazy dog ($0.66)\n"
+    "Total: 2 PRs, $1.62\n"
+)
+
+
+def _pyproject(version: str) -> str:
+    return f'[project]\nname = "patina"\nversion = "{version}"\n'
+
+
+def _merged(number: int, title: str, cost: float) -> dict:
+    return {
+        "number": number,
+        "title": title,
+        "body": f"## Summary\n- Cost: ${cost:.2f}\n",
+        "mergedAt": f"{TODAY.isoformat()}T09:00:00Z",
+    }
+
+
+class TestDailyUpdatesOpenPr:
+    """With an open chore/changelog-* PR, daily() adds late merges to that PR's branch."""
+
+    def _run(
+        self,
+        tmp_path: Path,
+        *,
+        branch_block: str,
+        branch_version: str,
+        merged: list[dict],
+        main_changelog: str = MAIN_CHANGELOG,
+        main_version: str = "0.34.0",
+        open_prs: list[dict] | None = None,
+        fail_on: list[str] | None = None,
+    ) -> tuple[list[list[str]], Path, Path]:
+        changelog = tmp_path / "CHANGELOG.md"
+        archive = tmp_path / "changelog-archive.md"
+        pyproject = tmp_path / "pyproject.toml"
+        changelog.write_text(main_changelog)
+        pyproject.write_text(_pyproject(main_version))
+        if open_prs is None:
+            open_prs = [{"number": 591, "headRefName": BRANCH}]
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            out, code = "", 0
+            if cmd[:3] == ["gh", "pr", "list"]:
+                state = cmd[cmd.index("--state") + 1]
+                out = json.dumps(open_prs if state == "open" else merged)
+            elif cmd == ["git", "checkout", BRANCH]:
+                # Simulate switching the working tree to the PR branch.
+                changelog.write_text(branch_block + "\n" + main_changelog)
+                pyproject.write_text(_pyproject(branch_version))
+            elif cmd[:3] == ["git", "diff", "--cached"]:
+                code = 1
+            if fail_on and cmd[:2] == ["git", fail_on[0]]:
+                code = 1
+            return subprocess.CompletedProcess(args=cmd, returncode=code, stdout=out, stderr="")
+
+        with (
+            patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
+            patch("eval.cognitive.update_changelog.ARCHIVE_PATH", archive),
+            patch("eval.cognitive.update_changelog.PYPROJECT_PATH", pyproject),
+            patch("eval.cognitive.update_changelog.subprocess.run", side_effect=fake_run),
+        ):
+            daily("owner/repo")
+
+        return calls, changelog, pyproject
+
+    @staticmethod
+    def _pr_edit(calls: list[list[str]]) -> list[str]:
+        edits = [c for c in calls if c[:3] == ["gh", "pr", "edit"]]
+        assert len(edits) == 1
+        return edits[0]
+
+    def test_late_feats_promote_patch_block_to_minor(self, tmp_path: Path) -> None:
+        branch_block = (
+            f"## v0.34.1 ({TODAY.isoformat()})\n"
+            "- #590: Docs: fix the quick brown fox example ($0.50)\n"
+            "Total: 1 PRs, $0.50\n"
+        )
+        merged = [
+            _merged(592, "feat: add Jordan Example's widget (#580)", 1.00),
+            _merged(593, "feat: feat: résumé parser handles “smart quotes”", 2.00),
+            _merged(594, "feat: add lazy dog filter", 0.25),
+            _merged(595, "feat: add sample gadget", 0.75),
+        ]
+
+        calls, changelog, pyproject = self._run(
+            tmp_path, branch_block=branch_block, branch_version="0.34.1", merged=merged
+        )
+
+        text = changelog.read_text()
+        assert f"## v0.35.0 ({TODAY.isoformat()})" in text
+        assert "v0.34.1" not in text
+        assert "v0.35.1" not in text
+        version, entries = top_block(changelog)
+        assert version == "0.35.0"
+        assert [n for n, _ in entries] == [590, 592, 593, 594, 595]
+        assert "- #593: Feat: résumé parser handles “smart quotes” ($2.00)" in text
+        assert "Total: 5 PRs, $4.50" in text
+        # main's block is untouched
+        assert "## v0.34.0" in text
+        assert "Total: 2 PRs, $1.62" in text
+
+        assert 'version = "0.35.0"' in pyproject.read_text()
+        assert ["uv", "lock"] in calls
+        assert ["git", "add", "pyproject.toml"] in calls
+        assert ["git", "add", "uv.lock"] in calls
+
+        commits = [c for c in calls if c[:2] == ["git", "commit"]]
+        assert commits == [
+            ["git", "commit", "-m", "chore: add #592, #593, #594, #595 to v0.35.0 changelog"]
+        ]
+        assert ["git", "push", "origin", BRANCH] in calls
+
+        edit = self._pr_edit(calls)
+        assert edit[3] == "591"
+        assert edit[edit.index("--title") + 1] == "chore: update changelog and version (v0.35.0)"
+        assert edit[edit.index("--body") + 1].endswith("5 PR(s) added.")
+        assert not any(c[:3] == ["gh", "pr", "create"] for c in calls)
+
+    def test_fix_on_minor_block_keeps_version(self, tmp_path: Path) -> None:
+        main_changelog = (
+            f"## v0.33.0 ({YESTERDAY.isoformat()})\n"
+            "- #565: Fix: the quick brown fox ($0.64)\n"
+            "Total: 1 PRs, $0.64\n"
+        )
+        branch_block = (
+            f"## v0.34.0 ({TODAY.isoformat()})\n"
+            "- #572: Feat: add the quick brown fox ($0.96)\n"
+            "Total: 1 PRs, $0.96\n"
+        )
+        merged = [_merged(573, "fix: lazy dog crashes on empty input", 0.40)]
+
+        calls, changelog, pyproject = self._run(
+            tmp_path,
+            branch_block=branch_block,
+            branch_version="0.34.0",
+            merged=merged,
+            main_changelog=main_changelog,
+            main_version="0.33.0",
+        )
+
+        version, entries = top_block(changelog)
+        assert version == "0.34.0"
+        assert [n for n, _ in entries] == [572, 573]
+        assert "Total: 2 PRs, $1.36" in changelog.read_text()
+        assert 'version = "0.34.0"' in pyproject.read_text()
+        assert ["uv", "lock"] not in calls
+        assert ["git", "add", "pyproject.toml"] not in calls
+        assert ["git", "commit", "-m", "chore: add #573 to v0.34.0 changelog"] in calls
+        edit = self._pr_edit(calls)
+        assert edit[edit.index("--title") + 1] == "chore: update changelog and version (v0.34.0)"
+
+    def test_skips_prs_on_branch_or_main(self, tmp_path: Path) -> None:
+        branch_block = (
+            f"## v0.35.0 ({TODAY.isoformat()})\n"
+            "- #580: Feat: add sample gadget ($1.00)\n"
+            "Total: 1 PRs, $1.00\n"
+        )
+        merged = [
+            _merged(572, "feat: add the quick brown fox", 0.96),  # in main's CHANGELOG
+            _merged(580, "feat: add sample gadget", 1.00),  # in branch's block
+            _merged(581, "fix: lazy dog edge case", 0.20),  # new
+        ]
+
+        calls, changelog, _ = self._run(
+            tmp_path, branch_block=branch_block, branch_version="0.35.0", merged=merged
+        )
+
+        text = changelog.read_text()
+        assert text.count("- #572:") == 1
+        assert text.count("- #580:") == 1
+        assert text.count("- #581:") == 1
+        _, entries = top_block(changelog)
+        assert [n for n, _ in entries] == [580, 581]
+        assert "Total: 2 PRs, $1.20" in text
+        assert ["git", "commit", "-m", "chore: add #581 to v0.35.0 changelog"] in calls
+
+    def test_no_new_merges_no_commit_or_push(self, tmp_path: Path) -> None:
+        branch_block = (
+            f"## v0.35.0 ({TODAY.isoformat()})\n"
+            "- #580: Feat: add sample gadget ($1.00)\n"
+            "Total: 1 PRs, $1.00\n"
+        )
+        merged = [
+            _merged(572, "feat: add the quick brown fox", 0.96),
+            _merged(580, "feat: add sample gadget", 1.00),
+        ]
+
+        calls, changelog, _ = self._run(
+            tmp_path, branch_block=branch_block, branch_version="0.35.0", merged=merged
+        )
+
+        assert not any(c[:2] == ["git", "commit"] for c in calls)
+        assert not any(c[:2] == ["git", "push"] for c in calls)
+        assert not any(c[:3] == ["gh", "pr", "edit"] for c in calls)
+        assert calls[-1] == ["git", "checkout", "main"]
+
+    def test_builds_on_branch_head_without_force_or_reset(self, tmp_path: Path) -> None:
+        # A manual entry added by hand on the branch must survive.
+        branch_block = (
+            f"## v0.34.1 ({TODAY.isoformat()})\n"
+            "- #590: Fix: Jordan Example’s inbox — the quick brown fox "
+            "($0.00, external contribution)\n"
+            "Total: 1 PRs, $0.00\n"
+        )
+        merged = [_merged(592, "fix: lazy dog filter", 0.30)]
+
+        calls, changelog, _ = self._run(
+            tmp_path, branch_block=branch_block, branch_version="0.34.1", merged=merged
+        )
+
+        git_calls = [c for c in calls if c[0] == "git"]
+        sync = [
+            ["git", "fetch", "origin", BRANCH],
+            ["git", "checkout", BRANCH],
+            ["git", "merge", "--ff-only", f"origin/{BRANCH}"],
+        ]
+        assert git_calls[:3] == sync
+        for c in git_calls:
+            assert "reset" not in c
+            assert "rebase" not in c
+            assert "-B" not in c
+            assert not any(arg.startswith(("--force", "-f")) for arg in c)
+        assert ["git", "push", "origin", BRANCH] in calls
+
+        text = changelog.read_text()
+        assert "Jordan Example’s inbox — the quick brown fox ($0.00, external contribution)" in text
+        assert "- #592: Fix: lazy dog filter ($0.30)" in text
+        assert "Total: 2 PRs, $0.30" in text
+
+    def test_stops_when_branch_cannot_fast_forward(self, tmp_path: Path) -> None:
+        branch_block = (
+            f"## v0.34.1 ({TODAY.isoformat()})\n"
+            "- #590: Docs: fix the quick brown fox example ($0.50)\n"
+            "Total: 1 PRs, $0.50\n"
+        )
+        merged = [_merged(592, "feat: add sample gadget", 1.00)]
+
+        calls, _, _ = self._run(
+            tmp_path,
+            branch_block=branch_block,
+            branch_version="0.34.1",
+            merged=merged,
+            fail_on=["merge"],
+        )
+
+        assert not any(c[:2] == ["git", "commit"] for c in calls)
+        assert not any(c[:2] == ["git", "push"] for c in calls)
+        assert calls[-1] == ["git", "checkout", "main"]
+
+    def test_chore_prs_excluded(self, tmp_path: Path) -> None:
+        branch_block = (
+            f"## v0.34.1 ({TODAY.isoformat()})\n"
+            "- #590: Docs: fix the quick brown fox example ($0.50)\n"
+            "Total: 1 PRs, $0.50\n"
+        )
+        merged = [
+            _merged(589, "chore: update changelog and version (v0.34.0)", 0.00),
+            _merged(592, "fix: lazy dog filter", 0.30),
+        ]
+
+        calls, changelog, _ = self._run(
+            tmp_path, branch_block=branch_block, branch_version="0.34.1", merged=merged
+        )
+
+        assert "#589" not in changelog.read_text()
+        assert ["git", "commit", "-m", "chore: add #592 to v0.34.1 changelog"] in calls
+
+    def test_lookback_starts_at_mains_latest_block(self, tmp_path: Path) -> None:
+        calls, _, _ = self._run(
+            tmp_path, branch_block="", branch_version="0.34.0", merged=[], open_prs=[]
+        )
+        merged_query = next(c for c in calls if c[:3] == ["gh", "pr", "list"] and "merged" in c)
+        assert f"merged:>={YESTERDAY.isoformat()}" in merged_query
+
+    def test_creates_new_pr_when_none_open(self, tmp_path: Path) -> None:
+        merged = [_merged(592, "feat: add sample gadget", 1.00)]
+
+        calls, changelog, pyproject = self._run(
+            tmp_path, branch_block="", branch_version="0.34.0", merged=merged, open_prs=[]
+        )
+
+        stamp = TODAY.isoformat()
+        assert ["git", "checkout", "-b", f"chore/changelog-{stamp}"] in calls
+        assert ["git", "push", "-u", "origin", f"chore/changelog-{stamp}"] in calls
+        assert any(c[:3] == ["gh", "pr", "create"] for c in calls)
+        assert not any(c[:3] == ["gh", "pr", "edit"] for c in calls)
+        assert not any(c[:2] == ["git", "fetch"] for c in calls)
+        assert f"## v0.35.0 ({stamp})" in changelog.read_text()
+        assert 'version = "0.35.0"' in pyproject.read_text()
