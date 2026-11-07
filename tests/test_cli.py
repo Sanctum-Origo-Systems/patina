@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import sqlite3
 import zipfile
+from datetime import UTC, datetime
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
+import patina.cleanup_meeting_obs as cleanup_meeting_obs
+from patina.adapters.outlook_mcp import _email_from_raw
 from patina.cli import _bootstrap_home, app
-from patina.store import connect, get_db_path, init_db
+from patina.graph import insert_claim, insert_observation
+from patina.models import Claim, Observation
+from patina.store import connect, get_db_path, init_db, run_pending_migrations
 
 runner = CliRunner()
 
@@ -936,3 +944,409 @@ def test_entity_rekey_references_help_shows_confirm():
     plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
     assert result.exit_code == 0
     assert "--confirm" in plain
+
+
+# --- cleanup-meeting-obs (#601) ---
+
+_MEETING_SUBJECT = "The quick brown fox sync"
+
+
+class _FakeOutlook:
+    def __init__(self, payloads):
+        self.payloads = payloads
+        self.calls = []
+
+    def get_raw_message(self, source_id):
+        self.calls.append(source_id)
+        return self.payloads.get(source_id)
+
+
+def _meeting_payload(conv_id, message_class, received):
+    """Anonymized shape of a live Outlook meeting conversation (#580)."""
+    return {
+        "conversationId": conv_id,
+        "topic": _MEETING_SUBJECT,
+        "senders": ["Example, Jordan"],
+        "from": {"name": "Jordan Example", "email": "jordan@example.com"},
+        "recipients": ["Taylor, Morgan"],
+        "preview": "",
+        "receivedDateTime": received,
+        "itemClasses": [message_class],
+    }
+
+
+_REFETCH = {
+    "CONV_POS": ("IPM.Schedule.Meeting.Resp.Pos", "2026-10-01T15:04:05Z"),
+    "CONV_REQ": ("IPM.Schedule.Meeting.Request", "2026-10-03T09:00:00Z"),
+    "CONV_CXL": ("IPM.Schedule.Meeting.Canceled", "2026-10-05T18:30:00Z"),
+}
+# Rows carrying their class (or nothing) in stored metadata: (id, metadata, received, processed)
+_STORED = [
+    (
+        "obs_meta_items",
+        {"itemClasses": ["IPM.Schedule.Meeting.Request"], "conversationId": "META_1"},
+        "2026-09-20T08:00:00Z",
+        1,
+    ),
+    (
+        "obs_meta_class",
+        {"messageClass": "IPM.Schedule.Meeting.Resp.Pos", "id": "META_2"},
+        "2026-10-10T12:00:00Z",
+        0,
+    ),
+    ("obs_note", {"itemClasses": ["IPM.Note"], "preview": ""}, "2026-10-02T10:00:00Z", 0),
+    (
+        "obs_mixed",
+        {"itemClasses": ["IPM.Note", "IPM.Schedule.Meeting.Resp.Pos"]},
+        "2026-10-04T10:00:00Z",
+        0,
+    ),
+    ("obs_no_id", {"channel_name": None}, "2026-08-15T07:00:00Z", 0),
+    ("obs_gone", {"conversationId": "GONE"}, "2026-11-01T22:00:00Z", 0),
+]
+_SELECTED_IDS = {"obs_pos", "obs_req", "obs_cxl", "obs_meta_items", "obs_meta_class"}
+_UNDETERMINED_IDS = {"obs_no_id", "obs_gone"}
+_EXPECTED_CLASSES = {
+    "obs_pos": "IPM.Schedule.Meeting.Resp.Pos",
+    "obs_req": "IPM.Schedule.Meeting.Request",
+    "obs_cxl": "IPM.Schedule.Meeting.Canceled",
+    "obs_meta_items": "IPM.Schedule.Meeting.Request",
+    "obs_meta_class": "IPM.Schedule.Meeting.Resp.Pos",
+}
+
+
+def _iso_ts(iso):
+    return datetime.fromisoformat(iso).timestamp()
+
+
+def _fmt_ts(ts):
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _fmt(iso):
+    return _fmt_ts(_iso_ts(iso))
+
+
+def _seed_meeting_store(tmp_path, *, cite=True):
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+    conn.execute(
+        "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen)"
+        " VALUES ('ent_jordan', 'person', 'Jordan Example', '[]', '{}', 'x', 'x')"
+    )
+    for obs_id, conv_id in (
+        ("obs_pos", "CONV_POS"),
+        ("obs_req", "CONV_REQ"),
+        ("obs_cxl", "CONV_CXL"),
+    ):
+        message_class, received = _REFETCH[conv_id]
+        # Stored as ingest does: no class fields, only the source ID in metadata.
+        em = _email_from_raw(_meeting_payload(conv_id, message_class, received))
+        insert_observation(
+            conn,
+            Observation(
+                id=obs_id,
+                source="outlook_mcp_email",
+                channel_id=f"email:{em.conversation_id}",
+                thread_id=em.conversation_id,
+                timestamp=em.timestamp,
+                sender_entity_id=None,
+                text=em.text,
+                metadata={"channel_name": None, "reactions": [], "conversationId": em.id},
+            ),
+        )
+    for obs_id, meta, received, processed in _STORED:
+        insert_observation(
+            conn,
+            Observation(
+                id=obs_id,
+                source="outlook_mcp_email",
+                channel_id=f"email:{obs_id}",
+                thread_id=None,
+                timestamp=_iso_ts(received),
+                sender_entity_id=None,
+                text=f"[Subject: {_MEETING_SUBJECT}] [Participants: Jordan Example]\n",
+                metadata=meta,
+                processed=processed,
+            ),
+        )
+    if cite:
+        for claim_id, obs_ids in (
+            ("claim_a", ["obs_pos", "obs_meta_items"]),
+            ("claim_b", ["obs_pos"]),
+        ):
+            insert_claim(
+                conn,
+                Claim(
+                    id=claim_id,
+                    subject_id="ent_jordan",
+                    predicate="attends",
+                    object=_MEETING_SUBJECT,
+                    source_ids=obs_ids,
+                ),
+            )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def _fake_outlook(monkeypatch):
+    payloads = {
+        conv_id: _meeting_payload(conv_id, message_class, received)
+        for conv_id, (message_class, received) in _REFETCH.items()
+    }
+    payloads["GONE"] = None
+    fake = _FakeOutlook(payloads)
+    monkeypatch.setattr("patina.cli._load_outlook_refetch_adapter", lambda home: fake)
+    return fake
+
+
+def _sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _outlook_ids(db_path):
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id FROM observations WHERE source = 'outlook_mcp_email'"
+        ).fetchall()
+        return {r["id"] for r in rows}
+    finally:
+        conn.close()
+
+
+def _row_line(stdout, obs_id):
+    lines = [line for line in stdout.splitlines() if obs_id in line]
+    assert len(lines) == 1, lines
+    return lines[0]
+
+
+def test_cleanup_meeting_obs_dry_run_is_read_only(tmp_path, monkeypatch):
+    db_path = _seed_meeting_store(tmp_path)
+    _fake_outlook(monkeypatch)
+    real_connect_readonly = cleanup_meeting_obs.connect_readonly
+    write_errors = []
+
+    def _spy(path):
+        conn = real_connect_readonly(path)
+        with pytest.raises(sqlite3.OperationalError) as exc:
+            conn.execute("CREATE TABLE _probe (x)")
+        write_errors.append(str(exc.value))
+        return conn
+
+    monkeypatch.setattr(cleanup_meeting_obs, "connect_readonly", _spy)
+    before = _sha256(db_path)
+
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert _sha256(db_path) == before
+    assert len(write_errors) == 1
+    assert "readonly" in write_errors[0]
+    assert list(tmp_path.glob("*.bak.*")) == []
+
+
+def test_cleanup_meeting_obs_dry_run_text_report(tmp_path, monkeypatch):
+    _seed_meeting_store(tmp_path)
+    _fake_outlook(monkeypatch)
+
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--home", str(tmp_path)])
+    out = result.stdout
+
+    assert result.exit_code == 0, result.output
+    assert "Selected: 5 meeting observation(s)" in out
+    assert f"Earliest: {_fmt('2026-09-20T08:00:00Z')}" in out
+    assert f"Latest: {_fmt('2026-10-10T12:00:00Z')}" in out
+    assert "Processed: 1  Unprocessed: 4" in out
+
+    dates = {
+        "obs_pos": _REFETCH["CONV_POS"][1],
+        "obs_req": _REFETCH["CONV_REQ"][1],
+        "obs_cxl": _REFETCH["CONV_CXL"][1],
+        "obs_meta_items": "2026-09-20T08:00:00Z",
+        "obs_meta_class": "2026-10-10T12:00:00Z",
+    }
+    citations = {"obs_pos": 2, "obs_meta_items": 1}
+    for obs_id in _SELECTED_IDS:
+        line = _row_line(out, obs_id)
+        assert _fmt(dates[obs_id]) in line
+        assert _EXPECTED_CLASSES[obs_id] in line
+        assert f"citing claims: {citations.get(obs_id, 0)}" in line
+    assert "Total citing claims: 3" in out
+
+    undetermined_range = f"{_fmt('2026-08-15T07:00:00Z')} to {_fmt('2026-11-01T22:00:00Z')}"
+    assert f"Undetermined (not selected): 2 ({undetermined_range})" in out
+    for obs_id in _UNDETERMINED_IDS | {"obs_note", "obs_mixed"}:
+        assert obs_id not in out
+    assert _MEETING_SUBJECT not in result.output
+    assert "quick brown fox" not in result.output
+
+
+def test_cleanup_meeting_obs_json_matches_text_and_store(tmp_path, monkeypatch):
+    db_path = _seed_meeting_store(tmp_path)
+    _fake_outlook(monkeypatch)
+
+    text = runner.invoke(app, ["cleanup-meeting-obs", "--home", str(tmp_path)]).stdout
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--json", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+
+    # Same values as the text output.
+    assert f"Selected: {data['selected_count']} meeting" in text
+    assert f"Earliest: {data['earliest']}" in text
+    assert f"Latest: {data['latest']}" in text
+    assert f"Processed: {data['processed']}  Unprocessed: {data['unprocessed']}" in text
+    for row in data["selected"]:
+        line = _row_line(text, row["observation_id"])
+        assert row["date"] in line
+        assert ", ".join(row["item_classes"]) in line
+        assert f"citing claims: {row['citing_claims']}" in line
+    assert f"Total citing claims: {data['total_citations']}" in text
+    und = data["undetermined"]
+    assert (
+        f"Undetermined (not selected): {und['count']} ({und['earliest']} to {und['latest']})"
+    ) in text
+
+    # Same values as direct queries of the fixture store.
+    conn = connect(db_path)
+    try:
+        obs = {
+            r["id"]: r
+            for r in conn.execute(
+                "SELECT id, timestamp, processed FROM observations"
+                " WHERE source = 'outlook_mcp_email'"
+            ).fetchall()
+        }
+        claim_sources = [
+            json.loads(r["source_ids"])
+            for r in conn.execute("SELECT source_ids FROM claims").fetchall()
+        ]
+    finally:
+        conn.close()
+
+    by_id = {row["observation_id"]: row for row in data["selected"]}
+    assert set(by_id) == _SELECTED_IDS
+    assert data["selected_count"] == len(_SELECTED_IDS)
+    selected_ts = [obs[i]["timestamp"] for i in _SELECTED_IDS]
+    assert data["earliest"] == _fmt_ts(min(selected_ts))
+    assert data["latest"] == _fmt_ts(max(selected_ts))
+    assert data["processed"] == sum(1 for i in _SELECTED_IDS if obs[i]["processed"])
+    assert data["unprocessed"] == sum(1 for i in _SELECTED_IDS if not obs[i]["processed"])
+    total = 0
+    for obs_id, row in by_id.items():
+        cites = sum(1 for sids in claim_sources if obs_id in sids)
+        total += cites
+        assert row["date"] == _fmt_ts(obs[obs_id]["timestamp"])
+        assert row["item_classes"] == [_EXPECTED_CLASSES[obs_id]]
+        assert row["citing_claims"] == cites
+    assert data["total_citations"] == total == 3
+    undetermined_ts = [obs[i]["timestamp"] for i in _UNDETERMINED_IDS]
+    assert und == {
+        "count": len(_UNDETERMINED_IDS),
+        "earliest": _fmt_ts(min(undetermined_ts)),
+        "latest": _fmt_ts(max(undetermined_ts)),
+    }
+
+
+def test_cleanup_meeting_obs_classifies_fixture_rows(tmp_path, monkeypatch):
+    _seed_meeting_store(tmp_path)
+    fake = _fake_outlook(monkeypatch)
+
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--json", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert {row["observation_id"] for row in data["selected"]} == _SELECTED_IDS
+    # Rows with stored itemClasses/messageClass never reach the adapter.
+    assert sorted(fake.calls) == ["CONV_CXL", "CONV_POS", "CONV_REQ", "GONE"]
+    assert data["undetermined"]["count"] == len(_UNDETERMINED_IDS)
+
+
+def test_cleanup_meeting_obs_follows_is_meeting_message(tmp_path, monkeypatch):
+    _seed_meeting_store(tmp_path)
+    _fake_outlook(monkeypatch)
+    monkeypatch.setattr(
+        "patina.adapters.outlook_mcp._is_meeting_message",
+        lambda raw: raw.get("itemClasses") == ["IPM.Note"],
+    )
+
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--json", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert [row["observation_id"] for row in data["selected"]] == ["obs_note"]
+
+
+def test_cleanup_meeting_obs_confirm_removes_only_selected(tmp_path, monkeypatch):
+    db_path = _seed_meeting_store(tmp_path, cite=False)
+    _fake_outlook(monkeypatch)
+    real_backup = cleanup_meeting_obs.backup_store
+    backup_calls = []
+
+    def _spy(path):
+        backup_calls.append(path)
+        return real_backup(path)
+
+    monkeypatch.setattr(cleanup_meeting_obs, "backup_store", _spy)
+    before = _outlook_ids(db_path)
+
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--confirm", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert backup_calls == [db_path]
+    backups = list(tmp_path.glob("*.bak.*"))
+    assert len(backups) == 1
+    assert f"Backup: {backups[0]}" in result.stdout
+    assert _outlook_ids(backups[0]) == before
+    assert before == _SELECTED_IDS | _UNDETERMINED_IDS | {"obs_note", "obs_mixed"}
+    assert _outlook_ids(db_path) == _UNDETERMINED_IDS | {"obs_note", "obs_mixed"}
+    assert "Deleted 5 observation(s)" in result.stdout
+    assert "outlook_mcp_email observations: 9 -> 4" in result.stdout
+
+
+def test_cleanup_meeting_obs_confirm_refuses_cited_rows(tmp_path, monkeypatch):
+    db_path = _seed_meeting_store(tmp_path)
+    _fake_outlook(monkeypatch)
+    before = _sha256(db_path)
+
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--confirm", "--home", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "Refusing to delete: 2 selected row(s) have citing claims" in result.stdout
+    assert "obs_pos  citing claims: 2" in result.stdout
+    assert "obs_meta_items  citing claims: 1" in result.stdout
+    assert "No changes made." in result.stdout
+    assert _sha256(db_path) == before
+    assert list(tmp_path.glob("*.bak.*")) == []
+
+
+def test_cleanup_meeting_obs_second_confirm_is_noop(tmp_path, monkeypatch):
+    db_path = _seed_meeting_store(tmp_path, cite=False)
+    _fake_outlook(monkeypatch)
+    first = runner.invoke(app, ["cleanup-meeting-obs", "--confirm", "--home", str(tmp_path)])
+    assert first.exit_code == 0, first.output
+    rows = _outlook_ids(db_path)
+    digest = _sha256(db_path)
+    backups = set(tmp_path.glob("*.bak.*"))
+
+    again = runner.invoke(app, ["cleanup-meeting-obs", "--confirm", "--home", str(tmp_path)])
+
+    assert again.exit_code == 0, again.output
+    assert "Selected: 0 meeting observation(s)" in again.stdout
+    assert "Deleted 0 observation(s)" in again.stdout
+    assert "outlook_mcp_email observations: 4 -> 4" in again.stdout
+    assert "Backup:" not in again.stdout
+    assert _outlook_ids(db_path) == rows
+    assert _sha256(db_path) == digest
+    assert set(tmp_path.glob("*.bak.*")) == backups
+
+
+def test_cleanup_meeting_obs_uninitialized(tmp_path):
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--home", str(tmp_path / "missing")])
+
+    assert result.exit_code == 1
+    assert "not initialized" in result.output
