@@ -253,6 +253,25 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(db_path: Path) -> sqlite3.Connection:
+    """Open the store read-only; no pragmas are written, so the file is left untouched."""
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def delete_observations(conn: sqlite3.Connection, obs_ids: list[str]) -> int:
+    """Delete observations by ID; the FTS delete trigger keeps the index in sync."""
+    if not obs_ids:
+        return 0
+    placeholders = ",".join("?" for _ in obs_ids)
+    cur = conn.execute(
+        f"DELETE FROM observations WHERE id IN ({placeholders})",
+        list(obs_ids),
+    )
+    return cur.rowcount
+
+
 def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
