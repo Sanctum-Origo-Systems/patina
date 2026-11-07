@@ -1,3 +1,8 @@
+## v0.37.0 (2026-11-07)
+- #603: Feat: [patina] fix: contradictions still fills the cap with org an ($0.98)
+- #602: Feat: Meeting-observation classification, selection and guarded re ($1.57)
+Total: 2 PRs, $2.55
+
 ## v0.36.0 (2026-11-04)
 - #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
 - #595: Feat: [patina] test: identity gate CI pytest and release-rule docs ($2.45)
@@ -56,8 +61,4 @@ Total: 12 PRs, $22.02
 ## v0.29.2 (2026-10-26)
 - #499: Fix: normalize_name returns empty string for @-prefixed aliases ($0.19)
 Total: 1 PRs, $0.19
-
-## v0.29.1 (2026-10-23)
-- #492: Fix: repair multi-identity entities retaining stolen member handles ($0.00)
-Total: 1 PRs, $0.00
 
