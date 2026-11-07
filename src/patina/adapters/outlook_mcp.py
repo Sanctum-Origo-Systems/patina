@@ -14,6 +14,7 @@ from patina.models import CalendarEvent, EmailMessage
 class OutlookMcpAdapter:
     def __init__(self, bridge: McpSyncBridge) -> None:
         self._bridge = bridge
+        self._raw_inbox: dict[str, dict] | None = None
 
     @property
     def platform(self) -> str:
@@ -70,6 +71,31 @@ class OutlookMcpAdapter:
             raw = [raw] if isinstance(raw, dict) else []
         return [_calendar_event_from_raw(item) for item in raw if isinstance(item, dict)]
 
+    def get_raw_message(self, source_id: str) -> dict | None:
+        """Return the raw inbox payload whose ``conversationId``/``id`` matches, or None.
+
+        Read-only: lists the inbox once per adapter instance (no meeting filter)
+        and looks the ID up in that listing.
+        """
+        if self._raw_inbox is None:
+            self._raw_inbox = {}
+            try:
+                result = self._bridge.call_tool(
+                    "email_inbox", {"limit": _REFETCH_LIMIT, "unreadOnly": False}
+                )
+                raw = parse_outlook_content(result)
+            except Exception:
+                return None
+            for item in _unwrap_email_list(raw):
+                if not isinstance(item, dict):
+                    continue
+                item_id = item.get("conversationId", item.get("id"))
+                if item_id:
+                    self._raw_inbox.setdefault(item_id, item)
+        return self._raw_inbox.get(source_id)
+
+
+_REFETCH_LIMIT = 500
 
 _MEETING_CLASS_PREFIX = "IPM.Schedule.Meeting."
 

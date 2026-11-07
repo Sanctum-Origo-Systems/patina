@@ -829,6 +829,28 @@ class TestMeetingFilterItemClasses:
         assert [e.subject for e in emails] == ["Fox notes"]
 
 
+class TestGetRawMessage:
+    def test_returns_unfiltered_meeting_payload(self):
+        conv = _conversation(["IPM.Schedule.Meeting.Resp.Pos"])
+        bridge = _make_bridge({"email_inbox": _inbox_with(conv)})
+        adapter = OutlookMcpAdapter(bridge)
+
+        assert adapter.get_raw_message("CONV_ITEMCLASS001") == conv
+        assert adapter.get_raw_message("CONV_MISSING") is None
+        assert bridge.call_tool.call_count == 1
+        assert bridge.call_tool.call_args.args[0] == "email_inbox"
+
+    def test_matches_message_id(self):
+        raw = {"id": "AAMk_MSG001", "messageClass": "IPM.Schedule.Meeting.Request"}
+        bridge = _make_bridge({"email_inbox": _inbox_with(raw)})
+        assert OutlookMcpAdapter(bridge).get_raw_message("AAMk_MSG001") == raw
+
+    def test_bridge_error_returns_none(self):
+        bridge = MagicMock()
+        bridge.call_tool.side_effect = RuntimeError("down")
+        assert OutlookMcpAdapter(bridge).get_raw_message("CONV_ITEMCLASS001") is None
+
+
 class TestNormalizeSender:
     def test_legacy_dn_returns_empty(self):
         dn = (
