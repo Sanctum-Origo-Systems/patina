@@ -210,6 +210,125 @@ def test_cap_applied_after_sort_keeps_all_titles(db_conn):
         assert pair in returned
 
 
+def test_org_parent_vs_own_unit_not_contradiction(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Corp (jordan@examplecorp.com)")
+    _claim(db_conn, "c2", "org", "Example Corp Labs")
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_org_same_company_two_ways_not_contradiction(db_conn):
+    shapes = [
+        ("Example Corp", "ExCo"),
+        ("Example Corp", "EC"),
+        ("Example Consulting LLP", "Example Consulting"),
+        ("Globex", "Globex (external to organization)"),
+        ("Globex", "Globex (contractor)"),
+    ]
+    for i, (org_1, org_2) in enumerate(shapes):
+        eid = f"e{i}"
+        _setup_entity(db_conn, eid, f"Person {i}")
+        _claim(db_conn, f"c{i}a", "org", org_1, subject=eid)
+        _claim(db_conn, f"c{i}b", "org", org_2, subject=eid)
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_org_team_note_not_contradiction(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "works with the Example team on a workshop")
+    _claim(db_conn, "c2", "org", "Example Corp")
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_org_unrelated_names_with_suffixes_contradict(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Corp")
+    _claim(db_conn, "c2", "org", "Globex Inc")
+
+    assert _pairs(find_contradictions_tier1(db_conn)) == {frozenset(("Example Corp", "Globex Inc"))}
+
+
+def test_title_level_or_status_never_pairs(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c0", "title", "Cloud Architect")
+    statuses = [
+        "L6",
+        "IC5",
+        "promotion candidate (feedback due Sep 24)",
+        "on leave",
+        "recently promoted",
+        "parental leave",
+        "sabbatical",
+    ]
+    for i, obj in enumerate(statuses, start=1):
+        _claim(db_conn, f"c{i}", "title", obj)
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_title_same_tokens_any_order_not_contradiction(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "title", "principal delivery")
+    _claim(db_conn, "c2", "title", "Delivery Principal")
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_title_containment_demoted_after_all_conflicts(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _setup_entity(db_conn, "e2", "Riley")
+    _claim(db_conn, "a1", "title", "Cloud Architect Leader", confidence=0.95)
+    _claim(db_conn, "a2", "title", "Cloud Architect Leader, Health", confidence=0.95)
+    _claim(db_conn, "a3", "title", "Cloud Architect", confidence=0.95)
+    _claim(db_conn, "a4", "title", "delivery principal", subject="e2", confidence=0.95)
+    _claim(db_conn, "a5", "title", "Principal Delivery Consultant", subject="e2", confidence=0.95)
+    _claim(db_conn, "b1", "location", "Springfield", subject="e2", confidence=0.1)
+    _claim(db_conn, "b2", "location", "Shelbyville", subject="e2", confidence=0.1)
+    _claim(db_conn, "d1", "org", "Example Corp", subject="e2", confidence=0.1)
+    _claim(db_conn, "d2", "org", "Globex", subject="e2", confidence=0.1)
+
+    results = find_contradictions_tier1(db_conn)
+    assert [r["predicate"] for r in results] == ["org", "location"] + ["title"] * 4
+    assert _pairs(results[2:]) == {
+        frozenset(("Cloud Architect Leader", "Cloud Architect Leader, Health")),
+        frozenset(("Cloud Architect Leader", "Cloud Architect")),
+        frozenset(("Cloud Architect Leader, Health", "Cloud Architect")),
+        frozenset(("delivery principal", "Principal Delivery Consultant")),
+    }
+
+
+def test_title_disjoint_sorts_before_containment(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "a1", "title", "Engineer", confidence=0.9)
+    _claim(db_conn, "a2", "title", "Senior Engineer", confidence=0.9)
+    _claim(db_conn, "a3", "title", "Engineering Manager", confidence=0.5)
+
+    results = find_contradictions_tier1(db_conn)
+    assert [frozenset((r["object_1"], r["object_2"])) for r in results] == [
+        frozenset(("Engineer", "Engineering Manager")),
+        frozenset(("Senior Engineer", "Engineering Manager")),
+        frozenset(("Engineer", "Senior Engineer")),
+    ]
+
+
+def test_cap_keeps_real_conflicts_over_restatements(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    # 15 nested titles -> 105 containment pairs, all demoted.
+    words = [f"word{i}" for i in range(15)]
+    for i in range(15):
+        _claim(db_conn, f"a{i:02d}", "title", " ".join(words[: i + 1]), confidence=0.99)
+    _setup_entity(db_conn, "e2", "Riley")
+    _claim(db_conn, "z1", "location", "Springfield", subject="e2", confidence=0.1)
+    _claim(db_conn, "z2", "location", "Shelbyville", subject="e2", confidence=0.1)
+
+    results = find_contradictions_tier1(db_conn)
+    assert len(results) == 100
+    assert (results[0]["claim_id_1"], results[0]["claim_id_2"]) == ("z1", "z2")
+
+
 def test_behavioral_predicates_excluded(db_conn):
     _setup_entity(db_conn, "e1", "Jordan")
     _claim(db_conn, "c1", "behavioral:communication_style", "terse")
