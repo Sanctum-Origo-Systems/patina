@@ -76,6 +76,7 @@ patina entity fix-senders          # merge or retype junk senders: legacy DNs, r
 patina entity clean-slack-aliases  # drop slack: aliases that are not valid Slack IDs (--confirm)
 patina entity repair-multi-identity  # repair multi-identity sinks holding a member's name or handle (--confirm)
 patina entity repair-sink-handles  # strip member handles left on multi-identity sinks (--confirm)
+patina cleanup-meeting-obs         # remove uncited Outlook meeting-message observations, read-only preview (--json, --confirm)
 patina owner merge                 # fold duplicate self-entities (--dry-run available)
 patina doctor                      # includes dangling reference integrity check
 

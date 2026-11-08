@@ -1713,6 +1713,147 @@ def entity_cleanup_cmd(
         conn.close()
 
 
+def _load_outlook_refetch_adapter(home: Path | None) -> object | None:
+    """Build the configured Outlook MCP email adapter for read-only re-fetch, or None."""
+    import yaml
+
+    from patina.ingest import _make_mcp_adapter
+
+    config_path = get_db_path(home).parent / "config.yaml"
+    if not config_path.exists():
+        return None
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+    for adapter_cfg in config.get("adapters", {}).get("email", []):
+        if adapter_cfg.get("provider") == "outlook_mcp":
+            return _make_mcp_adapter("outlook_mcp", adapter_cfg)
+    return None
+
+
+def _format_obs_ts(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _meeting_selection_report(selection) -> dict:
+    und = selection.undetermined
+    return {
+        "selected_count": selection.selected_count,
+        "earliest": _format_obs_ts(selection.earliest),
+        "latest": _format_obs_ts(selection.latest),
+        "processed": selection.processed_count,
+        "unprocessed": selection.unprocessed_count,
+        "selected": [
+            {
+                "observation_id": s.observation_id,
+                "date": _format_obs_ts(s.timestamp),
+                "item_classes": s.item_classes,
+                "citing_claims": s.citing_claims,
+            }
+            for s in selection.selected
+        ],
+        "total_citations": selection.total_citations,
+        "undetermined": {
+            "count": und.count,
+            "earliest": _format_obs_ts(und.earliest),
+            "latest": _format_obs_ts(und.latest),
+        },
+    }
+
+
+@app.command("cleanup-meeting-obs")
+def cleanup_meeting_obs_cmd(
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Delete selected rows (read-only dry run without this flag)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print one machine-readable JSON object"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Find (and with --confirm, remove) outlook_mcp_email meeting observations."""
+    import json
+
+    from patina.cleanup_meeting_obs import (
+        RemovalRefused,
+        remove_meeting_observations,
+        select_meeting_observations,
+    )
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    try:
+        adapter = _load_outlook_refetch_adapter(home)
+    except Exception as exc:
+        typer.echo(f"Outlook re-fetch unavailable ({exc}); stored metadata only.", err=True)
+        adapter = None
+    try:
+        selection = select_meeting_observations(db_path, adapter)
+    finally:
+        if hasattr(adapter, "close"):
+            try:
+                adapter.close()
+            except Exception:
+                pass
+
+    report = _meeting_selection_report(selection)
+
+    if not as_json:
+        typer.echo(f"Selected: {report['selected_count']} meeting observation(s)")
+        if report["selected_count"]:
+            typer.echo(f"  Earliest: {report['earliest']}")
+            typer.echo(f"  Latest: {report['latest']}")
+        typer.echo(f"  Processed: {report['processed']}  Unprocessed: {report['unprocessed']}")
+        for row in report["selected"]:
+            typer.echo(
+                f"  {row['observation_id']}  {row['date']}  {', '.join(row['item_classes'])}"
+                f"  citing claims: {row['citing_claims']}"
+            )
+        typer.echo(f"Total citing claims: {report['total_citations']}")
+        und = report["undetermined"]
+        und_range = f" ({und['earliest']} to {und['latest']})" if und["count"] else ""
+        typer.echo(f"Undetermined (not selected): {und['count']}{und_range}")
+
+    if not confirm:
+        if as_json:
+            typer.echo(json.dumps(report))
+        elif report["selected_count"]:
+            typer.echo("Dry run — re-run with --confirm to delete the selected rows")
+        return
+
+    try:
+        result = remove_meeting_observations(db_path, selection)
+    except RemovalRefused as exc:
+        if as_json:
+            report["refused"] = [r.observation_id for r in exc.rows]
+            typer.echo(json.dumps(report))
+        else:
+            typer.echo(f"Refusing to delete: {len(exc.rows)} selected row(s) have citing claims:")
+            for row in exc.rows:
+                typer.echo(f"  {row.observation_id}  citing claims: {row.citing_claims}")
+            typer.echo("No changes made.")
+        raise typer.Exit(1) from None
+
+    backup = str(result.backup_path) if result.backup_path else None
+    if as_json:
+        report["removal"] = {
+            "backup_path": backup,
+            "deleted": result.deleted,
+            "before_count": result.before_count,
+            "after_count": result.after_count,
+        }
+        typer.echo(json.dumps(report))
+        return
+    if backup:
+        typer.echo(f"Backup: {backup}")
+    typer.echo(f"Deleted {result.deleted} observation(s)")
+    typer.echo(f"outlook_mcp_email observations: {result.before_count} -> {result.after_count}")
+
+
 @app.command("backfill-decisions")
 def backfill_decisions_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview count without writing"),
