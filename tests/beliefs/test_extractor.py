@@ -1109,13 +1109,13 @@ def _extraction_runs(tmp_path):
         conn.close()
 
 
-def _insert_obs(db_conn, obs_id, source, text, *, sender=None, ts=1.0):
+def _insert_obs(db_conn, obs_id, source, text, *, sender=None, ts=1.0, channel_id="C1"):
     insert_observation(
         db_conn,
         Observation(
             id=obs_id,
             source=source,
-            channel_id="C1",
+            channel_id=channel_id,
             thread_id=None,
             timestamp=ts,
             sender_entity_id=sender,
@@ -1238,6 +1238,258 @@ class TestExtractionRunPersistence:
         assert json.loads(runs[0]["by_source_json"]) == {}
 
 
+_CALENDAR_TEXT = "[Meeting: Quick Brown Fox Sync] Organizer: Jordan Example, Attendees: none"
+
+# A response that would create a claim if any batch reached the model.
+_JORDAN_RESPONSE = json.dumps(
+    {
+        "entities": [{"name": "Jordan Example", "aliases": [], "type": "person"}],
+        "claims": [
+            {
+                "subject": "Jordan Example",
+                "predicate": "role",
+                "object": "meeting organizer",
+                "confidence": 0.9,
+            }
+        ],
+        "relationships": [],
+        "behavioral": [],
+    }
+)
+
+
+def _calendar_rows(tmp_path):
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        rows = conn.execute(
+            "SELECT * FROM observations WHERE channel_id LIKE 'calendar:%' ORDER BY id"
+        ).fetchall()
+        return [tuple(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _belief_counts(tmp_path):
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(tmp_path))
+    try:
+        claims = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+        rels = conn.execute("SELECT COUNT(*) FROM relationships").fetchone()[0]
+        return claims, rels
+    finally:
+        conn.close()
+
+
+class TestCalendarObservationsExcluded:
+    """#619: calendar observations are schedule data, not belief sources."""
+
+    def test_calendar_text_never_sent_to_llm(self, db_conn, db_path, tmp_path):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Jordan Example"))
+        _insert_obs(
+            db_conn,
+            "cal1",
+            "outlook_mcp_calendar",
+            _CALENDAR_TEXT,
+            sender="e1",
+            channel_id="calendar:AAMkCAL001",
+        )
+        db_conn.close()
+
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_JORDAN_RESPONSE) as stub,
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        stub.assert_not_called()
+        assert stats["observations_processed"] == 0
+        assert stats["claims_extracted"] == 0
+        assert _belief_counts(tmp_path) == (0, 0)
+
+    def test_only_non_calendar_observation_reaches_prompt(self, db_conn, db_path, tmp_path):
+        _insert_obs(
+            db_conn,
+            "cal1",
+            "outlook_mcp_calendar",
+            _CALENDAR_TEXT,
+            ts=1.0,
+            channel_id="calendar:AAMkCAL001",
+        )
+        _insert_obs(db_conn, "o1", "slack_live", "The quick brown fox", ts=2.0, channel_id="D1")
+        db_conn.close()
+
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_EMPTY_RESPONSE) as stub,
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        assert stub.call_count == 1
+        prompt = stub.call_args.args[0]
+        assert "The quick brown fox" in prompt
+        assert "Quick Brown Fox Sync" not in prompt
+        assert "[Meeting:" not in prompt
+        assert stats["observations_processed"] == 1
+        assert stats["batches_sent"] == 1
+
+        runs = _extraction_runs(tmp_path)
+        assert len(runs) == 1
+        assert runs[0]["observations_processed"] == 1
+        assert json.loads(runs[0]["by_source_json"]) == {
+            "slack_live": {"skipped_unresolved": 0, "alias_collisions": 0},
+        }
+
+    def test_calendar_row_unchanged_and_skipped_on_later_run(self, db_conn, db_path, tmp_path):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Jordan Example"))
+        _insert_obs(
+            db_conn,
+            "cal1",
+            "outlook_mcp_calendar",
+            _CALENDAR_TEXT,
+            sender="e1",
+            ts=1781600000.0,
+            channel_id="calendar:AAMkCAL001",
+        )
+        _insert_obs(db_conn, "o1", "slack_live", "The quick brown fox", ts=2.0, channel_id="D1")
+        db_conn.close()
+
+        before = _calendar_rows(tmp_path)
+        assert len(before) == 1
+
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_EMPTY_RESPONSE),
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            extract_beliefs(home=tmp_path, batch_size=5)
+
+        after = _calendar_rows(tmp_path)
+        assert after == before
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        row = conn.execute(
+            "SELECT text, channel_id, sender_entity_id, timestamp, processed"
+            " FROM observations WHERE channel_id LIKE 'calendar:%'"
+        ).fetchone()
+        conn.close()
+        assert row["text"] == _CALENDAR_TEXT
+        assert row["channel_id"] == "calendar:AAMkCAL001"
+        assert row["sender_entity_id"] == "e1"
+        assert row["timestamp"] == 1781600000.0
+        assert row["processed"] == 0
+
+        # A later run with a model that would produce beliefs still skips it.
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_JORDAN_RESPONSE) as stub,
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        stub.assert_not_called()
+        assert stats["observations_processed"] == 0
+        assert _belief_counts(tmp_path) == (0, 0)
+        assert _calendar_rows(tmp_path) == before
+
+    def test_preexisting_calendar_row_skipped(self, db_conn, db_path, tmp_path):
+        # Stored before the exclusion existed: raw row, no ingest-time flag.
+        db_conn.execute(
+            "INSERT INTO observations"
+            " (id, source, channel_id, thread_id, timestamp, sender_entity_id,"
+            "  text, metadata, ingested_at, processed)"
+            " VALUES ('cal-old', 'outlook_mcp_calendar', 'calendar:AAMkOLD', NULL,"
+            "  1.0, NULL, ?, '{}', '2026-01-01T00:00:00+00:00', 0)",
+            (_CALENDAR_TEXT,),
+        )
+        db_conn.commit()
+        db_conn.close()
+
+        stats = extract_beliefs(home=tmp_path, dry_run=True, batch_size=5)
+        assert stats["observations_processed"] == 0
+
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=_JORDAN_RESPONSE) as stub,
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        stub.assert_not_called()
+        assert stats["observations_processed"] == 0
+        assert _belief_counts(tmp_path) == (0, 0)
+
+    def test_slack_and_outlook_sources_unchanged_alongside_calendar(
+        self, db_conn, db_path, tmp_path
+    ):
+        _insert_obs(
+            db_conn,
+            "cal1",
+            "outlook_mcp_calendar",
+            _CALENDAR_TEXT,
+            ts=0.5,
+            channel_id="calendar:AAMkCAL001",
+        )
+        _insert_obs(db_conn, "o1", "slack_live", "Quinn Harper owns the roadmap", ts=1.0)
+        _insert_obs(
+            db_conn,
+            "o2",
+            "outlook_mcp_email",
+            "Riley Park is based in Denver",
+            ts=2.0,
+            channel_id="email:AAQkConv001",
+        )
+        db_conn.close()
+
+        mock_response = json.dumps(
+            {
+                "entities": [],
+                "claims": [
+                    {
+                        "subject": "Quinn Harper",
+                        "predicate": "role",
+                        "object": "roadmap owner",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "subject": "Riley Park",
+                        "predicate": "location",
+                        "object": "Denver",
+                        "confidence": 0.9,
+                    },
+                ],
+                "relationships": [],
+                "behavioral": [],
+            }
+        )
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=mock_response) as stub,
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+        prompt = stub.call_args.args[0]
+        assert "Quinn Harper owns the roadmap" in prompt
+        assert "Riley Park is based in Denver" in prompt
+        assert stats["observations_processed"] == 2
+        assert stats["batches_sent"] == 1
+        assert stats["skipped_unresolved"] == 2
+
+        runs = _extraction_runs(tmp_path)
+        assert json.loads(runs[0]["by_source_json"]) == {
+            "slack_live": {"skipped_unresolved": 1, "alias_collisions": 0},
+            "outlook_mcp_email": {"skipped_unresolved": 1, "alias_collisions": 0},
+        }
+
+        from patina.store import connect, get_db_path
+
+        conn = connect(get_db_path(tmp_path))
+        processed = dict(conn.execute("SELECT id, processed FROM observations").fetchall())
+        conn.close()
+        assert processed == {"cal1": 0, "o1": 1, "o2": 1}
+
+
 def _alias_provenance(conn, entity_id):
     from patina.store import ensure_entity_alias_provenance_table
 
@@ -1347,3 +1599,203 @@ class TestExtractionAliasProvenance:
             assert _alias_provenance(conn, entity_id) == [("Brook, Dana", "slack", None, "added")]
         finally:
             conn.close()
+
+
+def _belief_rows(db_path, table):
+    from patina.store import connect
+
+    conn = connect(db_path)
+    try:
+        return conn.execute(f"SELECT * FROM {table}").fetchall()
+    finally:
+        conn.close()
+
+
+def _source_ids(row):
+    return json.loads(row["source_ids"])
+
+
+def _seed_attribution_batch(db_conn):
+    """Three-observation batch plus processed rows outside it that mention the same people."""
+    upsert_entity(db_conn, Entity(id="e1", type="person", name="Jordan Example"))
+    upsert_entity(db_conn, Entity(id="e2", type="person", name="Riley Park"))
+    upsert_entity(db_conn, Entity(id="e3", type="person", name="Quinn Harper"))
+    _insert_obs(db_conn, "old1", "slack_live", "Quinn Harper — the quick fox", sender="e1", ts=0.1)
+    _insert_obs(db_conn, "old2", "slack_live", "Riley Park: über lazy dog", ts=0.2)
+    db_conn.execute("UPDATE observations SET processed = 1 WHERE id IN ('old1', 'old2')")
+    _insert_obs(db_conn, "o1", "slack_live", "The quick brown fox", sender="e1", ts=1.0)
+    _insert_obs(db_conn, "o2", "slack_live", "Ask Riley Park — jumps over the dog", ts=2.0)
+    _insert_obs(db_conn, "o3", "outlook_mcp_email", "Lorem ipsum dolor sit amet", ts=3.0)
+    db_conn.commit()
+    db_conn.close()
+
+
+def _attribution_response():
+    return json.dumps(
+        {
+            "entities": [],
+            "claims": [
+                {"subject": "Jordan Example", "predicate": "role", "object": "VP"},
+                {"subject": "Riley Park", "predicate": "location", "object": "Denver"},
+                {"subject": "Quinn Harper", "predicate": "team", "object": "Platform"},
+            ],
+            "relationships": [
+                {"subject": "Riley Park", "predicate": "reports_to", "object": "Jordan Example"},
+            ],
+            "behavioral": [
+                {
+                    "subject": "Jordan Example",
+                    "predicate": "commitment",
+                    "object": "follows up on time",
+                },
+                {"subject": "Quinn Harper", "predicate": "urgency", "object": "escalates"},
+            ],
+        }
+    )
+
+
+def _run_extraction(tmp_path, response, now="2026-01-01T00:00:00+00:00"):
+    with (
+        patch("patina.beliefs.extractor._call_claude", return_value=response),
+        patch("patina.beliefs.extractor._iso_now", return_value=now),
+        patch("patina.beliefs.extractor.time.sleep"),
+    ):
+        return extract_beliefs(home=tmp_path, batch_size=5)
+
+
+class TestPerClaimObservationIds:
+    """#614: claims cite batch observation ids, method lives in its own column."""
+
+    BATCH = {"o1", "o2", "o3"}
+
+    def _claims_by_key(self, db_path):
+        return {(r["subject_id"], r["predicate"]): r for r in _belief_rows(db_path, "claims")}
+
+    def test_claim_source_ids_are_batch_observation_ids(self, db_conn, db_path, tmp_path):
+        _seed_attribution_batch(db_conn)
+        _run_extraction(tmp_path, _attribution_response())
+
+        claims = _belief_rows(db_path, "claims")
+        assert len(claims) == 5
+        for claim in claims:
+            ids = _source_ids(claim)
+            assert ids
+            assert set(ids) <= self.BATCH
+            assert "extraction" not in ids
+
+    def test_standard_claims_method_is_extraction(self, db_conn, db_path, tmp_path):
+        _seed_attribution_batch(db_conn)
+        _run_extraction(tmp_path, _attribution_response())
+
+        standard = [
+            r
+            for r in _belief_rows(db_path, "claims")
+            if not r["predicate"].startswith("behavioral:")
+        ]
+        assert len(standard) == 3
+        for claim in standard:
+            assert claim["method"] == "extraction"
+            assert not {"extraction", "behavioral_extraction"} & set(_source_ids(claim))
+
+    def test_name_matching_sender_cites_only_that_row(self, db_conn, db_path, tmp_path):
+        _seed_attribution_batch(db_conn)
+        _run_extraction(tmp_path, _attribution_response())
+
+        claim = self._claims_by_key(db_path)[("e1", "role")]
+        assert _source_ids(claim) == ["o1"]
+
+    def test_name_mentioned_in_text_cites_only_that_row(self, db_conn, db_path, tmp_path):
+        _seed_attribution_batch(db_conn)
+        _run_extraction(tmp_path, _attribution_response())
+
+        claim = self._claims_by_key(db_path)[("e2", "location")]
+        assert _source_ids(claim) == ["o2"]
+
+    def test_unattributed_name_cites_whole_batch(self, db_conn, db_path, tmp_path):
+        _seed_attribution_batch(db_conn)
+        _run_extraction(tmp_path, _attribution_response())
+
+        claim = self._claims_by_key(db_path)[("e3", "team")]
+        assert sorted(_source_ids(claim)) == sorted(self.BATCH)
+
+    def test_ids_outside_batch_never_written(self, db_conn, db_path, tmp_path):
+        _seed_attribution_batch(db_conn)
+        _run_extraction(tmp_path, _attribution_response())
+
+        rows = _belief_rows(db_path, "claims") + _belief_rows(db_path, "relationships")
+        assert len(rows) == 6
+        for row in rows:
+            assert not {"old1", "old2"} & set(_source_ids(row))
+
+    def test_behavioral_claims_cite_batch_ids_with_method(self, db_conn, db_path, tmp_path):
+        _seed_attribution_batch(db_conn)
+        _run_extraction(tmp_path, _attribution_response())
+
+        claims = self._claims_by_key(db_path)
+        attributed = claims[("e1", "behavioral:commitment")]
+        unattributed = claims[("e3", "behavioral:urgency")]
+        assert attributed["method"] == "behavioral_extraction"
+        assert unattributed["method"] == "behavioral_extraction"
+        assert _source_ids(attributed) == ["o1"]
+        assert sorted(_source_ids(unattributed)) == sorted(self.BATCH)
+        for claim in (attributed, unattributed):
+            assert not {"extraction", "behavioral_extraction"} & set(_source_ids(claim))
+
+
+def _seed_reconfirm_batch(conn, prefix, ts):
+    _insert_obs(conn, f"{prefix}1", "slack_live", "The quick brown fox", ts=ts)
+    _insert_obs(conn, f"{prefix}2", "slack_live", "Lorem ipsum dolor", ts=ts + 0.5)
+    conn.commit()
+
+
+class TestReconfirmUnionsSourceIds:
+    """#614: re-extracting a claim unions source_ids and keeps first_asserted."""
+
+    def _run_two_batches(self, db_conn, db_path, tmp_path, response):
+        from patina.store import connect
+
+        upsert_entity(db_conn, Entity(id="e3", type="person", name="Quinn Harper"))
+        _seed_reconfirm_batch(db_conn, "a", 1.0)
+        db_conn.close()
+        _run_extraction(tmp_path, response, now="2026-01-01T00:00:00+00:00")
+
+        conn = connect(db_path)
+        try:
+            _seed_reconfirm_batch(conn, "b", 2.0)
+        finally:
+            conn.close()
+        _run_extraction(tmp_path, response, now="2026-02-01T00:00:00+00:00")
+
+    def test_claim_reconfirmed_from_second_batch(self, db_conn, db_path, tmp_path):
+        claim = {"subject": "Quinn Harper", "predicate": "team", "object": "Platform"}
+        # Listed twice so each batch also re-confirms against its own ids.
+        response = json.dumps(
+            {"entities": [], "claims": [claim, claim], "relationships": [], "behavioral": []}
+        )
+        self._run_two_batches(db_conn, db_path, tmp_path, response)
+
+        claims = _belief_rows(db_path, "claims")
+        assert len(claims) == 1
+        row = claims[0]
+        ids = _source_ids(row)
+        assert len(ids) == len(set(ids))
+        assert set(ids) == {"a1", "a2", "b1", "b2"}
+        assert row["first_asserted"] == "2026-01-01T00:00:00+00:00"
+        assert row["last_confirmed"] == "2026-02-01T00:00:00+00:00"
+        assert row["method"] == "extraction"
+
+    def test_behavioral_claim_reconfirmed_from_second_batch(self, db_conn, db_path, tmp_path):
+        beh = {"subject": "Quinn Harper", "predicate": "urgency", "object": "escalates"}
+        response = json.dumps(
+            {"entities": [], "claims": [], "relationships": [], "behavioral": [beh, beh]}
+        )
+        self._run_two_batches(db_conn, db_path, tmp_path, response)
+
+        claims = _belief_rows(db_path, "claims")
+        assert len(claims) == 1
+        row = claims[0]
+        ids = _source_ids(row)
+        assert len(ids) == len(set(ids))
+        assert set(ids) == {"a1", "a2", "b1", "b2"}
+        assert row["first_asserted"] == "2026-01-01T00:00:00+00:00"
+        assert row["method"] == "behavioral_extraction"

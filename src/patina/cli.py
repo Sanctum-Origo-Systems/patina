@@ -34,8 +34,10 @@ from patina.priority.catch_up import catch_up as do_catch_up
 from patina.priority.catch_up import priorities as do_priorities
 from patina.priority.objectives import (
     add_objective,
+    get_objective,
     list_objectives,
     remove_objective,
+    update_objective,
 )
 from patina.store import (
     connect,
@@ -332,13 +334,46 @@ def _write_journal_warning(home: Path | None, warning: str) -> None:
         conn.close()
 
 
+def _echo_relevance(counts: dict[str, int]) -> None:
+    """Print Outlook keep/drop counts by reason (counts and reasons only)."""
+    from patina.ingest import DROPPED_PREFIX
+
+    dropped = sum(n for k, n in counts.items() if k.startswith(DROPPED_PREFIX))
+    total = sum(counts.values())
+    typer.echo(f"Outlook relevance: {total} fetched, {total - dropped} kept, {dropped} dropped")
+    for reason in sorted(counts, key=lambda k: (k.startswith(DROPPED_PREFIX), k)):
+        typer.echo(f"  {reason}: {counts[reason]}")
+
+
+def _ingest_dry_run(from_export: Path | None, lookback_days: int, home: Path | None) -> None:
+    if from_export:
+        typer.echo("--dry-run applies to live adapters only.", err=True)
+        raise typer.Exit(2)
+
+    from patina.ingest import ingest_all
+
+    result = ingest_all(home=home, lookback_days=lookback_days, dry_run=True)
+    if result.get("adapters_run", 0) == 0:
+        typer.echo("No adapters configured. Use 'patina connect slack'.")
+        return
+    typer.echo("Dry run: nothing written.")
+    _echo_relevance(result["relevance"])
+
+
 @app.command()
 def ingest(
     from_export: Path | None = typer.Option(None, "--from-export", help="Path to Slack export zip"),
     lookback_days: int = typer.Option(3, "--lookback-days", help="Days to look back for messages"),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report Outlook keep/drop counts by reason without writing"
+    ),
 ) -> None:
     """Ingest messages from export file or configured live adapters."""
+    if dry_run:
+        _ingest_dry_run(from_export, lookback_days, home)
+        return
+
     if from_export:
         if not from_export.exists():
             typer.echo(f"Error: {from_export} not found", err=True)
@@ -365,6 +400,8 @@ def ingest(
         f"Total: {result['total_observations']} observations, "
         f"{result['total_entities']} entities."
     )
+    if result.get("relevance"):
+        _echo_relevance(result["relevance"])
 
     channels_seen = result.get("channels_seen", 0)
     newly_watched = result.get("newly_watched", 0)
@@ -567,11 +604,59 @@ def dismiss(
 def objectives_add(
     label: str = typer.Argument(..., help="Objective label"),
     keywords: str = typer.Option("", "--keywords", help="Comma-separated keywords"),
+    participant: list[str] | None = typer.Option(
+        None, "--participant", help="Entity ID or email address (repeatable)"
+    ),
+    customer_domain: list[str] | None = typer.Option(
+        None, "--customer-domain", help="Customer domain name (repeatable)"
+    ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Add a new objective."""
-    obj = add_objective(label, keywords, home=home)
+    obj = add_objective(
+        label,
+        keywords,
+        participants=participant,
+        customer_domains=customer_domain,
+        home=home,
+    )
     typer.echo(f"Added objective [{obj.id[:8]}] {obj.label}")
+    _echo_objective_targets(obj)
+
+
+@objectives_app.command("update")
+def objectives_update(
+    obj_id: str = typer.Argument(..., help="Objective ID (or ID prefix) to update"),
+    label: str | None = typer.Option(None, "--label", help="New label"),
+    keywords: str | None = typer.Option(None, "--keywords", help="Comma-separated keywords"),
+    participant: list[str] | None = typer.Option(
+        None, "--participant", help="Entity ID or email address (repeatable, replaces list)"
+    ),
+    customer_domain: list[str] | None = typer.Option(
+        None, "--customer-domain", help="Customer domain name (repeatable, replaces list)"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Update an objective; omitted fields are left unchanged."""
+    updated = update_objective(
+        obj_id,
+        label=label,
+        keywords=keywords,
+        participants=participant or None,
+        customer_domains=customer_domain or None,
+        home=home,
+    )
+    obj = get_objective(obj_id, home=home) if updated else None
+    if obj is None:
+        typer.echo(f"No objective updated matching '{obj_id}'", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Updated objective [{obj.id[:8]}] {obj.label}")
+    _echo_objective_targets(obj)
+
+
+def _echo_objective_targets(obj) -> None:
+    typer.echo(f"      participants: {', '.join(obj.participants) or '-'}")
+    typer.echo(f"      customer_domains: {', '.join(obj.customer_domains) or '-'}")
 
 
 @objectives_app.command("list")
@@ -586,6 +671,7 @@ def objectives_list(
     for obj in objs:
         kw = f" (keywords: {obj.keywords})" if obj.keywords else ""
         typer.echo(f"  [{obj.id[:8]}] {obj.label}{kw}")
+        _echo_objective_targets(obj)
 
 
 @objectives_app.command("remove")
@@ -795,8 +881,9 @@ def contradictions_cmd(
 
         typer.echo(f"Found {len(results)} contradiction(s):")
         for item in results:
+            tag = "" if item["relation"] == "conflict" else f" [{item['relation']}]"
             typer.echo(
-                f"  {item['subject']} {item['predicate']}:\n"
+                f"  {item['subject']} {item['predicate']}{tag}:\n"
                 f"    A: {item['object_1']} (conf={item['confidence_1']:.2f})\n"
                 f"    B: {item['object_2']} (conf={item['confidence_2']:.2f})"
             )
@@ -1711,6 +1798,155 @@ def entity_cleanup_cmd(
                 typer.echo(f"Removed {', '.join(parts)}.")
     finally:
         conn.close()
+
+
+def _load_outlook_refetch_adapter(home: Path | None) -> object | None:
+    """Build the configured Outlook MCP email adapter for read-only re-fetch, or None."""
+    import yaml
+
+    from patina.ingest import _make_mcp_adapter
+
+    config_path = get_db_path(home).parent / "config.yaml"
+    if not config_path.exists():
+        return None
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+    for adapter_cfg in config.get("adapters", {}).get("email", []):
+        if adapter_cfg.get("provider") == "outlook_mcp":
+            return _make_mcp_adapter("outlook_mcp", adapter_cfg)
+    return None
+
+
+def _format_obs_ts(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _meeting_selection_report(selection) -> dict:
+    und = selection.undetermined
+    return {
+        "selected_count": selection.selected_count,
+        "earliest": _format_obs_ts(selection.earliest),
+        "latest": _format_obs_ts(selection.latest),
+        "processed": selection.processed_count,
+        "unprocessed": selection.unprocessed_count,
+        "selected": [
+            {
+                "observation_id": s.observation_id,
+                "date": _format_obs_ts(s.timestamp),
+                "item_classes": s.item_classes,
+                "citing_claims": s.citing_claims,
+            }
+            for s in selection.selected
+        ],
+        "total_citations": selection.total_citations,
+        "unknown_provenance": selection.unknown_provenance,
+        "undetermined": {
+            "count": und.count,
+            "earliest": _format_obs_ts(und.earliest),
+            "latest": _format_obs_ts(und.latest),
+            "reasons": dict(und.reasons),
+            "zero_timestamp": und.zero_timestamp,
+        },
+    }
+
+
+@app.command("cleanup-meeting-obs")
+def cleanup_meeting_obs_cmd(
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Delete selected rows (read-only dry run without this flag)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print one machine-readable JSON object"),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Find (and with --confirm, remove) outlook_mcp_email meeting observations."""
+    import json
+
+    from patina.cleanup_meeting_obs import (
+        RemovalRefused,
+        remove_meeting_observations,
+        select_meeting_observations,
+    )
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    try:
+        adapter = _load_outlook_refetch_adapter(home)
+    except Exception as exc:
+        typer.echo(f"Outlook re-fetch unavailable ({exc}); stored metadata only.", err=True)
+        adapter = None
+    try:
+        selection = select_meeting_observations(db_path, adapter)
+    finally:
+        if hasattr(adapter, "close"):
+            try:
+                adapter.close()
+            except Exception:
+                pass
+
+    report = _meeting_selection_report(selection)
+
+    if not as_json:
+        typer.echo(f"Selected: {report['selected_count']} meeting observation(s)")
+        if report["selected_count"]:
+            typer.echo(f"  Earliest: {report['earliest']}")
+            typer.echo(f"  Latest: {report['latest']}")
+        typer.echo(f"  Processed: {report['processed']}  Unprocessed: {report['unprocessed']}")
+        for row in report["selected"]:
+            typer.echo(
+                f"  {row['observation_id']}  {row['date']}  {', '.join(row['item_classes'])}"
+                f"  citing claims: {row['citing_claims']}"
+            )
+        typer.echo(f"Total citing claims: {report['total_citations']}")
+        typer.echo(f"unknown provenance: {report['unknown_provenance']}")
+        und = report["undetermined"]
+        und_range = f" ({und['earliest']} to {und['latest']})" if und["earliest"] else ""
+        typer.echo(f"Undetermined (not selected): {und['count']}{und_range}")
+        if und["count"]:
+            for reason, count in und["reasons"].items():
+                typer.echo(f"  {reason}: {count}")
+            typer.echo(f"  zero_timestamp: {und['zero_timestamp']}")
+
+    if not confirm:
+        if as_json:
+            typer.echo(json.dumps(report))
+        elif report["selected_count"]:
+            typer.echo("Dry run — re-run with --confirm to delete the selected rows")
+        return
+
+    try:
+        result = remove_meeting_observations(db_path, selection)
+    except RemovalRefused as exc:
+        if as_json:
+            report["refused"] = [r.observation_id for r in exc.rows]
+            typer.echo(json.dumps(report))
+        else:
+            typer.echo(f"Refusing to delete: {len(exc.rows)} selected row(s) have citing claims:")
+            for row in exc.rows:
+                typer.echo(f"  {row.observation_id}  citing claims: {row.citing_claims}")
+            typer.echo("No changes made.")
+        raise typer.Exit(1) from None
+
+    backup = str(result.backup_path) if result.backup_path else None
+    if as_json:
+        report["removal"] = {
+            "backup_path": backup,
+            "deleted": result.deleted,
+            "before_count": result.before_count,
+            "after_count": result.after_count,
+        }
+        typer.echo(json.dumps(report))
+        return
+    if backup:
+        typer.echo(f"Backup: {backup}")
+    typer.echo(f"Deleted {result.deleted} observation(s)")
+    typer.echo(f"outlook_mcp_email observations: {result.before_count} -> {result.after_count}")
 
 
 @app.command("backfill-decisions")

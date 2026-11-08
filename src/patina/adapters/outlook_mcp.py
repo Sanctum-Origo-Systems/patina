@@ -8,6 +8,7 @@ from patina.adapters._mcp_client import (
     McpSyncBridge,
     parse_outlook_content,
 )
+from patina.adapters._source_facts import put_fact
 from patina.models import CalendarEvent, EmailMessage
 
 
@@ -39,7 +40,8 @@ class OutlookMcpAdapter:
             for item in email_list
             if isinstance(item, dict) and not _is_meeting_message(item)
         ]
-        return [e for e in emails if e.timestamp >= since]
+        # Undated emails pass through so ingest can count them as skipped.
+        return [e for e in emails if e.timestamp is None or e.timestamp >= since]
 
     def search_sent(self, query: str) -> list[EmailMessage]:
         try:
@@ -170,6 +172,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
     clean_senders = [s for s in (_normalize_sender(s) for s in senders) if s]
     sender = clean_senders[0] if clean_senders else ""
     sender_name = sender if sender else None
+    sender_key = next((s for s in senders if _normalize_sender(s)), None)
 
     if not sender:
         from_raw = raw.get("from", {})
@@ -181,6 +184,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
                 sender_name = normalized if normalized else None
         elif from_raw:
             sender = str(from_raw)
+        sender_key = sender or next((s for s in senders if s), None)
 
     recipients = []
     for r in raw.get("recipients", raw.get("toRecipients", [])):
@@ -190,7 +194,18 @@ def _email_from_raw(raw: dict) -> EmailMessage:
             recipients.append(r)
 
     received = raw.get("lastDeliveryTime", raw.get("receivedDateTime", ""))
-    timestamp = _parse_outlook_datetime(received) if received else 0.0
+    # No usable received time -> None, never 0.0; ingest skips these
+    # under the ``missing_timestamp`` reason.
+    timestamp = (_parse_outlook_datetime(received) if received else 0.0) or None
+
+    item_class = raw.get("itemClasses", raw.get("messageClass", raw.get("message_class")))
+    source_facts: dict = {}
+    put_fact(source_facts, "message_id", raw.get("id"))
+    put_fact(source_facts, "item_class", item_class)
+    put_fact(source_facts, "sender_key", sender_key)
+    put_fact(source_facts, "to", raw.get("toRecipients"))
+    put_fact(source_facts, "cc", raw.get("ccRecipients"))
+    put_fact(source_facts, "received_raw", received)
 
     subject = raw.get("topic", raw.get("subject", ""))
     preview = raw.get("preview", raw.get("bodyPreview", raw.get("body", "")))
@@ -208,6 +223,8 @@ def _email_from_raw(raw: dict) -> EmailMessage:
         conversation_id=raw.get("conversationId"),
         sender_name=sender_name,
         sender_dn=sender_dn,
+        source_facts=source_facts,
+        thread_participants=[s for s in senders if isinstance(s, str) and s],
     )
 
 
@@ -226,6 +243,11 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
         if isinstance(att, dict):
             attendees.append(att.get("email", ""))
 
+    source_facts: dict = {}
+    put_fact(source_facts, "message_id", raw.get("meetingId", raw.get("id")))
+    put_fact(source_facts, "sender_key", organizer)
+    put_fact(source_facts, "attendees", raw.get("attendees"))
+
     return CalendarEvent(
         id=raw.get("meetingId", ""),
         subject=raw.get("subject", ""),
@@ -234,4 +256,5 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
         attendees=attendees,
         organizer=organizer,
         organizer_dn=organizer if organizer else None,
+        source_facts=source_facts,
     )

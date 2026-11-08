@@ -6,7 +6,14 @@ import time
 from datetime import UTC, datetime
 from email.header import decode_header
 
+from patina.adapters._source_facts import put_fact
 from patina.models import EmailMessage
+
+
+def _raw_header(msg: email.message.Message, name: str) -> str | None:
+    """Return header ``name`` undecoded, as the source sent it, or None if absent."""
+    value = msg.get(name)
+    return None if value is None else str(value)
 
 
 class ImapEmailAdapter:
@@ -76,6 +83,13 @@ class ImapEmailAdapter:
             if payload:
                 body = payload.decode("utf-8", errors="replace")
 
+        source_facts: dict = {}
+        put_fact(source_facts, "message_id", _raw_header(msg, "Message-ID"))
+        put_fact(source_facts, "sender_key", _raw_header(msg, "From"))
+        put_fact(source_facts, "to", _raw_header(msg, "To"))
+        put_fact(source_facts, "cc", _raw_header(msg, "Cc"))
+        put_fact(source_facts, "received_raw", _raw_header(msg, "Date"))
+
         return EmailMessage(
             id=msg_id,
             sender=sender,
@@ -84,6 +98,7 @@ class ImapEmailAdapter:
             timestamp=ts,
             recipients=recipients,
             conversation_id=in_reply_to,
+            source_facts=source_facts,
         )
 
     def list_inbox(self, since: float) -> list[EmailMessage]:

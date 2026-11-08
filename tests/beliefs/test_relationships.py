@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import time
+from unittest.mock import patch
 
 from patina.beliefs.relationships import (
     _classify_activity,
@@ -527,3 +529,88 @@ class TestHiddenAllies:
             _insert_claim(db_conn, eid, "role:x", "val")
         results = get_hidden_allies(db_conn, top_n=3)
         assert len(results) <= 3
+
+
+def _run_extraction(tmp_path, response, now):
+    from patina.beliefs.extractor import extract_beliefs
+
+    with (
+        patch("patina.beliefs.extractor._call_claude", return_value=response),
+        patch("patina.beliefs.extractor._iso_now", return_value=now),
+        patch("patina.beliefs.extractor.time.sleep"),
+    ):
+        extract_beliefs(home=tmp_path, batch_size=5)
+
+
+def _relationship_rows(db_path):
+    from patina.store import connect
+
+    conn = connect(db_path)
+    try:
+        return conn.execute("SELECT * FROM relationships").fetchall()
+    finally:
+        conn.close()
+
+
+class TestExtractedRelationshipSourceIds:
+    """#614: extracted relationships cite batch observation ids, method stored apart."""
+
+    def _seed(self, db_conn):
+        upsert_entity(db_conn, Entity(id="e1", type="person", name="Jordan Example"))
+        upsert_entity(db_conn, Entity(id="e2", type="person", name="Riley Park"))
+        upsert_entity(db_conn, Entity(id="e3", type="person", name="Quinn Harper"))
+        upsert_entity(db_conn, Entity(id="e4", type="person", name="Pat Doe"))
+        _add_obs(db_conn, "old1", "e2", text="Riley Park — the quick fox", ts=0.5)
+        db_conn.execute("UPDATE observations SET processed = 1 WHERE id = 'old1'")
+        _add_obs(db_conn, "a1", "e2", text="The quick brown fox", ts=1.0)
+        _add_obs(db_conn, "a2", None, text="Lorem ipsum dolor", ts=1.5)
+        db_conn.commit()
+
+    def test_relationship_cites_attributed_batch_row(self, db_conn, db_path, tmp_path):
+        self._seed(db_conn)
+        db_conn.close()
+        response = json.dumps(
+            {
+                "entities": [],
+                "claims": [],
+                "relationships": [
+                    {"subject": "Riley Park", "predicate": "reports_to", "object": "Jordan Example"}
+                ],
+                "behavioral": [],
+            }
+        )
+        _run_extraction(tmp_path, response, "2026-01-01T00:00:00+00:00")
+
+        rows = _relationship_rows(db_path)
+        assert len(rows) == 1
+        assert json.loads(rows[0]["source_ids"]) == ["a1"]
+        assert rows[0]["method"] == "extraction"
+
+    def test_reconfirmed_relationship_unions_ids(self, db_conn, db_path, tmp_path):
+        from patina.store import connect
+
+        self._seed(db_conn)
+        db_conn.close()
+        # Neither name appears in the batches, so each batch cites all its rows.
+        rel = {"subject": "Quinn Harper", "predicate": "collaborates_with", "object": "Pat Doe"}
+        response = json.dumps(
+            {"entities": [], "claims": [], "relationships": [rel, rel], "behavioral": []}
+        )
+        _run_extraction(tmp_path, response, "2026-01-01T00:00:00+00:00")
+
+        conn = connect(db_path)
+        try:
+            _add_obs(conn, "b1", None, text="Jumps over the lazy dog", ts=2.0)
+            conn.commit()
+        finally:
+            conn.close()
+        _run_extraction(tmp_path, response, "2026-02-01T00:00:00+00:00")
+
+        rows = _relationship_rows(db_path)
+        assert len(rows) == 1
+        ids = json.loads(rows[0]["source_ids"])
+        assert len(ids) == len(set(ids))
+        assert set(ids) == {"a1", "a2", "b1"}
+        assert rows[0]["method"] == "extraction"
+        assert rows[0]["first_seen"] == "2026-01-01T00:00:00+00:00"
+        assert rows[0]["last_confirmed"] == "2026-02-01T00:00:00+00:00"

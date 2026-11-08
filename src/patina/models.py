@@ -95,6 +95,7 @@ class ChatMessage:
     sender_dn: str | None = None
     sender_slack_id: str | None = None
     organizer_dn: str | None = None
+    source_facts: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -110,11 +111,13 @@ class EmailMessage:
     sender: str
     subject: str
     text: str
-    timestamp: float
+    timestamp: float | None
     recipients: list[str] = field(default_factory=list)
     conversation_id: str | None = None
     sender_name: str | None = None
     sender_dn: str | None = None
+    source_facts: dict = field(default_factory=dict)
+    thread_participants: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -126,3 +129,4 @@ class CalendarEvent:
     attendees: list[str] = field(default_factory=list)
     organizer: str = ""
     organizer_dn: str | None = None
+    source_facts: dict = field(default_factory=dict)

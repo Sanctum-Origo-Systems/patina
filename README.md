@@ -33,6 +33,7 @@ patina catch-up                    # unified view: needs action / new / waiting
 patina priorities                  # grouped by quadrant (Q1-Q4)
 patina dismiss <id>                # dismiss noise, trains the model
 patina objectives add "Ship v2" --keywords "release,deploy"
+patina objectives update <id> --participant jordan@example.com --customer-domain example.com
 patina objectives list             # active objectives
 patina objectives remove <id>      # remove an objective
 
@@ -42,7 +43,7 @@ patina style show <name>           # view patterns for a person
 patina draft --to <name> --context "follow up on the timeline"  # generate a draft message
 
 # Belief graph
-patina extract                     # extract beliefs from observations via LLM
+patina extract                     # extract beliefs from observations via LLM (calendar items are schedule data, not extracted)
 patina extract --history 5         # last N runs: skips + alias collisions by source
 patina beliefs --type person       # entities with claim counts
 patina stale                       # decayed beliefs below confidence threshold
@@ -76,6 +77,7 @@ patina entity fix-senders          # merge or retype junk senders: legacy DNs, r
 patina entity clean-slack-aliases  # drop slack: aliases that are not valid Slack IDs (--confirm)
 patina entity repair-multi-identity  # repair multi-identity sinks holding a member's name or handle (--confirm)
 patina entity repair-sink-handles  # strip member handles left on multi-identity sinks (--confirm)
+patina cleanup-meeting-obs         # remove uncited Outlook meeting-message observations, read-only preview (--json, --confirm)
 patina owner merge                 # fold duplicate self-entities (--dry-run available)
 patina doctor                      # includes dangling reference integrity check
 
@@ -83,6 +85,8 @@ patina doctor                      # includes dangling reference integrity check
 patina connect slack --token "xoxb-..."
 patina connect email --host imap.example.com --username you@example.com --password "..."  # IMAP
 patina ingest                      # fetch from configured adapters
+patina ingest --dry-run            # Outlook keep/drop counts by reason, writes nothing
+                                   # (filter goes live with ingest.outlook_relevance_filter: true)
 
 # Heartbeat (background tasks)
 patina heartbeat once              # ingest + decay + escalation check
@@ -140,7 +144,7 @@ The observer maintains two belief graphs: beliefs about the world it watches, an
 
 ## MCP Server — Cognitive Layer, Not Standalone Agent
 
-Patina is not a standalone agent competing with autonomous agent projects. It is a cognitive layer — 32 MCP tools — that plugs into any host agent (Claude Code, Kiro, Cursor, or any MCP host). The host agent provides the interface; Patina provides the memory, epistemics, and judgment. Tools include `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
+Patina is not a standalone agent competing with autonomous agent projects. It is a cognitive layer — 33 MCP tools — that plugs into any host agent (Claude Code, Kiro, Cursor, or any MCP host). The host agent provides the interface; Patina provides the memory, epistemics, and judgment. Tools include `store_search` for full-text message search, `hidden_allies` for surfacing quiet supporters, `session_checkpoint` for graceful context handoff, and `recent_messages` for conversational continuity across stateless sessions.
 
 ```json
 {
@@ -162,6 +166,8 @@ All config lives in `~/.patina/config.yaml`. Credentials never leave your machin
 owner:
   user_ids: ["U0ABC123"]
   name: "Your Name"
+  emails: ["you@example.com"]        # used to tell direct email from everything else
+  display_names: ["Doe, Jane"]       # how Outlook shows you in senders and recipients
 adapters:
   chat:
     - provider: slack
@@ -175,7 +181,11 @@ adapters:
 heartbeat:
   enabled: true
   interval_minutes: 30
+ingest:
+  outlook_relevance_filter: false    # off by default; check `patina ingest --dry-run` first
 ```
+
+**Outlook email relevance.** With `ingest.outlook_relevance_filter: true`, Patina keeps an Outlook email only if it is direct (you are a named To recipient, not only through a distribution list, or you are in the thread, and a person sent it) or it belongs to an active objective (one of its participants is on the thread, or the sender is from one of its customer domains; set them with `patina objectives update`). Keywords alone never keep an email. Everything else is dropped at ingest: no observation, no extraction, no entity. Each drop is counted by reason. `patina ingest --dry-run` prints those counts and writes nothing, so you can check the rule before turning it on. Meetings come from the calendar only.
 
 ## Development
 

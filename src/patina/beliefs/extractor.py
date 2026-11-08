@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from patina.extraction import CALENDAR_CHANNEL_PREFIX
 from patina.maintenance import is_plausible_person_name as _is_plausible_person_name
 from patina.store import connect, get_db_path, init_db, record_extraction_run
 
@@ -410,6 +411,106 @@ def _source_for_name(
     return Counter(row["source"] for row in batch).most_common(1)[0][0]
 
 
+def _observation_ids_for_names(
+    names: Sequence[str],
+    batch: Sequence,
+    normalize: Callable[[str], str],
+) -> list[str]:
+    """Observation ids a belief from a batch's LLM response should cite.
+
+    Uses the observation from _observation_for_name for the first name that
+    matches one, then falls back to every observation in the batch. Never
+    returns an id from outside the batch.
+    """
+    for name in names:
+        row = _observation_for_name(name, batch, normalize)
+        if row is not None:
+            return [row["id"]]
+    return [row["id"] for row in batch]
+
+
+def _merged_source_ids(conn, table: str, row_id: str, new_ids: list[str]) -> str:
+    """JSON source_ids for a re-confirmed row: stored ids plus new ones, no duplicates."""
+    row = conn.execute(f"SELECT source_ids FROM {table} WHERE id = ?", (row_id,)).fetchone()
+    merged = json.loads(row["source_ids"] or "[]") if row else []
+    merged += [oid for oid in new_ids if oid not in merged]
+    return json.dumps(merged)
+
+
+def _upsert_claim(
+    conn,
+    claim_id: str,
+    subject_id: str,
+    predicate: str,
+    obj: str,
+    confidence: float,
+    now: str,
+    decay_rate: float,
+    source_ids: list[str],
+    method: str,
+) -> None:
+    """Insert a claim, or re-confirm it keeping first_asserted and unioning source_ids."""
+    conn.execute(
+        """INSERT INTO claims
+           (id, subject_id, predicate, object, confidence,
+            first_asserted, last_confirmed, decay_rate, source_ids, method)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               confidence = excluded.confidence,
+               last_confirmed = excluded.last_confirmed,
+               source_ids = excluded.source_ids,
+               method = excluded.method""",
+        (
+            claim_id,
+            subject_id,
+            predicate,
+            obj,
+            confidence,
+            now,
+            now,
+            decay_rate,
+            _merged_source_ids(conn, "claims", claim_id, source_ids),
+            method,
+        ),
+    )
+
+
+def _upsert_relationship(
+    conn,
+    rel_id: str,
+    subject_id: str,
+    predicate: str,
+    object_id: str,
+    confidence: float,
+    now: str,
+    source_ids: list[str],
+    method: str,
+) -> None:
+    """Insert a relationship, or re-confirm it keeping first_seen and unioning source_ids."""
+    conn.execute(
+        """INSERT INTO relationships
+           (id, subject_id, predicate, object_id, confidence,
+            first_seen, last_confirmed, source_ids, method)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               confidence = excluded.confidence,
+               last_confirmed = excluded.last_confirmed,
+               source_ids = excluded.source_ids,
+               method = excluded.method""",
+        (
+            rel_id,
+            subject_id,
+            predicate,
+            object_id,
+            confidence,
+            now,
+            now,
+            _merged_source_ids(conn, "relationships", rel_id, source_ids),
+            method,
+        ),
+    )
+
+
 def extract_beliefs(
     *,
     batch_size: int = 10,
@@ -494,15 +595,17 @@ def extract_beliefs(
                 )
                 conn.commit()
 
+        # Calendar rows are skipped and left unprocessed so they stay untouched.
         rows = conn.execute(
             """SELECT o.id, o.text, o.sender_entity_id, o.source, o.timestamp,
                       e.name AS sender_name
                FROM observations o
                LEFT JOIN entities e ON o.sender_entity_id = e.id
                WHERE o.processed = 0 AND o.text IS NOT NULL AND o.text != ''
+                 AND (o.channel_id IS NULL OR substr(o.channel_id, 1, ?) != ?)
                ORDER BY o.timestamp ASC
                LIMIT ?""",
-            (limit,),
+            (len(CALENDAR_CHANNEL_PREFIX), CALENDAR_CHANNEL_PREFIX, limit),
         ).fetchall()
 
         if not rows:
@@ -612,22 +715,17 @@ def extract_beliefs(
                     f"{subject_id}:{claim['predicate']}:{claim['object']}",
                 )
                 try:
-                    conn.execute(
-                        """INSERT OR REPLACE INTO claims
-                           (id, subject_id, predicate, object, confidence,
-                            first_asserted, last_confirmed, decay_rate,
-                            source_ids)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0.02,
-                                   '["extraction"]')""",
-                        (
-                            claim_id,
-                            subject_id,
-                            claim["predicate"],
-                            claim["object"],
-                            claim.get("confidence", 0.7),
-                            now,
-                            now,
-                        ),
+                    _upsert_claim(
+                        conn,
+                        claim_id,
+                        subject_id,
+                        claim["predicate"],
+                        claim["object"],
+                        claim.get("confidence", 0.7),
+                        now,
+                        0.02,
+                        _observation_ids_for_names([subject_name], batch, _normalize_name),
+                        "extraction",
                     )
                     stats["claims_extracted"] += 1
                 except Exception as e:
@@ -658,21 +756,20 @@ def extract_beliefs(
                     f"{subject_id}:{rel['predicate']}:{object_id}",
                 )
                 try:
-                    conn.execute(
-                        """INSERT OR REPLACE INTO relationships
-                           (id, subject_id, predicate, object_id, confidence,
-                            first_seen, last_confirmed, source_ids)
-                           VALUES (?, ?, ?, ?, ?, ?, ?,
-                                   '["extraction"]')""",
-                        (
-                            rel_id,
-                            subject_id,
-                            rel["predicate"],
-                            object_id,
-                            rel.get("confidence", 0.7),
-                            now,
-                            now,
+                    _upsert_relationship(
+                        conn,
+                        rel_id,
+                        subject_id,
+                        rel["predicate"],
+                        object_id,
+                        rel.get("confidence", 0.7),
+                        now,
+                        _observation_ids_for_names(
+                            [rel.get("subject", ""), rel.get("object", "")],
+                            batch,
+                            _normalize_name,
                         ),
+                        "extraction",
                     )
                     stats["relationships_extracted"] += 1
                 except Exception as e:
@@ -697,22 +794,17 @@ def extract_beliefs(
                     f"{subject_id}:{predicate}:{beh.get('object', '')}",
                 )
                 try:
-                    conn.execute(
-                        """INSERT OR REPLACE INTO claims
-                           (id, subject_id, predicate, object, confidence,
-                            first_asserted, last_confirmed, decay_rate,
-                            source_ids)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0.05,
-                                   '["behavioral_extraction"]')""",
-                        (
-                            claim_id,
-                            subject_id,
-                            predicate,
-                            beh.get("object", ""),
-                            beh.get("confidence", 0.6),
-                            now,
-                            now,
-                        ),
+                    _upsert_claim(
+                        conn,
+                        claim_id,
+                        subject_id,
+                        predicate,
+                        beh.get("object", ""),
+                        beh.get("confidence", 0.6),
+                        now,
+                        0.05,
+                        _observation_ids_for_names([subject_name], batch, _normalize_name),
+                        "behavioral_extraction",
                     )
                     stats["claims_extracted"] += 1
                 except Exception as e:

@@ -1226,7 +1226,7 @@ def test_auto_resolve_act_on_rate(tmp_path):
     conn.close()
 
 
-def _setup_owner_config(home, *, user_ids=None, handles=None, display_names=None):
+def _setup_owner_config(home, *, user_ids=None, handles=None, display_names=None, emails=None):
     """Write config.yaml with owner identifiers."""
     import yaml
 
@@ -1238,6 +1238,8 @@ def _setup_owner_config(home, *, user_ids=None, handles=None, display_names=None
         owner["handles"] = handles
     if display_names is not None:
         owner["display_names"] = display_names
+    if emails is not None:
+        owner["emails"] = emails
     (home / "config.yaml").write_text(yaml.dump({"owner": owner}))
 
 
@@ -1656,3 +1658,320 @@ def test_reingest_writes_no_duplicate_alias_provenance(tmp_path):
 
     assert before > 0
     assert after == before
+
+
+def _ingest_email_twice(home, email):
+    """Ingest one email twice; return (first, second) counts plus entity/obs state."""
+    from patina.ingest import _emails_to_chat_messages
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        run_pending_migrations(conn)
+        first = _ingest_messages(conn, _emails_to_chat_messages([email]), "outlook_mcp_email")
+        second = _ingest_messages(conn, _emails_to_chat_messages([email]), "outlook_mcp_email")
+        entities = conn.execute(
+            "SELECT id, type, name, aliases FROM entities ORDER BY id"
+        ).fetchall()
+        observations = conn.execute(
+            "SELECT id, channel_id, thread_id, timestamp, sender_entity_id, metadata"
+            " FROM observations"
+        ).fetchall()
+    finally:
+        conn.close()
+    return (
+        first,
+        second,
+        [tuple(r) for r in entities],
+        [dict(r) for r in observations],
+    )
+
+
+def test_source_facts_do_not_change_entity_resolution_or_dedupe(tmp_path):
+    """AC: metadata["source"] is write-only; resolution and dedupe never read it."""
+    from dataclasses import replace
+
+    from patina.models import EmailMessage
+
+    with_facts = EmailMessage(
+        id="AAQkADExampleConv001=",
+        sender="Example, Jordan",
+        subject="The quick brown fox",
+        text="[Subject: The quick brown fox] [Participants: Example, Jordan]\nJumps over.",
+        timestamp=1781651078.0,
+        recipients=["owner@example.com"],
+        conversation_id="AAQkADExampleConv001=",
+        sender_name="Example, Jordan",
+        source_facts={
+            "message_id": "AAMkADExampleMsg001=",
+            "item_class": ["IPM.Note"],
+            "sender_key": "Example, Jordan (Contractor)",
+            "to": [{"name": "Owner, Jane", "email": "owner@example.com"}],
+            "received_raw": "2026-06-16T22:24:38Z",
+        },
+    )
+    without_facts = replace(with_facts, source_facts={})
+
+    a_first, a_second, a_entities, a_obs = _ingest_email_twice(tmp_path / "a", with_facts)
+    b_first, b_second, b_entities, b_obs = _ingest_email_twice(tmp_path / "b", without_facts)
+
+    assert a_first[:3] == b_first[:3] == (1, 0, 0)
+    assert a_second[:3] == b_second[:3] == (0, 1, 0)
+    assert a_first[3] == b_first[3]
+    assert a_entities == b_entities
+
+    assert len(a_obs) == len(b_obs) == 1
+    a_meta = json.loads(a_obs[0].pop("metadata"))
+    b_meta = json.loads(b_obs[0].pop("metadata"))
+    assert a_obs == b_obs
+    assert a_meta.pop("source") == with_facts.source_facts
+    assert "source" not in b_meta
+    assert a_meta == b_meta
+
+
+# --- outlook_relevance (#617) ---
+
+OWNER_EMAIL = "owner@example.com"
+PERSON_SENDER = "jordan.example@partner.example"
+
+
+def _relevance_home(tmp_path, emails=(OWNER_EMAIL,)):
+    home = tmp_path / "patina_home"
+    _setup_owner_config(home, emails=list(emails))
+    return home
+
+
+def _objective(*, active=True, participants=(), customer_domains=(), keywords="quick brown fox"):
+    from patina.priority.objectives import Objective
+
+    return Objective(
+        id="obj-fox",
+        label="The quick brown fox launch",
+        keywords=keywords,
+        active=active,
+        created_at="2026-11-01T00:00:00+00:00",
+        updated_at="2026-11-01T00:00:00+00:00",
+        participants=list(participants),
+        customer_domains=list(customer_domains),
+    )
+
+
+def _facts(*, to=None, cc=None, sender_key=PERSON_SENDER):
+    facts = {"item_class": ["IPM.Note"], "sender_key": sender_key}
+    if to is not None:
+        facts["to"] = to
+    if cc is not None:
+        facts["cc"] = cc
+    return facts
+
+
+def _relevance(home, facts, **kwargs):
+    from patina.ingest import outlook_relevance
+
+    kwargs.setdefault("subject", "The quick brown fox")
+    return outlook_relevance(facts, home=home, **kwargs)
+
+
+def test_outlook_relevance_owner_named_in_to_is_direct(tmp_path):
+    home = _relevance_home(tmp_path)
+    facts = _facts(to=[{"name": "Owner, Jane", "email": OWNER_EMAIL}])
+
+    result = _relevance(home, facts)
+
+    assert result.keep is True
+    assert result.reason == "direct"
+
+
+def test_outlook_relevance_owner_match_is_case_insensitive(tmp_path):
+    home = _relevance_home(tmp_path)
+    facts = _facts(to=[{"name": "Owner, Jane", "email": "Owner@Example.COM"}])
+
+    assert tuple(_relevance(home, facts)) == (True, "direct")
+
+
+def test_outlook_relevance_owner_only_via_distribution_list_is_not_direct(tmp_path):
+    home = _relevance_home(tmp_path)
+    facts = _facts(
+        to=[{"name": "Team All", "email": "team-all@example.com", "isDistributionList": True}]
+    )
+
+    result = _relevance(home, facts, objectives=[])
+
+    assert tuple(result) == (False, "not_direct")
+
+
+def test_outlook_relevance_owner_replied_in_thread_is_kept(tmp_path):
+    home = _relevance_home(tmp_path, emails=[OWNER_EMAIL, "Owner, Jane"])
+    facts = _facts(
+        to=[{"name": "Team All", "email": "team-all@example.com", "isDistributionList": True}]
+    )
+
+    result = _relevance(home, facts, thread_participants=["Example, Jordan", "Owner, Jane"])
+
+    assert result.keep is True
+    assert result.reason == "direct"
+
+
+def test_outlook_relevance_owner_as_sender_is_kept(tmp_path):
+    home = _relevance_home(tmp_path)
+    facts = _facts(to=[{"name": "Example, Jordan", "email": PERSON_SENDER}], sender_key=OWNER_EMAIL)
+
+    assert tuple(_relevance(home, facts)) == (True, "direct")
+
+
+@pytest.mark.parametrize(
+    "sender",
+    ["no-reply@example.com", "notifications@tool.example", "mailer-daemon@example.com"],
+)
+def test_outlook_relevance_bot_sender_dropped_even_when_owner_in_to(tmp_path, sender):
+    home = _relevance_home(tmp_path)
+    facts = _facts(to=[{"name": "Owner, Jane", "email": OWNER_EMAIL}], sender_key=sender)
+
+    assert tuple(_relevance(home, facts)) == (False, "bot_or_list")
+
+
+def test_outlook_relevance_drop_reasons_match_stats_keys():
+    from patina.ingest import RELEVANCE_BOT_OR_LIST, RELEVANCE_NOT_DIRECT
+
+    assert f"dropped_{RELEVANCE_BOT_OR_LIST}" == "dropped_bot_or_list"
+    assert f"dropped_{RELEVANCE_NOT_DIRECT}" == "dropped_not_direct"
+
+
+def test_outlook_relevance_active_objective_participant_is_engagement(tmp_path):
+    home = _relevance_home(tmp_path)
+    facts = _facts(to=[{"name": "Sample, Riley", "email": "riley.sample@example.com"}])
+    objective = _objective(participants=[PERSON_SENDER])
+
+    result = _relevance(home, facts, objectives=[objective])
+
+    assert tuple(result) == (True, "engagement")
+
+
+def test_outlook_relevance_customer_domain_is_engagement_only_when_active(tmp_path):
+    home = _relevance_home(tmp_path)
+    facts = _facts(to=[{"name": "Sample, Riley", "email": "riley.sample@example.com"}])
+
+    active = _objective(customer_domains=["partner.example"])
+    inactive = _objective(active=False, customer_domains=["partner.example"])
+
+    assert tuple(_relevance(home, facts, objectives=[active])) == (True, "engagement")
+    assert tuple(_relevance(home, facts, objectives=[inactive])) == (False, "not_direct")
+
+
+def test_outlook_relevance_subject_keyword_alone_never_keeps(tmp_path):
+    home = _relevance_home(tmp_path)
+    facts = _facts(to=[{"name": "Sample, Riley", "email": "riley.sample@example.com"}])
+    objective = _objective(keywords="quick brown fox")
+
+    result = _relevance(
+        home, facts, subject="Re: The quick brown fox — Q3 plan", objectives=[objective]
+    )
+
+    assert tuple(result) == (False, "not_direct")
+
+
+def test_outlook_relevance_subject_keyword_kept_only_for_participant(tmp_path):
+    home = _relevance_home(tmp_path)
+    facts = _facts(
+        to=[{"name": "Sample, Riley", "email": "riley.sample@example.com"}],
+        sender_key="casey.lee@example.com",
+    )
+    objective = _objective(keywords="quick brown fox", participants=["Müller, Avery"])
+    subject = "Re: The quick brown fox — Q3 plan"
+
+    without = _relevance(home, facts, subject=subject, objectives=[objective])
+    with_participant = _relevance(
+        home,
+        facts,
+        subject=subject,
+        objectives=[objective],
+        thread_participants=["casey.lee@example.com", "Müller, Avery (Contractor)"],
+    )
+
+    assert tuple(without) == (False, "not_direct")
+    assert tuple(with_participant) == (True, "engagement")
+
+
+def test_outlook_relevance_bot_sender_beats_objective_engagement(tmp_path):
+    """Precedence: a bot sender is dropped even when it matches an active objective."""
+    home = _relevance_home(tmp_path)
+    facts = _facts(
+        to=[{"name": "Owner, Jane", "email": OWNER_EMAIL}],
+        sender_key="notifications@partner.example",
+    )
+    objective = _objective(
+        participants=["notifications@partner.example"], customer_domains=["partner.example"]
+    )
+
+    result = _relevance(home, facts, objectives=[objective])
+
+    assert tuple(result) == (False, "bot_or_list")
+
+
+def _store_snapshot(home) -> dict:
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(home))
+    try:
+        tables = [
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+        ]
+        return {
+            t: sorted(tuple(r) for r in conn.execute(f'SELECT * FROM "{t}"').fetchall())
+            for t in tables
+        }
+    finally:
+        conn.close()
+
+
+def test_outlook_relevance_is_pure(tmp_path):
+    """AC: no observation, entity or other DB write; store unchanged across the call."""
+    import time
+
+    from patina.models import EmailMessage
+    from patina.priority.objectives import add_objective, list_objectives
+
+    home = _relevance_home(tmp_path)
+    add_objective(
+        "The quick brown fox launch",
+        "quick brown fox",
+        participants=[PERSON_SENDER],
+        customer_domains=["partner.example"],
+        home=home,
+    )
+    email = EmailMessage(
+        id="AAQkADExampleConv001=",
+        sender="Example, Jordan",
+        subject="The quick brown fox",
+        text="[Subject: The quick brown fox] [Participants: Example, Jordan]\nJumps over.",
+        timestamp=time.time(),
+        conversation_id="AAQkADExampleConv001=",
+        sender_name="Example, Jordan",
+    )
+
+    class _OneEmailPort:
+        platform = "outlook_mcp"
+
+        def list_inbox(self, since):
+            return [email]
+
+        def search_sent(self, query):
+            return []
+
+    ingest_live(port=_OneEmailPort(), source="outlook_mcp_email", home=home)
+    objectives = list_objectives(active_only=False, home=home)
+
+    before = _store_snapshot(home)
+    assert before["observations"] and before["entities"] and before["objectives"]
+
+    direct = _relevance(home, _facts(to=[{"name": "Owner, Jane", "email": OWNER_EMAIL}]))
+    engaged = _relevance(home, _facts(), objectives=objectives)
+
+    assert tuple(direct) == (True, "direct")
+    assert tuple(engaged) == (True, "engagement")
+    assert _store_snapshot(home) == before
