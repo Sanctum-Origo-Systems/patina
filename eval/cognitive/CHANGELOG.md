@@ -2,7 +2,11 @@
 - #603: Feat: [patina] fix: contradictions still fills the cap with org an ($0.98)
 - #602: Feat: Meeting-observation classification, selection and guarded re ($1.57)
 - #605: Feat: `patina cleanup-meeting-obs` CLI: read-only dry run, --, and ($1.68)
-Total: 3 PRs, $4.23
+- #623: Feat: add method column to claims and relationships and migrate ex ($0.95)
+- #622: Feat: Exclude calendar observations from belief extraction ($1.19)
+- #621: Feat: Source-facts metadata contract, Outlook email adapter and mi ($1.85)
+- #620: Feat: Add participants and customer_domains to objectives, with a ($1.44)
+Total: 7 PRs, $9.66
 
 ## v0.36.0 (2026-11-04)
 - #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
