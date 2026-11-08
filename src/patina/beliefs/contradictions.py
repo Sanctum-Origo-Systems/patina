@@ -16,7 +16,8 @@ _TEMPORARY_LOCATION = re.compile(
     re.IGNORECASE,
 )
 _ENGAGEMENT = re.compile(
-    r"\b(?:works? (?:on|with)|engagement|account|customer|client|project|teams?|workshop)\b"
+    r"\b(?:works? (?:on|with|in)|involved in|has access to|engagement|account|customer|client"
+    r"|project|teams?|workshop)\b"
     r"|\bon (?:a|the)\b.*\b(?:program(?:me)?|initiative|pilot|rollout|migration|launch|deal)\b",
     re.IGNORECASE,
 )
@@ -30,15 +31,18 @@ _LEGAL_SUFFIXES = frozenset(
 # A level code or employment status is not a title and never pairs with one.
 _LEVEL_CODE = re.compile(r"^[a-z]{1,2}\d{1,2}$")
 _STATUS = re.compile(
-    r"\b(?:on leave|parental leave|promoted|promotion candidate|feedback due|sabbatical)\b",
+    r"\b(?:on leave|parental leave|pto|promoted|promotion candidate|feedback due|sabbatical)\b",
     re.IGNORECASE,
 )
 
 # Relations between two claims that are reported. A containment ("Cloud
 # Architect" vs "Cloud Architect Leader") is usually a restatement but may be a
-# promotion, so it is kept and ranked after every real conflict.
+# promotion, so it is kept and ranked after every real conflict. So is an
+# employer named next to the person's own email vs another org name, which is
+# usually one of its units.
 _CONFLICT = "conflict"
-_CONTAINED = "contained"
+_CONTAINED_TITLE = "possible_promotion"
+_CONTAINED_ORG = "contained_org"
 
 
 def _normalize(text: str) -> str:
@@ -101,28 +105,35 @@ def _classify(predicate: str, obj: str) -> tuple[str, str | tuple[str, ...]]:
             return "email", _normalize(obj)
         return "name", _tokens(name)
     if predicate == "title":
-        text = _strip_extras(obj) or obj
-        tokens = _tokens(text)
-        if _STATUS.search(text) or (len(tokens) == 1 and _LEVEL_CODE.match(tokens[0])):
+        tokens = _tokens(_strip_extras(obj) or obj)
+        # Search the raw text, so a status in a parenthetical ("PTO (on leave)")
+        # is not stripped before the check.
+        if _STATUS.search(obj) or (len(tokens) == 1 and _LEVEL_CODE.match(tokens[0])):
             return "status", tokens
         return "title", tokens
     return "", obj
 
 
 def _relation(predicate: str, object_1: str, object_2: str) -> str | None:
-    """Return _CONFLICT, _CONTAINED, or None when the two claims agree."""
+    """Return _CONFLICT, a contained relation, or None when the two claims agree."""
     kind_1, value_1 = _classify(predicate, object_1)
     kind_2, value_2 = _classify(predicate, object_2)
     if kind_1 != kind_2 or kind_1 == "status" or value_1 == value_2:
         return None
     if predicate == "org" and kind_1 == "name":
-        return None if _same_org(value_1, value_2) else _CONFLICT
+        if _same_org(value_1, value_2):
+            return None
+        # The claim carrying the person's own email names the employer; the
+        # other name is most likely one of its units.
+        if bool(_EMAIL.search(object_1)) != bool(_EMAIL.search(object_2)):
+            return _CONTAINED_ORG
+        return _CONFLICT
     if predicate == "title":
         # Whole tokens, order-insensitive, no stemming.
         set_1, set_2 = set(value_1), set(value_2)
         if set_1 == set_2:
             return None
-        return _CONTAINED if set_1 <= set_2 or set_2 <= set_1 else _CONFLICT
+        return _CONTAINED_TITLE if set_1 <= set_2 or set_2 <= set_1 else _CONFLICT
     return _CONFLICT
 
 
@@ -156,9 +167,10 @@ def find_contradictions_tier1(conn: sqlite3.Connection) -> list[dict]:
             "object_2": row["object2"],
             "confidence_1": row["conf1"],
             "confidence_2": row["conf2"],
+            "relation": relation,
         }
         key = (
-            relation == _CONTAINED,
+            relation != _CONFLICT,
             _FIELD_RANK.get(row["predicate"], len(_FIELD_RANK)),
             -max(row["conf1"], row["conf2"]),
             row["id1"],
