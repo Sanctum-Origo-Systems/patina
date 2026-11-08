@@ -124,7 +124,18 @@ The system is fully functional at Tier 1 alone (zero LLM calls). Each tier adds 
 
 ### One Person, Many IDs
 
-Every app names the same person differently: a Slack user ID, an Exchange DN, one or more email addresses, a display name like `Example, Jordan (Contractor)`. Nothing in the data links them. Patina has to infer that they belong to one human, and a wrong guess blends two people's beliefs. This is the classic entity-resolution problem, and it never fully goes away: names collide, payloads leave out the identifiers you need, lists and bots look like people, and one false merge attracts more. Patina keeps it bounded: identifiers outrank names, an ambiguous match never merges, raw source facts and provenance are kept so mistakes can be traced and undone, and noise is dropped at ingest. **[Read why it's hard, and how Patina handles it →](docs/features/identity-resolution.md)**
+Every app names the same person differently: a Slack user ID, an Exchange DN, email addresses, a display name like `Example, Jordan (Contractor)`. Nothing in the data links them, so Patina has to infer that they're one person. A wrong guess blends two people's beliefs. This entity-resolution problem never fully goes away, so Patina aims to be rarely wrong in the harmful direction, not perfect.
+
+**TL;DR: how Patina stays practical**
+
+- **Identifiers beat names.** A Slack ID, DN or email match always wins over a name match.
+- **When unsure, keep them apart.** An ambiguous match never merges. A missed link can be fixed later; a false merge corrupts beliefs.
+- **Contain the damage.** An entity already holding several people's IDs (a "sink") can't absorb more.
+- **Keep junk out.** Bots, lists and irrelevant mail are dropped at ingest, before they become fake people.
+- **Keep the evidence.** Raw source facts and claim provenance mean any merge can be traced and undone.
+- **A human approves destructive fixes.** Dedup, repairs and cleanups preview first and write only with `--confirm`.
+
+**[Why it's hard, and how each rule works →](docs/features/identity-resolution.md)**
 
 ### The Observer-Builder Loop
 
