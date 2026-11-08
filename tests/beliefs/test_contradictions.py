@@ -329,6 +329,65 @@ def test_cap_keeps_real_conflicts_over_restatements(db_conn):
     assert (results[0]["claim_id_1"], results[0]["claim_id_2"]) == ("z1", "z2")
 
 
+def test_org_email_employer_vs_unit_is_contained_after_conflicts(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "a1", "org", "Example Corp (jordan@example.com)", confidence=0.99)
+    _claim(db_conn, "a2", "org", "Widget Labs", confidence=0.99)
+    _setup_entity(db_conn, "e2", "Riley")
+    _claim(db_conn, "b1", "location", "Springfield", subject="e2", confidence=0.1)
+    _claim(db_conn, "b2", "location", "Shelbyville", subject="e2", confidence=0.1)
+    _claim(db_conn, "d1", "org", "Example Corp", subject="e2", confidence=0.1)
+    _claim(db_conn, "d2", "org", "Globex", subject="e2", confidence=0.1)
+
+    results = find_contradictions_tier1(db_conn)
+    assert [r["relation"] for r in results] == ["conflict", "conflict", "contained_org"]
+    assert {results[-1]["object_1"], results[-1]["object_2"]} == {
+        "Example Corp (jordan@example.com)",
+        "Widget Labs",
+    }
+
+
+def test_title_status_in_parenthetical_never_pairs(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "title", "PTO (on leave)")
+    _claim(db_conn, "c2", "title", "Sr. Consultant")
+    _claim(db_conn, "c3", "title", "PTO")
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_org_engagement_notes_not_contradiction(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c0", "org", "Example Corp")
+    notes = [
+        "Works in Team Alpha, collaborating in area Beta",
+        "involved in Program A / Program B",
+        "has access to the customer environment",
+        "works in Area Gamma",
+        "has access to the shared environment",
+    ]
+    for i, obj in enumerate(notes, start=1):
+        _claim(db_conn, f"c{i}", "org", obj)
+
+    pairs = _pairs(find_contradictions_tier1(db_conn))
+    for obj in notes:
+        assert frozenset(("Example Corp", obj)) not in pairs
+
+
+def test_title_containment_marked_possible_promotion(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "title", "Cloud Architect")
+    _claim(db_conn, "c2", "title", "Cloud Architect Leader")
+    _claim(db_conn, "c3", "title", "Engineer")
+
+    results = find_contradictions_tier1(db_conn)
+    relations = {frozenset((r["object_1"], r["object_2"])): r["relation"] for r in results}
+    assert relations[frozenset(("Cloud Architect", "Cloud Architect Leader"))] == (
+        "possible_promotion"
+    )
+    assert relations[frozenset(("Cloud Architect", "Engineer"))] == "conflict"
+
+
 def test_behavioral_predicates_excluded(db_conn):
     _setup_entity(db_conn, "e1", "Jordan")
     _claim(db_conn, "c1", "behavioral:communication_style", "terse")

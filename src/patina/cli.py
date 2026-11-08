@@ -795,8 +795,9 @@ def contradictions_cmd(
 
         typer.echo(f"Found {len(results)} contradiction(s):")
         for item in results:
+            tag = "" if item["relation"] == "conflict" else f" [{item['relation']}]"
             typer.echo(
-                f"  {item['subject']} {item['predicate']}:\n"
+                f"  {item['subject']} {item['predicate']}{tag}:\n"
                 f"    A: {item['object_1']} (conf={item['confidence_1']:.2f})\n"
                 f"    B: {item['object_2']} (conf={item['confidence_2']:.2f})"
             )
