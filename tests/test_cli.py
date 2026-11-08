@@ -1036,13 +1036,18 @@ def _seed_meeting_store(tmp_path, *, cite=True):
         "INSERT INTO entities (id, type, name, aliases, metadata, first_seen, last_seen)"
         " VALUES ('ent_jordan', 'person', 'Jordan Example', '[]', '{}', 'x', 'x')"
     )
-    for obs_id, conv_id in (
-        ("obs_pos", "CONV_POS"),
-        ("obs_req", "CONV_REQ"),
-        ("obs_cxl", "CONV_CXL"),
+    for obs_id, conv_id, meta in (
+        ("obs_pos", "CONV_POS", {"channel_name": None, "reactions": []}),
+        ("obs_req", "CONV_REQ", {"channel_name": None, "reactions": []}),
+        (
+            "obs_cxl",
+            "CONV_CXL",
+            {"channel_name": None, "reactions": [], "organizer_dn": "Example, Jordan"},
+        ),
     ):
         message_class, received = _REFETCH[conv_id]
-        # Stored as ingest does: no class fields, only the source ID in metadata.
+        # Live store shape (#609): no class fields and no ID in metadata; the
+        # conversation ID is only in thread_id and channel_id.
         em = _email_from_raw(_meeting_payload(conv_id, message_class, received))
         insert_observation(
             conn,
@@ -1054,7 +1059,7 @@ def _seed_meeting_store(tmp_path, *, cite=True):
                 timestamp=em.timestamp,
                 sender_entity_id=None,
                 text=em.text,
-                metadata={"channel_name": None, "reactions": [], "conversationId": em.id},
+                metadata=meta,
             ),
         )
     for obs_id, meta, received, processed in _STORED:
@@ -1063,7 +1068,7 @@ def _seed_meeting_store(tmp_path, *, cite=True):
             Observation(
                 id=obs_id,
                 source="outlook_mcp_email",
-                channel_id=f"email:{obs_id}",
+                channel_id=None,
                 thread_id=None,
                 timestamp=_iso_ts(received),
                 sender_entity_id=None,
@@ -1249,7 +1254,17 @@ def test_cleanup_meeting_obs_json_matches_text_and_store(tmp_path, monkeypatch):
         "count": len(_UNDETERMINED_IDS),
         "earliest": _fmt_ts(min(undetermined_ts)),
         "latest": _fmt_ts(max(undetermined_ts)),
+        "reasons": {
+            "no_source_id": 1,
+            "not_in_current_inbox": 1,
+            "no_class_fields": 0,
+            "refetch_unavailable": 0,
+        },
+        "zero_timestamp": 0,
     }
+    for reason, count in und["reasons"].items():
+        assert f"  {reason}: {count}" in text
+    assert "  zero_timestamp: 0" in text
 
 
 def test_cleanup_meeting_obs_classifies_fixture_rows(tmp_path, monkeypatch):
@@ -1264,6 +1279,58 @@ def test_cleanup_meeting_obs_classifies_fixture_rows(tmp_path, monkeypatch):
     # Rows with stored itemClasses/messageClass never reach the adapter.
     assert sorted(fake.calls) == ["CONV_CXL", "CONV_POS", "CONV_REQ", "GONE"]
     assert data["undetermined"]["count"] == len(_UNDETERMINED_IDS)
+
+
+def test_cleanup_meeting_obs_reports_undetermined_reasons(tmp_path, monkeypatch):
+    """#609: live-shape rows outside the re-fetch listing, or dated 0, are reported."""
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+    live_meta = {"channel_name": None, "reactions": []}
+    for obs_id, conv_id, received in (
+        ("obs_pos", "CONV_POS", "2026-10-01T15:04:05Z"),
+        ("obs_old", "CONV_OLD", "2026-03-01T09:00:00Z"),
+        ("obs_older", "CONV_OLDER", "2026-02-01T09:00:00Z"),
+        ("obs_epoch", "CONV_EPOCH", None),
+    ):
+        insert_observation(
+            conn,
+            Observation(
+                id=obs_id,
+                source="outlook_mcp_email",
+                channel_id=f"email:{conv_id}",
+                thread_id=conv_id,
+                timestamp=_iso_ts(received) if received else 0.0,
+                sender_entity_id=None,
+                text=f"[Subject: {_MEETING_SUBJECT}] [Participants: Jordan Example]\n",
+                metadata=live_meta,
+            ),
+        )
+    conn.commit()
+    conn.close()
+    _fake_outlook(monkeypatch)
+
+    text = runner.invoke(app, ["cleanup-meeting-obs", "--home", str(tmp_path)])
+    result = runner.invoke(app, ["cleanup-meeting-obs", "--json", "--home", str(tmp_path)])
+
+    assert text.exit_code == 0, text.output
+    out = text.stdout
+    assert "Selected: 1 meeting observation(s)" in out
+    assert "obs_pos" in out
+    range_ = f"{_fmt('2026-02-01T09:00:00Z')} to {_fmt('2026-03-01T09:00:00Z')}"
+    assert f"Undetermined (not selected): 3 ({range_})" in out
+    assert "  not_in_current_inbox: 3" in out
+    assert "  no_source_id: 0" in out
+    assert "  zero_timestamp: 1" in out
+    assert "1970" not in out
+
+    data = json.loads(result.stdout)
+    assert [row["observation_id"] for row in data["selected"]] == ["obs_pos"]
+    assert data["undetermined"]["count"] == 3
+    assert data["undetermined"]["reasons"]["not_in_current_inbox"] == 3
+    assert data["undetermined"]["zero_timestamp"] == 1
+    assert data["undetermined"]["earliest"] == _fmt("2026-02-01T09:00:00Z")
 
 
 def test_cleanup_meeting_obs_follows_is_meeting_message(tmp_path, monkeypatch):
@@ -1350,3 +1417,94 @@ def test_cleanup_meeting_obs_uninitialized(tmp_path):
 
     assert result.exit_code == 1
     assert "not initialized" in result.output
+
+
+def _stored_objective(tmp_path):
+    conn = connect(get_db_path(tmp_path))
+    row = conn.execute(
+        "SELECT id, label, keywords, participants, customer_domains FROM objectives"
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def test_objectives_add_and_update_targets(tmp_path):
+    home = ["--home", str(tmp_path)]
+    added = runner.invoke(
+        app,
+        [
+            "objectives",
+            "add",
+            "Ship Atlas",
+            "--keywords",
+            "atlas",
+            "--participant",
+            " Jordan.Example@Example.com",
+            "--participant",
+            "e1",
+            "--customer-domain",
+            "Example.com",
+            *home,
+        ],
+    )
+    assert added.exit_code == 0, added.output
+    assert "participants: jordan.example@example.com, e1" in added.output
+    assert "customer_domains: example.com" in added.output
+
+    row = _stored_objective(tmp_path)
+    assert json.loads(row["participants"]) == ["jordan.example@example.com", "e1"]
+    assert json.loads(row["customer_domains"]) == ["example.com"]
+
+    updated = runner.invoke(
+        app,
+        [
+            "objectives",
+            "update",
+            row["id"][:8],
+            "--customer-domain",
+            "example.org",
+            "--customer-domain",
+            "Example.net",
+            *home,
+        ],
+    )
+    assert updated.exit_code == 0, updated.output
+    assert "customer_domains: example.org, example.net" in updated.output
+
+    row = _stored_objective(tmp_path)
+    assert row["label"] == "Ship Atlas"
+    assert row["keywords"] == "atlas"
+    assert json.loads(row["participants"]) == ["jordan.example@example.com", "e1"]
+    assert json.loads(row["customer_domains"]) == ["example.org", "example.net"]
+
+    updated = runner.invoke(app, ["objectives", "update", row["id"], "--participant", "e2", *home])
+    assert updated.exit_code == 0, updated.output
+    assert json.loads(_stored_objective(tmp_path)["participants"]) == ["e2"]
+
+    listed = runner.invoke(app, ["objectives", "list", *home])
+    assert listed.exit_code == 0, listed.output
+    assert "Ship Atlas (keywords: atlas)" in listed.output
+    assert "participants: e2" in listed.output
+    assert "customer_domains: example.org, example.net" in listed.output
+
+
+def test_objectives_add_without_targets_lists_empty(tmp_path):
+    home = ["--home", str(tmp_path)]
+    assert runner.invoke(app, ["objectives", "add", "Ship Atlas", *home]).exit_code == 0
+
+    row = _stored_objective(tmp_path)
+    assert json.loads(row["participants"]) == []
+    assert json.loads(row["customer_domains"]) == []
+
+    listed = runner.invoke(app, ["objectives", "list", *home])
+    assert "participants: -" in listed.output
+    assert "customer_domains: -" in listed.output
+
+
+def test_objectives_update_unknown_id_fails(tmp_path):
+    result = runner.invoke(
+        app,
+        ["objectives", "update", "ffffffff", "--participant", "e1", "--home", str(tmp_path)],
+    )
+    assert result.exit_code == 1
+    assert "No objective updated" in result.output

@@ -33,6 +33,7 @@ patina catch-up                    # unified view: needs action / new / waiting
 patina priorities                  # grouped by quadrant (Q1-Q4)
 patina dismiss <id>                # dismiss noise, trains the model
 patina objectives add "Ship v2" --keywords "release,deploy"
+patina objectives update <id> --participant jordan@example.com --customer-domain example.com
 patina objectives list             # active objectives
 patina objectives remove <id>      # remove an objective
 

@@ -3,6 +3,8 @@
 Selection is decided solely by ``_is_meeting_message`` from the Outlook adapter.
 Its input per row comes from stored class fields in metadata, else a read-only
 re-fetch of the source payload, else the row is undetermined and never removed.
+The re-fetch ID is ``conversationId``/``id`` in metadata, else ``thread_id``,
+else ``channel_id`` without its ``email:`` prefix (where ingest stores it).
 """
 
 from __future__ import annotations
@@ -24,6 +26,14 @@ UNDETERMINED = "undetermined"
 NOT_MEETING = "not_meeting"
 
 _CLASS_KEYS = ("itemClasses", "messageClass", "message_class")
+_CHANNEL_PREFIX = "email:"
+
+# Why a row is undetermined.
+NO_SOURCE_ID = "no_source_id"
+NOT_IN_CURRENT_INBOX = "not_in_current_inbox"
+NO_CLASS_FIELDS = "no_class_fields"
+REFETCH_UNAVAILABLE = "refetch_unavailable"
+UNDETERMINED_REASONS = (NO_SOURCE_ID, NOT_IN_CURRENT_INBOX, NO_CLASS_FIELDS, REFETCH_UNAVAILABLE)
 
 
 class RawMessageFetcher(Protocol):
@@ -45,6 +55,9 @@ class UndeterminedBucket:
     earliest: float | None = None
     latest: float | None = None
     observation_ids: list[str] = field(default_factory=list)
+    reasons: dict[str, int] = field(default_factory=lambda: dict.fromkeys(UNDETERMINED_REASONS, 0))
+    # Rows dated 0 (1970-01-01) are counted here and kept out of earliest/latest.
+    zero_timestamp: int = 0
 
 
 @dataclass
@@ -84,9 +97,17 @@ def _has_class_field(payload: dict) -> bool:
     return any(k in payload for k in _CLASS_KEYS)
 
 
-def _source_id(meta: dict) -> str | None:
+def _source_id(
+    meta: dict, thread_id: str | None = None, channel_id: str | None = None
+) -> str | None:
     sid = meta.get("conversationId", meta.get("id"))
-    return sid if isinstance(sid, str) and sid else None
+    if isinstance(sid, str) and sid:
+        return sid
+    if isinstance(thread_id, str) and thread_id:
+        return thread_id
+    if isinstance(channel_id, str) and channel_id.startswith(_CHANNEL_PREFIX):
+        return channel_id.removeprefix(_CHANNEL_PREFIX) or None
+    return None
 
 
 def _matching_classes(payload: dict) -> list[str]:
@@ -97,26 +118,60 @@ def _matching_classes(payload: dict) -> list[str]:
     return [msg_class] if isinstance(msg_class, str) and msg_class else []
 
 
-def classification_input(metadata: dict, adapter: RawMessageFetcher | None) -> dict | None:
-    """Build the dict passed to ``_is_meeting_message``, or None when undetermined."""
+def _resolve_input(
+    metadata: dict,
+    adapter: RawMessageFetcher | None,
+    thread_id: str | None,
+    channel_id: str | None,
+) -> tuple[dict | None, str | None]:
+    """Return ``(payload, None)``, or ``(None, reason)`` when undetermined."""
     if _has_class_field(metadata):
-        return metadata
-    sid = _source_id(metadata)
-    if sid is None or adapter is None:
-        return None
+        return metadata, None
+    sid = _source_id(metadata, thread_id, channel_id)
+    if sid is None:
+        return None, NO_SOURCE_ID
+    if adapter is None:
+        return None, REFETCH_UNAVAILABLE
     raw = adapter.get_raw_message(sid)
-    if not isinstance(raw, dict) or not _has_class_field(raw):
-        return None
-    return raw
+    if not isinstance(raw, dict):
+        return None, NOT_IN_CURRENT_INBOX
+    if not _has_class_field(raw):
+        return None, NO_CLASS_FIELDS
+    return raw, None
 
 
-def classify(metadata: dict, adapter: RawMessageFetcher | None) -> tuple[str, list[str]]:
-    payload = classification_input(metadata, adapter)
+def classification_input(
+    metadata: dict,
+    adapter: RawMessageFetcher | None,
+    thread_id: str | None = None,
+    channel_id: str | None = None,
+) -> dict | None:
+    """Build the dict passed to ``_is_meeting_message``, or None when undetermined."""
+    return _resolve_input(metadata, adapter, thread_id, channel_id)[0]
+
+
+def _classify_with_reason(
+    metadata: dict,
+    adapter: RawMessageFetcher | None,
+    thread_id: str | None = None,
+    channel_id: str | None = None,
+) -> tuple[str, list[str], str | None]:
+    payload, reason = _resolve_input(metadata, adapter, thread_id, channel_id)
     if payload is None:
-        return UNDETERMINED, []
+        return UNDETERMINED, [], reason
     if outlook_mcp._is_meeting_message(payload):
-        return SELECTED, _matching_classes(payload)
-    return NOT_MEETING, []
+        return SELECTED, _matching_classes(payload), None
+    return NOT_MEETING, [], None
+
+
+def classify(
+    metadata: dict,
+    adapter: RawMessageFetcher | None,
+    thread_id: str | None = None,
+    channel_id: str | None = None,
+) -> tuple[str, list[str]]:
+    verdict, classes, _ = _classify_with_reason(metadata, adapter, thread_id, channel_id)
+    return verdict, classes
 
 
 def _load_metadata(raw: str | None) -> dict:
@@ -156,7 +211,7 @@ def select_meeting_observations(
     conn = connect_readonly(db_path)
     try:
         rows = conn.execute(
-            "SELECT id, timestamp, metadata, processed FROM observations"
+            "SELECT id, timestamp, metadata, processed, thread_id, channel_id FROM observations"
             " WHERE source = ? ORDER BY timestamp, id",
             (SOURCE,),
         ).fetchall()
@@ -165,13 +220,19 @@ def select_meeting_observations(
         undetermined = UndeterminedBucket()
         not_meeting = 0
         for row in rows:
-            verdict, classes = classify(_load_metadata(row["metadata"]), adapter)
+            verdict, classes, reason = _classify_with_reason(
+                _load_metadata(row["metadata"]), adapter, row["thread_id"], row["channel_id"]
+            )
             if verdict == SELECTED:
                 picked.append((row, classes))
             elif verdict == UNDETERMINED:
                 ts = row["timestamp"]
                 undetermined.count += 1
                 undetermined.observation_ids.append(row["id"])
+                undetermined.reasons[reason] += 1
+                if not ts:
+                    undetermined.zero_timestamp += 1
+                    continue
                 undetermined.earliest = (
                     ts if undetermined.earliest is None else min(undetermined.earliest, ts)
                 )

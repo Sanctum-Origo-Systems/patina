@@ -7,7 +7,11 @@ import pytest
 import patina.cleanup_meeting_obs as cleanup
 from patina.adapters.outlook_mcp import _email_from_raw
 from patina.cleanup_meeting_obs import (
+    NO_CLASS_FIELDS,
+    NO_SOURCE_ID,
+    NOT_IN_CURRENT_INBOX,
     NOT_MEETING,
+    REFETCH_UNAVAILABLE,
     SELECTED,
     UNDETERMINED,
     RemovalRefused,
@@ -60,14 +64,27 @@ def store(db_path):
     conn.close()
 
 
-def _add_obs(conn, obs_id, metadata, *, ts=RECEIVED_TS, source="outlook_mcp_email", processed=0):
+_DEFAULT = object()
+
+
+def _add_obs(
+    conn,
+    obs_id,
+    metadata,
+    *,
+    ts=RECEIVED_TS,
+    source="outlook_mcp_email",
+    processed=0,
+    channel_id=_DEFAULT,
+    thread_id=None,
+):
     insert_observation(
         conn,
         Observation(
             id=obs_id,
             source=source,
-            channel_id=f"email:{obs_id}",
-            thread_id=None,
+            channel_id=f"email:{obs_id}" if channel_id is _DEFAULT else channel_id,
+            thread_id=thread_id,
             timestamp=ts,
             sender_entity_id=None,
             text="[Subject: The quick brown fox sync] [Participants: Jordan Example]\n",
@@ -95,6 +112,22 @@ def _add_ingested_580(conn, obs_id, payload):
         ),
     )
     conn.commit()
+
+
+LIVE_META = {"channel_name": None, "reactions": []}
+LIVE_META_ORGANIZER = {"channel_name": None, "reactions": [], "organizer_dn": "Example, Jordan"}
+
+
+def _add_live(conn, obs_id, conv_id, *, meta=LIVE_META, ts=RECEIVED_TS, thread=True):
+    """Store a row in the live store shape: no ID in metadata, ID in thread/channel columns."""
+    _add_obs(
+        conn,
+        obs_id,
+        dict(meta),
+        ts=ts,
+        channel_id=f"email:{conv_id}" if conv_id else None,
+        thread_id=conv_id if thread else None,
+    )
 
 
 def _cite(conn, claim_id, obs_ids):
@@ -193,7 +226,7 @@ class TestClassifyFromMetadata:
 
 class TestUndetermined:
     def test_unclassifiable_rows_in_bucket(self, store, db_path):
-        _add_obs(store, "obs_no_id", {"channel_name": None}, ts=1000.0)
+        _add_obs(store, "obs_no_id", {"channel_name": None}, ts=1000.0, channel_id=None)
         _add_obs(store, "obs_none", {"conversationId": "GONE"}, ts=3000.0)
         _add_obs(store, "obs_classless", {"conversationId": "BARE"}, ts=2000.0)
         bare = _payload_580()
@@ -211,6 +244,13 @@ class TestUndetermined:
             "obs_none",
             "obs_classless",
         }
+        assert selection.undetermined.reasons == {
+            NO_SOURCE_ID: 1,
+            NOT_IN_CURRENT_INBOX: 1,
+            NO_CLASS_FIELDS: 1,
+            REFETCH_UNAVAILABLE: 0,
+        }
+        assert adapter.calls == ["BARE", "GONE"]
 
     def test_no_adapter_means_undetermined(self, store, db_path):
         _add_obs(store, "obs_x", {"conversationId": "C1"})
@@ -219,6 +259,149 @@ class TestUndetermined:
 
         assert selection.selected == []
         assert selection.undetermined.count == 1
+        assert selection.undetermined.reasons[REFETCH_UNAVAILABLE] == 1
+
+
+class TestLiveRowShape:
+    """#609: live rows keep the conversation ID in thread_id/channel_id, not metadata."""
+
+    @pytest.mark.parametrize("meta", [LIVE_META, LIVE_META_ORGANIZER])
+    def test_id_read_from_thread_id(self, store, db_path, meta):
+        _add_live(store, "obs_fox", "CONV_FOX_580", meta=meta)
+        adapter = FakeAdapter({"CONV_FOX_580": _payload_580()})
+
+        selection = select_meeting_observations(db_path, adapter)
+
+        assert _ids(selection) == {"obs_fox"}
+        assert adapter.calls == ["CONV_FOX_580"]
+        assert selection.selected[0].item_classes == ["IPM.Schedule.Meeting.Resp.Pos"]
+        assert selection.undetermined.count == 0
+
+    def test_id_read_from_channel_id_when_thread_id_null(self, store, db_path):
+        _add_live(store, "obs_fox", "CONV_FOX_580", thread=False)
+        adapter = FakeAdapter({"CONV_FOX_580": _payload_580()})
+
+        selection = select_meeting_observations(db_path, adapter)
+
+        assert _ids(selection) == {"obs_fox"}
+        assert adapter.calls == ["CONV_FOX_580"]
+
+    def test_thread_id_preferred_over_channel_id(self, store, db_path):
+        _add_obs(
+            store,
+            "obs_fox",
+            dict(LIVE_META),
+            thread_id="CONV_FOX_580",
+            channel_id="email:OTHER",
+        )
+        adapter = FakeAdapter({"CONV_FOX_580": _payload_580()})
+
+        assert _ids(select_meeting_observations(db_path, adapter)) == {"obs_fox"}
+        assert adapter.calls == ["CONV_FOX_580"]
+
+    def test_metadata_id_preferred_over_columns(self, store, db_path):
+        _add_obs(
+            store,
+            "obs_fox",
+            {**LIVE_META, "conversationId": "CONV_FOX_580"},
+            thread_id="OTHER",
+            channel_id="email:OTHER",
+        )
+        adapter = FakeAdapter({"CONV_FOX_580": _payload_580()})
+
+        assert _ids(select_meeting_observations(db_path, adapter)) == {"obs_fox"}
+        assert adapter.calls == ["CONV_FOX_580"]
+
+    def test_conversation_outside_listing_is_not_in_current_inbox(self, store, db_path):
+        _add_live(store, "obs_old", "CONV_OLD_FOX")
+        adapter = FakeAdapter({"CONV_FOX_580": _payload_580()})
+
+        selection = select_meeting_observations(db_path, adapter)
+
+        assert selection.selected == []
+        assert selection.undetermined.count == 1
+        assert selection.undetermined.reasons[NOT_IN_CURRENT_INBOX] == 1
+        assert adapter.calls == ["CONV_OLD_FOX"]
+
+    @pytest.mark.parametrize("channel_id", [None, "email:", "slack:C123"])
+    def test_no_id_anywhere_is_no_source_id(self, store, db_path, channel_id):
+        _add_obs(store, "obs_bare", dict(LIVE_META), channel_id=channel_id)
+        adapter = FakeAdapter()
+
+        selection = select_meeting_observations(db_path, adapter)
+
+        assert selection.undetermined.count == 1
+        assert selection.undetermined.reasons[NO_SOURCE_ID] == 1
+        assert adapter.calls == []
+
+    def test_refetch_without_class_fields_is_no_class_fields(self, store, db_path):
+        _add_live(store, "obs_fox", "CONV_FOX_580")
+        bare = _payload_580()
+        del bare["itemClasses"]
+
+        selection = select_meeting_observations(db_path, FakeAdapter({"CONV_FOX_580": bare}))
+
+        assert selection.undetermined.reasons[NO_CLASS_FIELDS] == 1
+
+    def test_zero_timestamp_counted_and_left_out_of_range(self, store, db_path):
+        _add_live(store, "obs_epoch", "CONV_EPOCH", ts=0.0)
+        _add_live(store, "obs_a", "CONV_A", ts=2000.0)
+        _add_live(store, "obs_b", "CONV_B", ts=4000.0)
+
+        selection = select_meeting_observations(db_path, FakeAdapter())
+
+        und = selection.undetermined
+        assert und.count == 3
+        assert und.zero_timestamp == 1
+        assert und.earliest == 2000.0
+        assert und.latest == 4000.0
+        assert "obs_epoch" in und.observation_ids
+        assert und.reasons[NOT_IN_CURRENT_INBOX] == 3
+
+    def test_only_zero_timestamp_rows_have_no_range(self, store, db_path):
+        _add_live(store, "obs_epoch", "CONV_EPOCH", ts=0.0)
+
+        und = select_meeting_observations(db_path, FakeAdapter()).undetermined
+
+        assert und.count == 1
+        assert und.zero_timestamp == 1
+        assert und.earliest is None
+        assert und.latest is None
+
+    def test_refetched_note_with_empty_preview_not_meeting(self, store, db_path):
+        _add_live(store, "obs_note", "CONV_NOTE")
+        note = _payload_580("IPM.Note", conv_id="CONV_NOTE")
+        store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = db_path.read_bytes()
+
+        selection = select_meeting_observations(db_path, FakeAdapter({"CONV_NOTE": note}))
+
+        assert selection.selected == []
+        assert selection.undetermined.count == 0
+        assert selection.not_meeting_count == 1
+        assert db_path.read_bytes() == before
+
+    def test_live_dry_run_leaves_store_byte_identical(self, store, db_path):
+        _add_live(store, "obs_fox", "CONV_FOX_580")
+        _add_live(store, "obs_org", "CONV_ORG", meta=LIVE_META_ORGANIZER, thread=False)
+        _add_live(store, "obs_old", "CONV_OLD_FOX")
+        _add_live(store, "obs_epoch", None, ts=0.0)
+        store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = db_path.read_bytes()
+        adapter = FakeAdapter(
+            {
+                "CONV_FOX_580": _payload_580(),
+                "CONV_ORG": _payload_580("IPM.Schedule.Meeting.Request", conv_id="CONV_ORG"),
+            }
+        )
+
+        selection = select_meeting_observations(db_path, adapter)
+
+        assert _ids(selection) == {"obs_fox", "obs_org"}
+        assert selection.undetermined.reasons[NOT_IN_CURRENT_INBOX] == 1
+        assert selection.undetermined.reasons[NO_SOURCE_ID] == 1
+        assert selection.undetermined.zero_timestamp == 1
+        assert db_path.read_bytes() == before
 
 
 class TestDecidedByIsMeetingMessage:
