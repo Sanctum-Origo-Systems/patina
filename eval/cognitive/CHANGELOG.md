@@ -8,7 +8,8 @@
 - #620: Feat: Add participants and customer_domains to objectives, with a ($1.44)
 - #625: Feat: [patina] fix: contradictions still fill the cap on live data ($0.85)
 - #624: Feat: [patina] fix: cleanup-meeting-obs selects 0 rows on the live ($1.27)
-Total: 9 PRs, $11.78
+- #626: Feat: Source facts for Outlook calendar, Slack and IMAP/Gmail, plu ($2.43)
+Total: 10 PRs, $14.21
 
 ## v0.36.0 (2026-11-04)
 - #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
