@@ -10,6 +10,7 @@ from patina.adapters._mcp_client import (
     parse_json_content,
     strip_slack_content_tags,
 )
+from patina.adapters._source_facts import put_fact
 from patina.models import ChatMessage, DmChannel
 
 logger = logging.getLogger(__name__)
@@ -273,6 +274,12 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
     thread_ts = raw.get("thread_ts")
     thread_id = thread_ts if thread_ts and thread_ts != ts else None
 
+    source_facts: dict = {}
+    put_fact(source_facts, "message_id", ts)
+    put_fact(source_facts, "channel_id", channel_id)
+    put_fact(source_facts, "sender_key", user_id)
+    put_fact(source_facts, "received_raw", ts)
+
     msg = ChatMessage(
         user_id=user_id,
         text=text,
@@ -283,6 +290,7 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
         user_name=user_name,
         reactions=reactions,
         sender_slack_id=user_id if user_id else None,
+        source_facts=source_facts,
     )
     msg._is_dm = is_dm  # type: ignore[attr-defined]
     return msg

@@ -5,11 +5,22 @@ import time
 import urllib.request
 from urllib.error import HTTPError
 
+from patina.adapters._source_facts import put_fact
 from patina.models import ChatMessage
 
 
 class SlackAPIError(Exception):
     pass
+
+
+def _source_facts(ts, channel_id: str | None, user_id: str | None) -> dict:
+    """Raw Slack facts for ``metadata["source"]``: ts, channel id and user id as sent."""
+    facts: dict = {}
+    put_fact(facts, "message_id", ts)
+    put_fact(facts, "channel_id", channel_id)
+    put_fact(facts, "sender_key", user_id)
+    put_fact(facts, "received_raw", ts)
+    return facts
 
 
 class SlackLiveAdapter:
@@ -72,6 +83,7 @@ class SlackLiveAdapter:
                     channel_name=channel_name,
                     reactions=msg.get("reactions", []),
                     sender_slack_id=user_id if user_id else None,
+                    source_facts=_source_facts(msg.get("ts"), channel_id, user_id),
                 )
             )
         return result
@@ -108,6 +120,7 @@ class SlackLiveAdapter:
                     channel_id=channel.get("id", ""),
                     channel_name=channel.get("name", ""),
                     sender_slack_id=sender_id if sender_id else None,
+                    source_facts=_source_facts(msg.get("ts"), channel.get("id"), sender_id),
                 )
             )
         return result

@@ -285,6 +285,7 @@ def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:
                 channel_id=f"calendar:{ev.id}",
                 user_name=ev.organizer,
                 organizer_dn=ev.organizer_dn or ev.organizer or None,
+                source_facts=ev.source_facts,
             )
         )
     return results

@@ -128,3 +128,4 @@ class CalendarEvent:
     attendees: list[str] = field(default_factory=list)
     organizer: str = ""
     organizer_dn: str | None = None
+    source_facts: dict = field(default_factory=dict)
