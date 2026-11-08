@@ -308,3 +308,7 @@ Total: 1 PRs, $1.53
 - #484: Feat: Fix backfill channel-peer DN logic in backfill.py and add pr ($2.16)
 Total: 4 PRs, $9.09
 
+## v0.29.1 (2026-10-23)
+- #492: Fix: repair multi-identity entities retaining stolen member handles ($0.00)
+Total: 1 PRs, $0.00
+
