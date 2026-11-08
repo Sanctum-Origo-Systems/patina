@@ -5,6 +5,9 @@ Its input per row comes from stored class fields in metadata, else a read-only
 re-fetch of the source payload, else the row is undetermined and never removed.
 The re-fetch ID is ``conversationId``/``id`` in metadata, else ``thread_id``,
 else ``channel_id`` without its ``email:`` prefix (where ingest stores it).
+A claim or relationship cites a row only when its ``source_ids`` hold that
+row's observation id; rows citing no existing observation are reported as
+unknown provenance, never matched by text or time.
 """
 
 from __future__ import annotations
@@ -70,6 +73,8 @@ class Selection:
     unprocessed_count: int
     undetermined: UndeterminedBucket
     not_meeting_count: int
+    # Claims and relationships whose source_ids name no existing observation.
+    unknown_provenance: int = 0
 
     @property
     def selected_count(self) -> int:
@@ -184,18 +189,35 @@ def _load_metadata(raw: str | None) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-def _citation_counts(conn: sqlite3.Connection, obs_ids: set[str]) -> dict[str, int]:
+def _load_source_ids(raw: str | None) -> set[str]:
+    if not raw:
+        return set()
+    try:
+        sids = json.loads(raw)
+    except json.JSONDecodeError:
+        return set()
+    return {s for s in sids if isinstance(s, str)} if isinstance(sids, list) else set()
+
+
+def _citation_counts(conn: sqlite3.Connection, obs_ids: set[str]) -> tuple[dict[str, int], int]:
+    """Return ``(citing rows per selected id, unknown-provenance row count)``.
+
+    Claims and relationships are both counted. Only source ids that name an
+    existing observation are citations; method labels such as ``"extraction"``
+    are not. A row with no such id has unknown provenance.
+    """
     counts = dict.fromkeys(obs_ids, 0)
-    if not obs_ids:
-        return counts
-    for row in conn.execute(
-        "SELECT source_ids FROM claims WHERE source_ids IS NOT NULL"
-    ).fetchall():
-        sids = json.loads(row["source_ids"])
-        for sid in set(sids):
-            if sid in counts:
-                counts[sid] += 1
-    return counts
+    known = {r["id"] for r in conn.execute("SELECT id FROM observations").fetchall()}
+    unknown = 0
+    for table in ("claims", "relationships"):
+        for row in conn.execute(f"SELECT source_ids FROM {table}").fetchall():
+            real = _load_source_ids(row["source_ids"]) & known
+            if not real:
+                unknown += 1
+            for sid in real:
+                if sid in counts:
+                    counts[sid] += 1
+    return counts, unknown
 
 
 def _count_source_rows(conn: sqlite3.Connection) -> int:
@@ -242,7 +264,7 @@ def select_meeting_observations(
             else:
                 not_meeting += 1
 
-        citations = _citation_counts(conn, {r["id"] for r, _ in picked})
+        citations, unknown_provenance = _citation_counts(conn, {r["id"] for r, _ in picked})
     finally:
         conn.close()
 
@@ -267,6 +289,7 @@ def select_meeting_observations(
         unprocessed_count=len(selected) - processed,
         undetermined=undetermined,
         not_meeting_count=not_meeting,
+        unknown_provenance=unknown_provenance,
     )
 
 
@@ -289,7 +312,7 @@ def remove_meeting_observations(db_path: Path, selection: Selection) -> RemovalR
                 backup_path=None, deleted=0, before_count=before, after_count=before
             )
 
-        current = _citation_counts(conn, set(ids))
+        current, _ = _citation_counts(conn, set(ids))
         cited_now = [s for s in selection.selected if current[s.observation_id] > 0]
         if cited_now:
             raise RemovalRefused(cited_now)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 import pytest
+from typer.testing import CliRunner
 
 import patina.cleanup_meeting_obs as cleanup
 from patina.adapters.outlook_mcp import _email_from_raw
@@ -19,9 +21,12 @@ from patina.cleanup_meeting_obs import (
     remove_meeting_observations,
     select_meeting_observations,
 )
-from patina.graph import insert_claim, insert_observation
-from patina.models import Claim, Observation
+from patina.cli import app
+from patina.graph import insert_claim, insert_observation, upsert_relationship
+from patina.models import Claim, Observation, Relationship
 from patina.store import connect, run_pending_migrations
+
+runner = CliRunner()
 
 RECEIVED = "2026-10-01T15:04:05Z"
 RECEIVED_TS = datetime.fromisoformat(RECEIVED).timestamp()
@@ -574,3 +579,210 @@ class TestRemoval:
 
         assert seen == [{"obs_fox", "obs_meta", "obs_note", "obs_unknown"}]
         assert result.backup_path == db_path.with_suffix(".db.bak.test")
+
+
+MEETING_META = {"itemClasses": ["IPM.Schedule.Meeting.Request"]}
+NOTE_META = {"itemClasses": ["IPM.Note"]}
+LEGACY_SOURCE_IDS = [[], ["extraction"], ["behavioral_extraction"], ["envoy_migration"]]
+
+
+def _relate(conn, rel_id, obs_ids):
+    conn.execute(
+        "INSERT OR IGNORE INTO entities (id, type, name, aliases, metadata, first_seen, last_seen)"
+        " VALUES ('ent_taylor', 'person', 'Taylor Morgan', '[]', '{}', 'x', 'x')"
+    )
+    upsert_relationship(
+        conn,
+        Relationship(
+            id=rel_id,
+            subject_id="ent_jordan",
+            predicate="works-with",
+            object_id="ent_taylor",
+            source_ids=obs_ids,
+        ),
+    )
+
+
+def _citations(db_path, obs_ids):
+    conn = connect(db_path)
+    try:
+        return cleanup._citation_counts(conn, set(obs_ids))
+    finally:
+        conn.close()
+
+
+def _invoke(db_path, *args):
+    return runner.invoke(app, ["cleanup-meeting-obs", *args, "--home", str(db_path.parent)])
+
+
+class TestProvenance:
+    """#615: only real observation ids cite; rows with none are unknown provenance."""
+
+    def test_claim_citing_selected_row(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _cite(store, "claim_fox", ["obs_meet"])
+
+        assert _citations(db_path, {"obs_meet"}) == ({"obs_meet": 1}, 0)
+        selection = select_meeting_observations(db_path)
+        assert selection.selected[0].citing_claims == 1
+        assert selection.total_citations == 1
+        assert selection.unknown_provenance == 0
+
+    @pytest.mark.parametrize("source_ids", LEGACY_SOURCE_IDS)
+    def test_legacy_label_or_empty_is_unknown_provenance(self, store, db_path, source_ids):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _cite(store, "claim_old", source_ids)
+
+        assert _citations(db_path, {"obs_meet"}) == ({"obs_meet": 0}, 1)
+
+    def test_null_source_ids_is_unknown_provenance(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _cite(store, "claim_null", [])
+        store.execute("UPDATE claims SET source_ids = NULL")
+        store.commit()
+
+        assert _citations(db_path, {"obs_meet"}) == ({"obs_meet": 0}, 1)
+
+    def test_label_never_cites_even_if_passed_as_selected(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _cite(store, "claim_old", ["extraction"])
+
+        counts, unknown = _citations(db_path, {"obs_meet", "extraction"})
+
+        assert counts == {"obs_meet": 0, "extraction": 0}
+        assert unknown == 1
+
+    def test_unselected_real_id_is_neither(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _add_obs(store, "obs_note", NOTE_META)
+        _cite(store, "claim_note", ["obs_note"])
+
+        assert _citations(db_path, {"obs_meet"}) == ({"obs_meet": 0}, 0)
+        selection = select_meeting_observations(db_path)
+        assert _ids(selection) == {"obs_meet"}
+        assert selection.total_citations == 0
+        assert selection.unknown_provenance == 0
+
+    @pytest.mark.parametrize(
+        ("source_ids", "expected"),
+        [
+            (["extraction", "obs_meet"], ({"obs_meet": 1}, 0)),
+            (["obs_note", "behavioral_extraction"], ({"obs_meet": 0}, 0)),
+        ],
+    )
+    def test_mixed_label_and_real_id_classified_by_real_id(
+        self, store, db_path, source_ids, expected
+    ):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _add_obs(store, "obs_note", NOTE_META)
+        _cite(store, "claim_mixed", source_ids)
+
+        assert _citations(db_path, {"obs_meet"}) == expected
+
+    def test_relationship_citing_selected_row(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _relate(store, "rel_fox", ["obs_meet"])
+
+        assert _citations(db_path, {"obs_meet"}) == ({"obs_meet": 1}, 0)
+        assert select_meeting_observations(db_path).total_citations == 1
+
+    def test_relationship_with_legacy_label_is_unknown_provenance(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _relate(store, "rel_old", ["extraction"])
+
+        assert _citations(db_path, {"obs_meet"}) == ({"obs_meet": 0}, 1)
+
+    def test_cited_by_relationship_refuses_removal(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _relate(store, "rel_fox", ["obs_meet"])
+
+        with pytest.raises(RemovalRefused):
+            remove_meeting_observations(db_path, select_meeting_observations(db_path))
+
+        assert store.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"] == 1
+
+
+class TestProvenanceCli:
+    def test_citing_claim_in_text_and_json(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _cite(store, "claim_fox", ["obs_meet"])
+
+        text = _invoke(db_path)
+        result = _invoke(db_path, "--json")
+
+        assert text.exit_code == 0, text.output
+        assert "Total citing claims: 1" in text.stdout
+        assert "obs_meet" in text.stdout and "citing claims: 1" in text.stdout
+        assert "unknown provenance: 0" in text.stdout.splitlines()
+        data = json.loads(result.stdout)
+        assert data["total_citations"] == 1
+        assert data["selected"][0]["citing_claims"] == 1
+        assert data["unknown_provenance"] == 0
+
+    def test_confirm_refuses_and_keeps_rows(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _cite(store, "claim_fox", ["obs_meet"])
+        store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = db_path.read_bytes()
+
+        result = _invoke(db_path, "--confirm")
+
+        assert result.exit_code != 0
+        assert "Total citing claims: 1" in result.stdout
+        assert "Refusing to delete: 1 selected row(s) have citing claims" in result.stdout
+        assert "obs_meet  citing claims: 1" in result.stdout
+        assert "No changes made." in result.stdout
+        ids = {r["id"] for r in store.execute("SELECT id FROM observations").fetchall()}
+        assert ids == {"obs_meet"}
+        assert db_path.read_bytes() == before
+        assert list(db_path.parent.glob("*.bak.*")) == []
+
+    def test_legacy_claims_reported_as_unknown_provenance(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        for i, source_ids in enumerate(LEGACY_SOURCE_IDS):
+            _cite(store, f"claim_old_{i}", source_ids)
+        n = len(LEGACY_SOURCE_IDS)
+
+        text = _invoke(db_path)
+        result = _invoke(db_path, "--json")
+
+        assert text.exit_code == 0, text.output
+        assert "Total citing claims: 0" in text.stdout
+        assert f"unknown provenance: {n}" in text.stdout.splitlines()
+        data = json.loads(result.stdout)
+        assert data["total_citations"] == 0
+        assert data["unknown_provenance"] == n
+
+    def test_json_new_key_is_additive(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        _cite(store, "claim_old", ["extraction"])
+
+        result = _invoke(db_path, "--json")
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        assert set(data) == {
+            "selected_count",
+            "earliest",
+            "latest",
+            "processed",
+            "unprocessed",
+            "selected",
+            "total_citations",
+            "unknown_provenance",
+            "undetermined",
+        }
+        assert set(data["selected"][0]) == {
+            "observation_id",
+            "date",
+            "item_classes",
+            "citing_claims",
+        }
+        assert set(data["undetermined"]) == {
+            "count",
+            "earliest",
+            "latest",
+            "reasons",
+            "zero_timestamp",
+        }
+        assert data["unknown_provenance"] == 1
