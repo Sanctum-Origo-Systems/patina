@@ -1,3 +1,8 @@
+## v0.37.1 (2026-11-08)
+- #637: Docs: ingestion pipeline page and sink diagram ($0.00)
+- #635: Docs: explain why cross-app identity resolution is hard ($0.00)
+Total: 2 PRs, $0.00
+
 ## v0.37.0 (2026-11-07)
 - #603: Feat: [patina] fix: contradictions still fills the cap with org an ($0.98)
 - #602: Feat: Meeting-observation classification, selection and guarded re ($1.57)
