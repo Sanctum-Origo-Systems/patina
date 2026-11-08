@@ -19,6 +19,7 @@ docs/features/*
 !docs/features/identity-precedence.md
 !docs/features/identity-gate.md
 !docs/features/identity-resolution.md
+!docs/features/ingestion.md
 .mcp.json
 CLAUDE.local.md
 fixtures/**/*.zip

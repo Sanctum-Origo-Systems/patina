@@ -50,6 +50,21 @@ Distribution lists, shared mailboxes, bots, no-reply senders and team channels a
 
 False merges also spread. If A = B and B = C, then A = C, even when A and C are clearly different people. This is how a **sink** forms: an entity that holds more than one Slack ID or DN. Every alias it holds is another key that new messages can match, so it pulls in more identities over time. The sink guards are listed under [How Patina bounds it](#how-patina-bounds-it).
 
+```mermaid
+flowchart TD
+  M1["Incoming sender:<br/>a Slack ID, DN, handle or name"] --> R{"resolve_entity_id"}
+  R -- "ID matches exactly one entity" --> P["That entity"]
+  R -- "name or handle only,<br/>and the candidate is a sink" --> NM["No match (#547, #553)<br/>a sink is never picked by name"]
+  R -- "the sink's own ID" --> S[("Sink entity<br/>holds more than one Slack ID or DN")]
+
+  S --> G1["Never gains a member's handle,<br/>email or new ID (#561)"]
+  S --> G2["Keeps its name and never<br/>collects the incoming name (#547)"]
+  S --> G3["Never merged away on ingest.<br/>Conflicts go to dedup review (#555)"]
+
+  RP["repair-multi-identity<br/>repair-sink-handles<br/>preview, then --confirm"] --> S
+  RF["Relevance filter (#617)"] -. "bots and lists dropped at the door,<br/>so fewer new sinks form" .-> M1
+```
+
 ### 6. Fixes interact
 
 Identity logic is a web of rules, and every caller depends on what the resolver returns. In one case, a fix made `resolve_entity_id` *less* ambiguous, which was correct on its own (#547, #553). But a name lookup inside `upsert_entity` that used to return "ambiguous" now returned a person. That woke a dormant merge path, and the next live ingest merged a sink into a person and deleted it (#555). Each change was right, and together they did damage. That is why every resolver change is now replayed through the [Identity Gate](identity-gate.md).
