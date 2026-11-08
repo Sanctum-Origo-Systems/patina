@@ -59,7 +59,7 @@ flowchart TD
 
   S --> G1["Never gains a member's handle,<br/>email or new ID (#561)"]
   S --> G2["Keeps its name and never<br/>collects the incoming name (#547)"]
-  S --> G3["Never merged away on ingest;<br/>conflicts go to dedup review (#555)"]
+  S --> G3["Never merged away on ingest.<br/>Conflicts go to dedup review (#555)"]
 
   RP["repair-multi-identity<br/>repair-sink-handles<br/>preview, then --confirm"] --> S
   RF["Relevance filter (#617)"] -. "bots and lists dropped at the door,<br/>so fewer new sinks form" .-> M1
