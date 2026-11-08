@@ -455,7 +455,7 @@ class ExportPort(Protocol):
 
 #### Source facts: `metadata["source"]`
 
-Adapters record what the source system actually sent under the observation's `metadata["source"]` dict. These are raw facts, kept as given (no normalization), so later passes can re-derive meaning without re-fetching. The adapter fills `source_facts` on `EmailMessage` / `ChatMessage`; ingest copies it to `metadata["source"]`. Entity resolution and dedupe do not read it.
+Adapters record what the source system actually sent under the observation's `metadata["source"]` dict. These are raw facts, kept as given (no normalization), so later passes can re-derive meaning without re-fetching. The adapter fills `source_facts` on `EmailMessage` / `CalendarEvent` / `ChatMessage` (via `patina.adapters._source_facts.put_fact`); ingest copies it to `metadata["source"]`. Entity resolution and dedupe do not read it.
 
 **Omit-if-absent rule.** A key is written only when the source sent a value. A field the source left out is absent from `metadata["source"]`. It is never written as `""`, `0`, `null` or an empty list. When the source sent nothing at all, `metadata["source"]` itself is absent.
 
@@ -469,14 +469,20 @@ Adapters record what the source system actually sent under the observation's `me
 | `to` | Raw To recipients as given, including any distribution-list/group marker the source sets |
 | `cc` | Raw Cc recipients as given, same rule as `to` |
 | `received_raw` | The source's received-time string, verbatim |
+| `channel_id` | The source channel/conversation id the message came from, as given (Slack) |
+| `attendees` | Raw attendee list as given (calendar) |
 
 **Outlook email (`outlook_mcp_email`)** — `_email_from_raw` maps: `id` → `message_id`; `itemClasses` (else `messageClass` / `message_class`) → `item_class`; the raw `senders` entry that became the sender (else the `from` email/name) → `sender_key`; `toRecipients` → `to`; `ccRecipients` → `cc`; `lastDeliveryTime` (else `receivedDateTime`) → `received_raw`. `thread_id` stays the `conversationId` and `channel_id` stays `email:<conversationId>`. The `channel_name`, `reactions`, `sender_dn` and `organizer_dn` keys are unchanged.
 
 **Missing-timestamp policy: skip and count.** An email with no usable received time (absent or unparseable) is not stored, so no row gets `timestamp = 0.0`. It is counted under the `missing_timestamp` reason in the ingest result's `skip_reasons` dict (e.g. `{"missing_timestamp": 1}`). The other possible policy, storing the row with a `timestamp_missing` flag, is not used.
 
-**Legacy rows.** Observations ingested before this contract existed have no `metadata["source"]` key. They cannot be reliably backfilled: the raw payload was not kept, and re-fetching only returns what the source still holds now. Consumers must treat a missing `metadata["source"]` as "unknown", not as "the source sent nothing".
+**Outlook calendar (`outlook_mcp_calendar`)** — `_calendar_event_from_raw` maps: `meetingId` (else `id`) → `message_id`; the organizer key (`organizer.email`, else `organizer.name`, else the organizer string) → `sender_key`; `attendees` → `attendees`, the list exactly as given (dicts with name, email, type etc.). An event with no `attendees` key has no `attendees` key, not an empty list. `channel_id` stays `calendar:<meetingId>`, `thread_id` stays null and the timestamp stays the event start. The `channel_name`, `reactions` and `organizer_dn` keys are unchanged.
 
-Calendar, Slack and IMAP/Gmail adapters should reuse these key names and the omit-if-absent rule when they add source facts.
+**Slack (`slack_mcp`, `slack_live`)** — `slack_mcp._msg_from_raw` and `SlackLiveAdapter` (`_parse_messages` and `list_mentions`) map: `ts` → `message_id` and `received_raw` (the same string, verbatim); the channel id the message came from → `channel_id`; the raw Slack user id (e.g. `U…`/`W…`, not the resolved display name) → `sender_key`. `thread_id`, `channel_id` and the observation timestamp are unchanged. The `channel_name`, `reactions` and `sender_slack_id` keys are unchanged.
+
+**IMAP/Gmail (`imap`)** — `ImapEmailAdapter._parse_message` maps the raw, undecoded headers: `Message-ID` → `message_id`; `From` → `sender_key`; `To` → `to`; `Cc` → `cc`; `Date` → `received_raw`. Header values are stored as the strings the server sent (RFC 2047 encoded words intact, not split into lists). A message with no `Cc` (or `To`) header has no `cc` (or `to`) key. `thread_id` stays `In-Reply-To`, `channel_id` stays `email:<In-Reply-To or Message-ID>`, and the sender stays the decoded `From`.
+
+**Legacy rows.** Observations ingested before this contract existed have no `metadata["source"]` key. This covers Outlook email rows from before #611, and Outlook calendar, Slack (`slack_mcp`, `slack_live`) and IMAP/Gmail rows from before #612. They cannot be reliably backfilled: the raw payload was not kept, and re-fetching only returns what the source still holds now. Consumers must treat a missing `metadata["source"]` as "unknown", not as "the source sent nothing".
 
 ---
 

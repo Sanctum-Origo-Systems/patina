@@ -38,6 +38,18 @@ def test_parse_messages_sets_sender_slack_id():
     assert msgs[0].sender_slack_id == "U999"
 
 
+def test_parse_messages_source_facts():
+    adapter = SlackLiveAdapter("xoxb-test")
+    raw = [{"user": "U0EXAMPLE09", "text": "The quick brown fox", "ts": "1700000500.000100"}]
+    msgs = adapter._parse_messages(raw, "C0EXAMPLE09", "project-fox")
+    assert msgs[0].source_facts == {
+        "message_id": "1700000500.000100",
+        "channel_id": "C0EXAMPLE09",
+        "sender_key": "U0EXAMPLE09",
+        "received_raw": "1700000500.000100",
+    }
+
+
 def test_parse_messages_sender_slack_id_guard_consistency():
     """All three adapter sites must use the 'if x else None' guard pattern."""
     import inspect

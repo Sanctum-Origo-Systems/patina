@@ -1135,6 +1135,26 @@ class TestChannelIdFallback:
         assert msg.channel_id == "C00000CH001"
 
 
+class TestSourceFacts:
+    def test_dict_user_and_channel(self):
+        raw = {
+            "user": {"id": "U0EXAMPLE07", "real_name": "Jordan Example"},
+            "text": "The quick brown fox",
+            "ts": "1781900000.111111",
+            "channel": {"id": "C0EXAMPLE07", "name": "project-fox"},
+        }
+        assert _msg_from_raw(raw).source_facts == {
+            "message_id": "1781900000.111111",
+            "channel_id": "C0EXAMPLE07",
+            "sender_key": "U0EXAMPLE07",
+            "received_raw": "1781900000.111111",
+        }
+
+    def test_absent_channel_and_ts_omitted(self):
+        raw = {"user": "U0EXAMPLE07", "text": "The quick brown fox"}
+        assert _msg_from_raw(raw).source_facts == {"sender_key": "U0EXAMPLE07"}
+
+
 class TestParseActivityTs:
     def test_iso8601_with_z_suffix(self):
         ts = _parse_activity_ts("2026-07-28T13:47:54.920Z")

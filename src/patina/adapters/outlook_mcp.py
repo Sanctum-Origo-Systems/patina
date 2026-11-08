@@ -8,6 +8,7 @@ from patina.adapters._mcp_client import (
     McpSyncBridge,
     parse_outlook_content,
 )
+from patina.adapters._source_facts import put_fact
 from patina.models import CalendarEvent, EmailMessage
 
 
@@ -161,13 +162,6 @@ def _normalize_sender(sender: str) -> str:
     return _PAREN_SUFFIX_RE.sub("", sender).strip()
 
 
-def _put_fact(facts: dict, key: str, value) -> None:
-    """Set ``facts[key]`` only when the source sent a value (omit-if-absent)."""
-    if value is None or value == "" or value == []:
-        return
-    facts[key] = value
-
-
 def _email_from_raw(raw: dict) -> EmailMessage:
     senders = raw.get("senders", [])
     sender_dn = None
@@ -206,12 +200,12 @@ def _email_from_raw(raw: dict) -> EmailMessage:
 
     item_class = raw.get("itemClasses", raw.get("messageClass", raw.get("message_class")))
     source_facts: dict = {}
-    _put_fact(source_facts, "message_id", raw.get("id"))
-    _put_fact(source_facts, "item_class", item_class)
-    _put_fact(source_facts, "sender_key", sender_key)
-    _put_fact(source_facts, "to", raw.get("toRecipients"))
-    _put_fact(source_facts, "cc", raw.get("ccRecipients"))
-    _put_fact(source_facts, "received_raw", received)
+    put_fact(source_facts, "message_id", raw.get("id"))
+    put_fact(source_facts, "item_class", item_class)
+    put_fact(source_facts, "sender_key", sender_key)
+    put_fact(source_facts, "to", raw.get("toRecipients"))
+    put_fact(source_facts, "cc", raw.get("ccRecipients"))
+    put_fact(source_facts, "received_raw", received)
 
     subject = raw.get("topic", raw.get("subject", ""))
     preview = raw.get("preview", raw.get("bodyPreview", raw.get("body", "")))
@@ -248,6 +242,11 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
         if isinstance(att, dict):
             attendees.append(att.get("email", ""))
 
+    source_facts: dict = {}
+    put_fact(source_facts, "message_id", raw.get("meetingId", raw.get("id")))
+    put_fact(source_facts, "sender_key", organizer)
+    put_fact(source_facts, "attendees", raw.get("attendees"))
+
     return CalendarEvent(
         id=raw.get("meetingId", ""),
         subject=raw.get("subject", ""),
@@ -256,4 +255,5 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
         attendees=attendees,
         organizer=organizer,
         organizer_dn=organizer if organizer else None,
+        source_facts=source_facts,
     )
