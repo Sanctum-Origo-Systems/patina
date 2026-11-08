@@ -1760,6 +1760,8 @@ def _meeting_selection_report(selection) -> dict:
             "count": und.count,
             "earliest": _format_obs_ts(und.earliest),
             "latest": _format_obs_ts(und.latest),
+            "reasons": dict(und.reasons),
+            "zero_timestamp": und.zero_timestamp,
         },
     }
 
@@ -1815,8 +1817,12 @@ def cleanup_meeting_obs_cmd(
             )
         typer.echo(f"Total citing claims: {report['total_citations']}")
         und = report["undetermined"]
-        und_range = f" ({und['earliest']} to {und['latest']})" if und["count"] else ""
+        und_range = f" ({und['earliest']} to {und['latest']})" if und["earliest"] else ""
         typer.echo(f"Undetermined (not selected): {und['count']}{und_range}")
+        if und["count"]:
+            for reason, count in und["reasons"].items():
+                typer.echo(f"  {reason}: {count}")
+            typer.echo(f"  zero_timestamp: {und['zero_timestamp']}")
 
     if not confirm:
         if as_json:
