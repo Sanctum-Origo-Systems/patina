@@ -1417,3 +1417,94 @@ def test_cleanup_meeting_obs_uninitialized(tmp_path):
 
     assert result.exit_code == 1
     assert "not initialized" in result.output
+
+
+def _stored_objective(tmp_path):
+    conn = connect(get_db_path(tmp_path))
+    row = conn.execute(
+        "SELECT id, label, keywords, participants, customer_domains FROM objectives"
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def test_objectives_add_and_update_targets(tmp_path):
+    home = ["--home", str(tmp_path)]
+    added = runner.invoke(
+        app,
+        [
+            "objectives",
+            "add",
+            "Ship Atlas",
+            "--keywords",
+            "atlas",
+            "--participant",
+            " Jordan.Example@Example.com",
+            "--participant",
+            "e1",
+            "--customer-domain",
+            "Example.com",
+            *home,
+        ],
+    )
+    assert added.exit_code == 0, added.output
+    assert "participants: jordan.example@example.com, e1" in added.output
+    assert "customer_domains: example.com" in added.output
+
+    row = _stored_objective(tmp_path)
+    assert json.loads(row["participants"]) == ["jordan.example@example.com", "e1"]
+    assert json.loads(row["customer_domains"]) == ["example.com"]
+
+    updated = runner.invoke(
+        app,
+        [
+            "objectives",
+            "update",
+            row["id"][:8],
+            "--customer-domain",
+            "example.org",
+            "--customer-domain",
+            "Example.net",
+            *home,
+        ],
+    )
+    assert updated.exit_code == 0, updated.output
+    assert "customer_domains: example.org, example.net" in updated.output
+
+    row = _stored_objective(tmp_path)
+    assert row["label"] == "Ship Atlas"
+    assert row["keywords"] == "atlas"
+    assert json.loads(row["participants"]) == ["jordan.example@example.com", "e1"]
+    assert json.loads(row["customer_domains"]) == ["example.org", "example.net"]
+
+    updated = runner.invoke(app, ["objectives", "update", row["id"], "--participant", "e2", *home])
+    assert updated.exit_code == 0, updated.output
+    assert json.loads(_stored_objective(tmp_path)["participants"]) == ["e2"]
+
+    listed = runner.invoke(app, ["objectives", "list", *home])
+    assert listed.exit_code == 0, listed.output
+    assert "Ship Atlas (keywords: atlas)" in listed.output
+    assert "participants: e2" in listed.output
+    assert "customer_domains: example.org, example.net" in listed.output
+
+
+def test_objectives_add_without_targets_lists_empty(tmp_path):
+    home = ["--home", str(tmp_path)]
+    assert runner.invoke(app, ["objectives", "add", "Ship Atlas", *home]).exit_code == 0
+
+    row = _stored_objective(tmp_path)
+    assert json.loads(row["participants"]) == []
+    assert json.loads(row["customer_domains"]) == []
+
+    listed = runner.invoke(app, ["objectives", "list", *home])
+    assert "participants: -" in listed.output
+    assert "customer_domains: -" in listed.output
+
+
+def test_objectives_update_unknown_id_fails(tmp_path):
+    result = runner.invoke(
+        app,
+        ["objectives", "update", "ffffffff", "--participant", "e1", "--home", str(tmp_path)],
+    )
+    assert result.exit_code == 1
+    assert "No objective updated" in result.output

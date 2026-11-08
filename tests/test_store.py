@@ -136,3 +136,74 @@ def test_get_recent_extraction_runs_newest_first(db_path):
     runs = get_recent_extraction_runs(conn, 2)
     assert [r["observations_processed"] for r in runs] == [2, 1]
     conn.close()
+
+
+_PRE_616_OBJECTIVES = """
+CREATE TABLE objectives (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    keywords TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+INSERT INTO objectives VALUES
+    ('aaaa000000000001', 'Ship Atlas', 'atlas, launch', 1,
+     '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'),
+    ('aaaa000000000002', 'Old goal', '', 0,
+     '2026-01-02T00:00:00+00:00', '2026-01-02T00:00:00+00:00');
+"""
+
+
+def _pre_616_store(tmp_path):
+    path = get_db_path(tmp_path)
+    conn = connect(path)
+    conn.executescript(_PRE_616_OBJECTIVES)
+    conn.close()
+    return path
+
+
+def _objective_rows(path):
+    conn = connect(path)
+    rows = [dict(r) for r in conn.execute("SELECT * FROM objectives ORDER BY id").fetchall()]
+    conn.close()
+    return rows
+
+
+def test_migration_adds_objective_target_columns(tmp_path):
+    path = _pre_616_store(tmp_path)
+
+    init_db(path)
+    conn = connect(path)
+    run_pending_migrations(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(objectives)").fetchall()}
+    conn.close()
+
+    assert {"participants", "customer_domains"} <= cols
+    rows = _objective_rows(path)
+    assert [(r["label"], r["keywords"]) for r in rows] == [
+        ("Ship Atlas", "atlas, launch"),
+        ("Old goal", ""),
+    ]
+    assert [(r["participants"], r["customer_domains"]) for r in rows] == [("[]", "[]")] * 2
+
+
+def test_objective_target_migration_idempotent(tmp_path):
+    path = _pre_616_store(tmp_path)
+    init_db(path)
+    before = _objective_rows(path)
+
+    init_db(path)
+    conn = connect(path)
+    run_pending_migrations(conn)
+    run_pending_migrations(conn)
+    conn.close()
+
+    assert _objective_rows(path) == before
+
+
+def test_fresh_store_seeds_no_objectives(db_path):
+    conn = connect(db_path)
+    run_pending_migrations(conn)
+    assert conn.execute("SELECT COUNT(*) FROM objectives").fetchone()[0] == 0
+    conn.close()

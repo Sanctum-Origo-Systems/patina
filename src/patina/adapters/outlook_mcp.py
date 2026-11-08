@@ -39,7 +39,8 @@ class OutlookMcpAdapter:
             for item in email_list
             if isinstance(item, dict) and not _is_meeting_message(item)
         ]
-        return [e for e in emails if e.timestamp >= since]
+        # Undated emails pass through so ingest can count them as skipped.
+        return [e for e in emails if e.timestamp is None or e.timestamp >= since]
 
     def search_sent(self, query: str) -> list[EmailMessage]:
         try:
@@ -160,6 +161,13 @@ def _normalize_sender(sender: str) -> str:
     return _PAREN_SUFFIX_RE.sub("", sender).strip()
 
 
+def _put_fact(facts: dict, key: str, value) -> None:
+    """Set ``facts[key]`` only when the source sent a value (omit-if-absent)."""
+    if value is None or value == "" or value == []:
+        return
+    facts[key] = value
+
+
 def _email_from_raw(raw: dict) -> EmailMessage:
     senders = raw.get("senders", [])
     sender_dn = None
@@ -170,6 +178,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
     clean_senders = [s for s in (_normalize_sender(s) for s in senders) if s]
     sender = clean_senders[0] if clean_senders else ""
     sender_name = sender if sender else None
+    sender_key = next((s for s in senders if _normalize_sender(s)), None)
 
     if not sender:
         from_raw = raw.get("from", {})
@@ -181,6 +190,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
                 sender_name = normalized if normalized else None
         elif from_raw:
             sender = str(from_raw)
+        sender_key = sender or next((s for s in senders if s), None)
 
     recipients = []
     for r in raw.get("recipients", raw.get("toRecipients", [])):
@@ -190,7 +200,18 @@ def _email_from_raw(raw: dict) -> EmailMessage:
             recipients.append(r)
 
     received = raw.get("lastDeliveryTime", raw.get("receivedDateTime", ""))
-    timestamp = _parse_outlook_datetime(received) if received else 0.0
+    # No usable received time -> None, never 0.0; ingest skips these
+    # under the ``missing_timestamp`` reason.
+    timestamp = (_parse_outlook_datetime(received) if received else 0.0) or None
+
+    item_class = raw.get("itemClasses", raw.get("messageClass", raw.get("message_class")))
+    source_facts: dict = {}
+    _put_fact(source_facts, "message_id", raw.get("id"))
+    _put_fact(source_facts, "item_class", item_class)
+    _put_fact(source_facts, "sender_key", sender_key)
+    _put_fact(source_facts, "to", raw.get("toRecipients"))
+    _put_fact(source_facts, "cc", raw.get("ccRecipients"))
+    _put_fact(source_facts, "received_raw", received)
 
     subject = raw.get("topic", raw.get("subject", ""))
     preview = raw.get("preview", raw.get("bodyPreview", raw.get("body", "")))
@@ -208,6 +229,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
         conversation_id=raw.get("conversationId"),
         sender_name=sender_name,
         sender_dn=sender_dn,
+        source_facts=source_facts,
     )
 
 

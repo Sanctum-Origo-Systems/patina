@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS relationships (
     confidence REAL DEFAULT 0.5,
     first_seen TEXT NOT NULL,
     last_confirmed TEXT NOT NULL,
-    source_ids TEXT
+    source_ids TEXT,
+    method TEXT
 );
 
 CREATE TABLE IF NOT EXISTS claims (
@@ -44,7 +45,8 @@ CREATE TABLE IF NOT EXISTS claims (
     first_asserted TEXT NOT NULL,
     last_confirmed TEXT NOT NULL,
     decay_rate REAL DEFAULT 0.02,
-    source_ids TEXT
+    source_ids TEXT,
+    method TEXT
 );
 
 CREATE TABLE IF NOT EXISTS observations (
@@ -75,7 +77,9 @@ CREATE TABLE IF NOT EXISTS objectives (
     keywords TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    participants TEXT NOT NULL DEFAULT '[]',
+    customer_domains TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -276,6 +280,7 @@ def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(_TABLES)
+        ensure_objective_target_columns(conn)
         conn.executescript(_FTS)
         conn.executescript(_FTS_TRIGGERS)
         conn.executescript(_INDEXES)
@@ -286,6 +291,20 @@ def init_db(db_path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+_OBJECTIVE_TARGET_COLUMNS = ("participants", "customer_domains")
+
+
+def ensure_objective_target_columns(conn: sqlite3.Connection) -> None:
+    """Add the JSON-list target columns to an objectives table created before #616.
+
+    Existing rows pick up the '[]' default; label and keywords are untouched.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(objectives)").fetchall()}
+    for col in _OBJECTIVE_TARGET_COLUMNS:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE objectives ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'")
 
 
 def run_pending_migrations(conn: sqlite3.Connection) -> None:
@@ -841,6 +860,54 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
             "VALUES ('alias_provenance_merge_action_v1', datetime('now'))"
         )
         conn.commit()
+
+    row = conn.execute("SELECT 1 FROM migrations WHERE name = 'add_method_column_v1'").fetchone()
+    if not row:
+        moved = 0
+        for table in ("claims", "relationships"):
+            _ensure_method_column(conn, table)
+            moved += _move_method_labels_out_of_source_ids(conn, table)
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('add_method_column_v1', datetime('now'))"
+        )
+        conn.commit()
+
+        if moved > 0:
+            print(f"Migration add_method_column_v1: moved {moved} method labels out of source_ids")
+
+
+# Labels older extractor code wrote into source_ids in place of observation ids (#613).
+METHOD_LABELS = ("behavioral_extraction", "extraction", "envoy_migration")
+
+
+def _ensure_method_column(conn: sqlite3.Connection, table: str) -> None:
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if "method" not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN method TEXT")
+
+
+def _move_method_labels_out_of_source_ids(conn: sqlite3.Connection, table: str) -> int:
+    """Move a source_ids that is exactly one method label into method.
+
+    source_ids becomes '[]': the observations behind these rows are unknown,
+    so no ids are guessed. Rows citing real observation ids are left alone.
+    """
+    moved = 0
+    for r in conn.execute(
+        f"SELECT id, source_ids FROM {table} WHERE source_ids IS NOT NULL"
+    ).fetchall():
+        try:
+            sids = json.loads(r["source_ids"])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(sids, list) and len(sids) == 1 and sids[0] in METHOD_LABELS:
+            conn.execute(
+                f"UPDATE {table} SET method = ?, source_ids = '[]' WHERE id = ?",
+                (sids[0], r["id"]),
+            )
+            moved += 1
+    return moved
 
 
 # 'merge' rows sit on a merged-away entity ID, one per token it held (#555).
