@@ -1808,6 +1808,7 @@ def _meeting_selection_report(selection) -> dict:
             for s in selection.selected
         ],
         "total_citations": selection.total_citations,
+        "unknown_provenance": selection.unknown_provenance,
         "undetermined": {
             "count": und.count,
             "earliest": _format_obs_ts(und.earliest),
@@ -1868,6 +1869,7 @@ def cleanup_meeting_obs_cmd(
                 f"  citing claims: {row['citing_claims']}"
             )
         typer.echo(f"Total citing claims: {report['total_citations']}")
+        typer.echo(f"unknown provenance: {report['unknown_provenance']}")
         und = report["undetermined"]
         und_range = f" ({und['earliest']} to {und['latest']})" if und["earliest"] else ""
         typer.echo(f"Undetermined (not selected): {und['count']}{und_range}")

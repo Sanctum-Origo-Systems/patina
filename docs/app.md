@@ -284,6 +284,8 @@ CREATE VIRTUAL TABLE journal_fts USING fts5(body, content=journal, content_rowid
 CREATE VIRTUAL TABLE claims_fts USING fts5(predicate, object, content=claims, content_rowid=rowid);
 ```
 
+**Claim provenance.** `claims.source_ids` and `relationships.source_ids` hold the ids of the observations a belief came from; the extraction method (`extraction`, `behavioral_extraction`) is stored apart in `method`. Rows written before that change hold only method labels (e.g. `["extraction"]`, `["envoy_migration"]`) or `[]`, so they have no observation provenance. They are not backfilled: provenance is never guessed from text similarity or timestamps. `patina cleanup-meeting-obs` counts a claim or relationship as citing a selected observation only when one of its source_ids is that observation's id. Method labels never count. A claim or relationship with no source id that names an existing observation is reported as `unknown provenance: N` (text) and `unknown_provenance` (`--json`), so "0 citing claims" is not read as safe when N > 0. `--confirm` refuses when any selected row is cited; it does not refuse on unknown provenance alone, since those rows cannot be traced to any observation.
+
 ---
 
 ### Home Directory (`~/.patina/`)
