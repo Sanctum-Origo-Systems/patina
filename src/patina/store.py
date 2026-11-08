@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS objectives (
     keywords TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    participants TEXT NOT NULL DEFAULT '[]',
+    customer_domains TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -278,6 +280,7 @@ def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(_TABLES)
+        ensure_objective_target_columns(conn)
         conn.executescript(_FTS)
         conn.executescript(_FTS_TRIGGERS)
         conn.executescript(_INDEXES)
@@ -288,6 +291,20 @@ def init_db(db_path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+_OBJECTIVE_TARGET_COLUMNS = ("participants", "customer_domains")
+
+
+def ensure_objective_target_columns(conn: sqlite3.Connection) -> None:
+    """Add the JSON-list target columns to an objectives table created before #616.
+
+    Existing rows pick up the '[]' default; label and keywords are untouched.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(objectives)").fetchall()}
+    for col in _OBJECTIVE_TARGET_COLUMNS:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE objectives ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'")
 
 
 def run_pending_migrations(conn: sqlite3.Connection) -> None:

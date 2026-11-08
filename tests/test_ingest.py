@@ -1656,3 +1656,74 @@ def test_reingest_writes_no_duplicate_alias_provenance(tmp_path):
 
     assert before > 0
     assert after == before
+
+
+def _ingest_email_twice(home, email):
+    """Ingest one email twice; return (first, second) counts plus entity/obs state."""
+    from patina.ingest import _emails_to_chat_messages
+    from patina.store import connect, get_db_path, init_db, run_pending_migrations
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        run_pending_migrations(conn)
+        first = _ingest_messages(conn, _emails_to_chat_messages([email]), "outlook_mcp_email")
+        second = _ingest_messages(conn, _emails_to_chat_messages([email]), "outlook_mcp_email")
+        entities = conn.execute(
+            "SELECT id, type, name, aliases FROM entities ORDER BY id"
+        ).fetchall()
+        observations = conn.execute(
+            "SELECT id, channel_id, thread_id, timestamp, sender_entity_id, metadata"
+            " FROM observations"
+        ).fetchall()
+    finally:
+        conn.close()
+    return (
+        first,
+        second,
+        [tuple(r) for r in entities],
+        [dict(r) for r in observations],
+    )
+
+
+def test_source_facts_do_not_change_entity_resolution_or_dedupe(tmp_path):
+    """AC: metadata["source"] is write-only; resolution and dedupe never read it."""
+    from dataclasses import replace
+
+    from patina.models import EmailMessage
+
+    with_facts = EmailMessage(
+        id="AAQkADExampleConv001=",
+        sender="Example, Jordan",
+        subject="The quick brown fox",
+        text="[Subject: The quick brown fox] [Participants: Example, Jordan]\nJumps over.",
+        timestamp=1781651078.0,
+        recipients=["owner@example.com"],
+        conversation_id="AAQkADExampleConv001=",
+        sender_name="Example, Jordan",
+        source_facts={
+            "message_id": "AAMkADExampleMsg001=",
+            "item_class": ["IPM.Note"],
+            "sender_key": "Example, Jordan (Contractor)",
+            "to": [{"name": "Owner, Jane", "email": "owner@example.com"}],
+            "received_raw": "2026-06-16T22:24:38Z",
+        },
+    )
+    without_facts = replace(with_facts, source_facts={})
+
+    a_first, a_second, a_entities, a_obs = _ingest_email_twice(tmp_path / "a", with_facts)
+    b_first, b_second, b_entities, b_obs = _ingest_email_twice(tmp_path / "b", without_facts)
+
+    assert a_first[:3] == b_first[:3] == (1, 0, 0)
+    assert a_second[:3] == b_second[:3] == (0, 1, 0)
+    assert a_first[3] == b_first[3]
+    assert a_entities == b_entities
+
+    assert len(a_obs) == len(b_obs) == 1
+    a_meta = json.loads(a_obs[0].pop("metadata"))
+    b_meta = json.loads(b_obs[0].pop("metadata"))
+    assert a_obs == b_obs
+    assert a_meta.pop("source") == with_facts.source_facts
+    assert "source" not in b_meta
+    assert a_meta == b_meta

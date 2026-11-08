@@ -34,8 +34,10 @@ from patina.priority.catch_up import catch_up as do_catch_up
 from patina.priority.catch_up import priorities as do_priorities
 from patina.priority.objectives import (
     add_objective,
+    get_objective,
     list_objectives,
     remove_objective,
+    update_objective,
 )
 from patina.store import (
     connect,
@@ -567,11 +569,59 @@ def dismiss(
 def objectives_add(
     label: str = typer.Argument(..., help="Objective label"),
     keywords: str = typer.Option("", "--keywords", help="Comma-separated keywords"),
+    participant: list[str] | None = typer.Option(
+        None, "--participant", help="Entity ID or email address (repeatable)"
+    ),
+    customer_domain: list[str] | None = typer.Option(
+        None, "--customer-domain", help="Customer domain name (repeatable)"
+    ),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Add a new objective."""
-    obj = add_objective(label, keywords, home=home)
+    obj = add_objective(
+        label,
+        keywords,
+        participants=participant,
+        customer_domains=customer_domain,
+        home=home,
+    )
     typer.echo(f"Added objective [{obj.id[:8]}] {obj.label}")
+    _echo_objective_targets(obj)
+
+
+@objectives_app.command("update")
+def objectives_update(
+    obj_id: str = typer.Argument(..., help="Objective ID (or ID prefix) to update"),
+    label: str | None = typer.Option(None, "--label", help="New label"),
+    keywords: str | None = typer.Option(None, "--keywords", help="Comma-separated keywords"),
+    participant: list[str] | None = typer.Option(
+        None, "--participant", help="Entity ID or email address (repeatable, replaces list)"
+    ),
+    customer_domain: list[str] | None = typer.Option(
+        None, "--customer-domain", help="Customer domain name (repeatable, replaces list)"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Update an objective; omitted fields are left unchanged."""
+    updated = update_objective(
+        obj_id,
+        label=label,
+        keywords=keywords,
+        participants=participant or None,
+        customer_domains=customer_domain or None,
+        home=home,
+    )
+    obj = get_objective(obj_id, home=home) if updated else None
+    if obj is None:
+        typer.echo(f"No objective updated matching '{obj_id}'", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Updated objective [{obj.id[:8]}] {obj.label}")
+    _echo_objective_targets(obj)
+
+
+def _echo_objective_targets(obj) -> None:
+    typer.echo(f"      participants: {', '.join(obj.participants) or '-'}")
+    typer.echo(f"      customer_domains: {', '.join(obj.customer_domains) or '-'}")
 
 
 @objectives_app.command("list")
@@ -586,6 +636,7 @@ def objectives_list(
     for obj in objs:
         kw = f" (keywords: {obj.keywords})" if obj.keywords else ""
         typer.echo(f"  [{obj.id[:8]}] {obj.label}{kw}")
+        _echo_objective_targets(obj)
 
 
 @objectives_app.command("remove")

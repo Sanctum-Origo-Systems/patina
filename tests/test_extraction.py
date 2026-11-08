@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from patina.extraction import (
+    CALENDAR_CHANNEL_PREFIX,
     _make_id,
     extract_entities_from_text,
     extract_sender_entity,
@@ -388,3 +389,76 @@ class TestReferenceEntitySanitization:
         assert len(refs) == 1
         assert refs[0].name == url
         assert refs[0].id == _make_id("reference", url)
+
+
+class _CalendarPort:
+    @property
+    def platform(self) -> str:
+        return "outlook_mcp"
+
+    def list_events(self, start, end):
+        from patina.models import CalendarEvent
+
+        return [
+            CalendarEvent(
+                id="AAMkCAL619",
+                subject="Quick Brown Fox Sync",
+                start=1781600000.0,
+                end=1781601800.0,
+                organizer="Jordan Example",
+            ),
+        ]
+
+
+class TestCalendarObservationsQueryable:
+    """#619: calendar rows skip belief extraction but stay queryable."""
+
+    def test_events_to_chat_messages_uses_calendar_prefix(self):
+        from patina.ingest import _events_to_chat_messages
+
+        msgs = _events_to_chat_messages(_CalendarPort().list_events(None, None))
+        assert len(msgs) == 1
+        assert msgs[0].channel_id.startswith(CALENDAR_CHANNEL_PREFIX)
+        assert msgs[0].text == (
+            "[Meeting: Quick Brown Fox Sync] Organizer: Jordan Example, Attendees: none"
+        )
+
+    def test_ingested_calendar_event_searchable_after_extraction(self, tmp_path):
+        from unittest.mock import patch
+
+        from patina.beliefs.extractor import extract_beliefs
+        from patina.ingest import ingest_live
+        from patina.mcp.tools_catch_up import store_search
+        from patina.store import connect, get_db_path
+
+        result = ingest_live(port=_CalendarPort(), source="outlook_mcp_calendar", home=tmp_path)
+        assert result["messages_inserted"] == 1
+
+        with patch("patina.beliefs.extractor._call_claude") as stub:
+            stats = extract_beliefs(home=tmp_path, batch_size=5)
+        stub.assert_not_called()
+        assert stats["observations_processed"] == 0
+
+        conn = connect(get_db_path(tmp_path))
+        try:
+            row = conn.execute(
+                "SELECT id, channel_id, text, processed FROM observations"
+                " WHERE channel_id LIKE 'calendar:%'"
+            ).fetchone()
+            assert row["channel_id"] == "calendar:AAMkCAL619"
+            assert "Quick Brown Fox Sync" in row["text"]
+            assert row["processed"] == 0
+
+            fts = conn.execute(
+                "SELECT o.id FROM observations_fts f"
+                " JOIN observations o ON f.rowid = o.rowid"
+                " WHERE observations_fts MATCH ?",
+                ('"Fox"',),
+            ).fetchall()
+            assert [r["id"] for r in fts] == [row["id"]]
+        finally:
+            conn.close()
+
+        out = store_search("Quick Brown Fox Sync")
+        assert "Quick Brown Fox Sync" in out
+        assert "outlook_mcp_calendar" in out
