@@ -203,7 +203,9 @@ CREATE TABLE objectives (
     keywords TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    participants TEXT NOT NULL DEFAULT '[]',     -- JSON: entity ids or email addresses
+    customer_domains TEXT NOT NULL DEFAULT '[]'  -- JSON: lowercase domain names
 );
 
 CREATE TABLE predictions (
