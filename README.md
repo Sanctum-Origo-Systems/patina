@@ -122,6 +122,8 @@ patina gateway
 
 The system is fully functional at Tier 1 alone (zero LLM calls). Each tier adds capability but never load-bears. Local-first: all data stays in `~/.patina/store.db`.
 
+Ingestion decides at the door and keeps the facts: meeting items and irrelevant mail are dropped before they're stored, each observation keeps what the app actually sent, and every claim cites the observations it came from. **[See the ingestion pipeline, with diagrams →](docs/features/ingestion.md)**
+
 ### One Person, Many IDs
 
 Every app names the same person differently: a Slack user ID, an Exchange DN, email addresses, a display name like `Example, Jordan (Contractor)`. Nothing in the data links them, so Patina has to infer that they're one person. A wrong guess blends two people's beliefs. This entity-resolution problem never fully goes away, so Patina aims to be rarely wrong in the harmful direction, not perfect.
