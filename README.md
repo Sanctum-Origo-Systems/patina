@@ -122,6 +122,21 @@ patina gateway
 
 The system is fully functional at Tier 1 alone (zero LLM calls). Each tier adds capability but never load-bears. Local-first: all data stays in `~/.patina/store.db`.
 
+### One Person, Many IDs
+
+Every app names the same person differently: a Slack user ID, an Exchange DN, email addresses, a display name like `Example, Jordan (Contractor)`. Nothing in the data links them, so Patina has to infer that they're one person. A wrong guess blends two people's beliefs. This entity-resolution problem never fully goes away, so Patina aims to be rarely wrong in the harmful direction, not perfect.
+
+**TL;DR: how Patina stays practical**
+
+- **Identifiers beat names.** A Slack ID, DN or email match always wins over a name match.
+- **When unsure, keep them apart.** An ambiguous match never merges. A missed link can be fixed later; a false merge corrupts beliefs.
+- **Contain the damage.** An entity already holding several people's IDs (a "sink") can't absorb more.
+- **Keep junk out.** Bots, lists and irrelevant mail are dropped at ingest, before they become fake people.
+- **Keep the evidence.** Raw source facts and claim provenance mean any merge can be traced and undone.
+- **A human approves destructive fixes.** Dedup, repairs and cleanups preview first and write only with `--confirm`.
+
+**[Why it's hard, and how each rule works →](docs/features/identity-resolution.md)**
+
 ### The Observer-Builder Loop
 
 The core operational pattern is a two-agent loop with human gates at both ends: the **observer** watches the belief graph, notices drift, staleness, or contradictions, and drafts an issue. A human approves (or edits) the issue. The **builder** picks up the approved issue, ships the fix, and opens a PR. A human reviews and merges. Both agents act; neither ships without a gate.
