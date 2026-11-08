@@ -18,6 +18,7 @@ docs/features/*
 !docs/features/autoloop-extraction-runbook.md
 !docs/features/identity-precedence.md
 !docs/features/identity-gate.md
+!docs/features/identity-resolution.md
 .mcp.json
 CLAUDE.local.md
 fixtures/**/*.zip
