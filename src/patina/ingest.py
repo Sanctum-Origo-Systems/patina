@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
 
 from patina.decisions import auto_resolve_draft_reply
 from patina.export_parser import parse_slack_export
@@ -24,8 +26,12 @@ from patina.owner import (
     get_owner_user_ids,
     is_owner_entity,
     mark_entity_as_owner,
+    owner_match_keys,
 )
 from patina.store import connect, get_db_path, init_db, kv_get, kv_set, run_pending_migrations
+
+if TYPE_CHECKING:
+    from patina.priority.objectives import Objective
 
 
 def _source_family(source: str) -> str:
@@ -270,6 +276,107 @@ def _emails_to_chat_messages(
             )
         )
     return results
+
+
+RELEVANCE_DIRECT = "direct"
+RELEVANCE_ENGAGEMENT = "engagement"
+RELEVANCE_BOT_OR_LIST = "bot_or_list"
+RELEVANCE_NOT_DIRECT = "not_direct"
+
+
+class Relevance(NamedTuple):
+    """A keep/drop decision; a dropped ``reason`` maps to the ``dropped_<reason>`` stat."""
+
+    keep: bool
+    reason: str
+
+
+def _identity_keys(value) -> set[str]:
+    """Casefolded match keys for a recipient dict or a sender/participant string."""
+    from patina.adapters.outlook_mcp import _normalize_sender
+
+    raw = [value.get("email"), value.get("name")] if isinstance(value, dict) else [value]
+    keys: set[str] = set()
+    for v in raw:
+        if not isinstance(v, str):
+            continue
+        for form in (v, _normalize_sender(v)):
+            form = form.strip().casefold()
+            if form:
+                keys.add(form)
+    return keys
+
+
+def _as_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    return [value] if value else []
+
+
+def _is_bot_or_list_sender(sender: str) -> bool:
+    from patina.maintenance import _is_automated_address
+
+    return is_non_person_sender(sender) or ("@" in sender and _is_automated_address(sender))
+
+
+def outlook_relevance(
+    source_facts: dict,
+    *,
+    objectives: Iterable[Objective] = (),
+    thread_participants: Iterable[str] = (),
+    subject: str = "",
+    owner_identifiers: set[str] | None = None,
+    home: Path | None = None,
+) -> Relevance:
+    """Decide deterministically whether an Outlook email is relevant enough to keep.
+
+    ``source_facts`` is the email's ``metadata["source"]`` dict (``to``, ``cc``,
+    ``sender_key``, ``item_class``); ``thread_participants`` are the thread's
+    senders. Owner identifiers come from ``get_owner_identifiers`` unless given,
+    and are matched case-insensitively.
+
+    - ``bot_or_list`` (drop): the sender is a no-reply, notification, mailer or
+      list address. Checked first, so it wins over every keep rule.
+    - ``direct`` (keep): the Owner is a named To recipient (not reached through a
+      distribution list) or sent/replied in the thread.
+    - ``engagement`` (keep): an active objective's participant is on the thread,
+      or the sender's domain is one of its customer domains. Inactive objectives
+      are ignored.
+    - ``not_direct`` (drop): none of the above. A ``subject`` keyword match is
+      never a keep signal on its own.
+
+    Pure: reads the config only, writes nothing.
+    """
+    sender = str(source_facts.get("sender_key") or "").strip()
+    if sender and _is_bot_or_list_sender(sender):
+        return Relevance(False, RELEVANCE_BOT_OR_LIST)
+
+    if owner_identifiers is None:
+        owner_identifiers = get_owner_identifiers(home)
+    owner_keys = owner_match_keys(owner_identifiers)
+
+    to = _as_list(source_facts.get("to"))
+    cc = _as_list(source_facts.get("cc"))
+    named_to = [r for r in to if not (isinstance(r, dict) and r.get("isDistributionList"))]
+    thread_people = [sender, *thread_participants]
+
+    if owner_keys and any(owner_keys & _identity_keys(v) for v in [*named_to, *thread_people]):
+        return Relevance(True, RELEVANCE_DIRECT)
+
+    on_thread: set[str] = set()
+    for v in [*thread_people, *to, *cc]:
+        on_thread |= _identity_keys(v)
+    sender_domain = sender.rsplit("@", 1)[1].casefold() if "@" in sender else ""
+
+    for obj in objectives:
+        if not obj.active:
+            continue
+        participants = {p.strip().casefold() for p in obj.participants}
+        domains = {d.strip().casefold() for d in obj.customer_domains}
+        if on_thread & participants or (sender_domain and sender_domain in domains):
+            return Relevance(True, RELEVANCE_ENGAGEMENT)
+
+    return Relevance(False, RELEVANCE_NOT_DIRECT)
 
 
 def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:

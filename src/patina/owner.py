@@ -40,6 +40,11 @@ def get_owner_identifiers(home: Path | None = None) -> set[str]:
     return identifiers
 
 
+def owner_match_keys(identifiers: set[str]) -> set[str]:
+    """Casefold owner identifiers for case-insensitive matching (drops empties)."""
+    return {k for k in (i.strip().casefold() for i in identifiers) if k}
+
+
 def get_owner_user_ids(home: Path | None = None) -> list[str]:
     config_path = (home or DEFAULT_HOME) / "config.yaml"
     if not config_path.exists():
