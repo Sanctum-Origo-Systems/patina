@@ -1273,3 +1273,92 @@ def test_source_facts_leave_columns_dedupe_and_entities_unchanged(tmp_path, monk
     again = ingest_live(port=make_port(), source=source, home=with_facts, lookback_days=10000)
     assert again["messages_skipped"] == 1
     assert again["messages_inserted"] == 0
+
+
+def _relevance_live_items() -> dict[str, dict]:
+    """Live-shape inbox items for the direct, distribution-list and bot cases (#617)."""
+    direct = LIVE_SHAPE_INBOX_ITEM
+    dl_only = {
+        **LIVE_SHAPE_INBOX_ITEM,
+        "conversationId": "AAQkADExampleConv003=",
+        "id": "AAMkADExampleMsg003=",
+        "toRecipients": [
+            {"name": "Team All", "email": "team-all@example.com", "isDistributionList": True},
+        ],
+        "ccRecipients": [{"name": "Lee, Casey", "email": "casey.lee@example.com"}],
+    }
+    bot = {
+        **LIVE_SHAPE_INBOX_ITEM,
+        "conversationId": "AAQkADExampleConv004=",
+        "id": "AAMkADExampleMsg004=",
+        "topic": "Your weekly digest — The quick brown fox",
+        "senders": ["no-reply@example.com"],
+    }
+    return {"direct": direct, "dl_only": dl_only, "bot": bot}
+
+
+_RELEVANCE_EXPECTED = {
+    "direct": (True, "direct"),
+    "dl_only": (False, "not_direct"),
+    "bot": (False, "bot_or_list"),
+}
+
+
+def _write_owner_email(home) -> None:
+    import yaml
+
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(yaml.dump({"owner": {"emails": ["owner@example.com"]}}))
+
+
+def test_outlook_relevance_on_live_shape_adapter_output(tmp_path):
+    """AC: OutlookMcpAdapter output with #611 source facts drives outlook_relevance."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from patina.adapters.outlook_mcp import OutlookMcpAdapter
+    from patina.ingest import outlook_relevance
+
+    home = tmp_path / "patina_home"
+    _write_owner_email(home)
+    items = _relevance_live_items()
+
+    payload = json.dumps({"emails": list(items.values())}, ensure_ascii=False)
+    bridge = MagicMock()
+    bridge.call_tool.return_value = SimpleNamespace(
+        isError=False, content=[SimpleNamespace(text=payload)]
+    )
+    emails = {em.source_facts["message_id"]: em for em in OutlookMcpAdapter(bridge).list_inbox(0)}
+
+    for case, raw in items.items():
+        em = emails[raw["id"]]
+        result = outlook_relevance(
+            em.source_facts,
+            thread_participants=raw["senders"],
+            subject=em.subject,
+            objectives=[],
+            home=home,
+        )
+        assert tuple(result) == _RELEVANCE_EXPECTED[case], case
+
+
+def test_outlook_relevance_on_stored_live_shape_source_facts(tmp_path):
+    """AC: the same decisions hold for the metadata["source"] that ingest stores."""
+    from patina.ingest import outlook_relevance
+
+    home = tmp_path / "patina_home"
+    _write_owner_email(home)
+    items = _relevance_live_items()
+    ingest_live(
+        port=_RawEmailPort(list(items.values())),
+        source="outlook_mcp_email",
+        home=home,
+        lookback_days=10000,
+    )
+
+    by_thread = {r["thread_id"]: r["metadata"]["source"] for r in _stored_email_rows(home)}
+    assert len(by_thread) == len(items)
+    for case, raw in items.items():
+        result = outlook_relevance(by_thread[raw["conversationId"]], objectives=[], home=home)
+        assert tuple(result) == _RELEVANCE_EXPECTED[case], case
