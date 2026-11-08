@@ -29,6 +29,7 @@ def test_server_has_tools(tool_names):
     assert "soul_read" in tool_names
     assert "objective_list" in tool_names
     assert "objective_add" in tool_names
+    assert "objective_update" in tool_names
     assert "objective_remove" in tool_names
     assert "autonomy_status" in tool_names
     assert "approve" in tool_names

@@ -170,6 +170,8 @@ def _ingest_messages(
             meta["sender_slack_id"] = msg.user_id
         if msg.organizer_dn:
             meta["organizer_dn"] = msg.organizer_dn
+        if msg.source_facts:
+            meta["source"] = dict(msg.source_facts)
 
         obs = Observation(
             id=obs_id,
@@ -232,9 +234,23 @@ def _ingest_messages(
     return inserted, skipped, non_person_skipped, entity_ids_seen
 
 
-def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
+MISSING_TIMESTAMP = "missing_timestamp"
+
+
+def _emails_to_chat_messages(
+    emails: list[EmailMessage], skip_reasons: dict[str, int] | None = None
+) -> list[ChatMessage]:
+    """Convert emails to chat messages, dropping any without a received time.
+
+    Undated emails are never stored (no ``timestamp = 0.0`` rows); each one
+    is counted under ``skip_reasons["missing_timestamp"]`` when given.
+    """
     results = []
     for em in emails:
+        if not em.timestamp:
+            if skip_reasons is not None:
+                skip_reasons[MISSING_TIMESTAMP] = skip_reasons.get(MISSING_TIMESTAMP, 0) + 1
+            continue
         if em.sender_name:
             user_name = em.sender_name
         elif "@" not in em.sender:
@@ -250,6 +266,7 @@ def _emails_to_chat_messages(emails: list[EmailMessage]) -> list[ChatMessage]:
                 thread_id=em.conversation_id,
                 user_name=user_name,
                 sender_dn=em.sender_dn,
+                source_facts=em.source_facts,
             )
         )
     return results
@@ -290,6 +307,7 @@ def ingest_live(
         run_pending_migrations(conn)
         since = time.time() - (lookback_days * 86400)
         messages: list[ChatMessage] = []
+        skip_reasons: dict[str, int] = {}
 
         if isinstance(port, ChatPort):
             messages.extend(port.list_dm_messages(since))
@@ -339,7 +357,7 @@ def ingest_live(
 
         if isinstance(port, EmailPort):
             emails = port.list_inbox(since)
-            messages.extend(_emails_to_chat_messages(emails))
+            messages.extend(_emails_to_chat_messages(emails, skip_reasons))
 
         if isinstance(port, CalendarPort):
             now = datetime.now(UTC)
@@ -364,6 +382,7 @@ def ingest_live(
             "channels_seen": channels_seen if isinstance(port, ChatPort) else 0,
             "newly_watched": newly_watched if isinstance(port, ChatPort) else 0,
             "zero_streak": zero_streak,
+            "skip_reasons": skip_reasons,
         }
     finally:
         conn.close()
@@ -381,6 +400,7 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
         "channels_seen": 0,
         "newly_watched": 0,
         "zero_streak": 0,
+        "skip_reasons": {},
     }
 
     adapters = _load_adapters(home)
@@ -399,6 +419,8 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
             totals["channels_seen"] += result.get("channels_seen", 0)
             totals["newly_watched"] += result.get("newly_watched", 0)
             totals["zero_streak"] = result.get("zero_streak", 0)
+            for reason, count in result.get("skip_reasons", {}).items():
+                totals["skip_reasons"][reason] = totals["skip_reasons"].get(reason, 0) + count
     finally:
         for _, port in adapters:
             if hasattr(port, "close"):
