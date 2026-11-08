@@ -122,6 +122,10 @@ patina gateway
 
 The system is fully functional at Tier 1 alone (zero LLM calls). Each tier adds capability but never load-bears. Local-first: all data stays in `~/.patina/store.db`.
 
+### One Person, Many IDs
+
+Every app names the same person differently: a Slack user ID, an Exchange DN, one or more email addresses, a display name like `Example, Jordan (Contractor)`. Nothing in the data links them. Patina has to infer that they belong to one human, and a wrong guess blends two people's beliefs. This is the classic entity-resolution problem, and it never fully goes away: names collide, payloads leave out the identifiers you need, lists and bots look like people, and one false merge attracts more. Patina keeps it bounded: identifiers outrank names, an ambiguous match never merges, raw source facts and provenance are kept so mistakes can be traced and undone, and noise is dropped at ingest. **[Read why it's hard, and how Patina handles it →](docs/features/identity-resolution.md)**
+
 ### The Observer-Builder Loop
 
 The core operational pattern is a two-agent loop with human gates at both ends: the **observer** watches the belief graph, notices drift, staleness, or contradictions, and drafts an issue. A human approves (or edits) the issue. The **builder** picks up the approved issue, ships the fix, and opens a PR. A human reviews and merges. Both agents act; neither ships without a gate.
