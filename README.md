@@ -85,6 +85,8 @@ patina doctor                      # includes dangling reference integrity check
 patina connect slack --token "xoxb-..."
 patina connect email --host imap.example.com --username you@example.com --password "..."  # IMAP
 patina ingest                      # fetch from configured adapters
+patina ingest --dry-run            # Outlook keep/drop counts by reason, writes nothing
+                                   # (filter goes live with ingest.outlook_relevance_filter: true)
 
 # Heartbeat (background tasks)
 patina heartbeat once              # ingest + decay + escalation check

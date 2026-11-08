@@ -379,6 +379,89 @@ def outlook_relevance(
     return Relevance(False, RELEVANCE_NOT_DIRECT)
 
 
+DROPPED_PREFIX = "dropped_"
+
+
+def relevance_stat_key(relevance: Relevance) -> str:
+    """Stats key for a decision: the keep reason, or ``dropped_<reason>``."""
+    return relevance.reason if relevance.keep else f"{DROPPED_PREFIX}{relevance.reason}"
+
+
+def _outlook_filter_enabled(home: Path | None = None) -> bool:
+    """True when ``ingest.outlook_relevance_filter`` is set in config.yaml (off by default)."""
+    import yaml
+
+    from patina.store import DEFAULT_HOME
+
+    config_path = (home or DEFAULT_HOME) / "config.yaml"
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+    except Exception:
+        return False
+    return bool((config.get("ingest") or {}).get("outlook_relevance_filter", False))
+
+
+def _active_objectives(conn) -> list[Objective]:
+    from patina.priority.objectives import _row_to_objective
+
+    rows = conn.execute("SELECT * FROM objectives WHERE active = 1").fetchall()
+    return [_row_to_objective(r) for r in rows]
+
+
+def _apply_outlook_relevance(
+    emails: list[EmailMessage],
+    *,
+    objectives: list[Objective],
+    counts: dict[str, int],
+    home: Path | None = None,
+) -> list[EmailMessage]:
+    """Return the kept emails; every decision is counted in ``counts`` by stats key."""
+    owner_identifiers = get_owner_identifiers(home)
+    kept = []
+    for em in emails:
+        relevance = outlook_relevance(
+            em.source_facts,
+            objectives=objectives,
+            thread_participants=em.thread_participants,
+            subject=em.subject,
+            owner_identifiers=owner_identifiers,
+        )
+        key = relevance_stat_key(relevance)
+        counts[key] = counts.get(key, 0) + 1
+        if relevance.keep:
+            kept.append(em)
+    return kept
+
+
+def _outlook_relevance_dry_run(
+    port, source: str, *, home: Path | None = None, lookback_days: int = 3
+) -> dict:
+    """Run the Outlook keep/drop decisions and count them; nothing is written.
+
+    The store is only opened read-only (for active objectives), and not at
+    all when it does not exist yet.
+    """
+    from patina.ports.email import EmailPort
+    from patina.store import connect_readonly
+
+    relevance: dict[str, int] = {}
+    if isinstance(port, EmailPort) and _source_family(source) == "outlook":
+        emails = port.list_inbox(time.time() - (lookback_days * 86400))
+        objectives: list[Objective] = []
+        db_path = get_db_path(home)
+        if db_path.exists():
+            conn = connect_readonly(db_path)
+            try:
+                objectives = _active_objectives(conn)
+            finally:
+                conn.close()
+        _apply_outlook_relevance(emails, objectives=objectives, counts=relevance, home=home)
+    return {"relevance": relevance}
+
+
 def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:
     results = []
     for ev in events:
@@ -399,13 +482,28 @@ def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:
 
 
 def ingest_live(
-    *, port, source: str = "live", home: Path | None = None, lookback_days: int = 3
+    *,
+    port,
+    source: str = "live",
+    home: Path | None = None,
+    lookback_days: int = 3,
+    dry_run: bool = False,
 ) -> dict:
+    """Ingest from one live adapter.
+
+    With ``ingest.outlook_relevance_filter`` enabled, Outlook emails go through
+    ``outlook_relevance`` before they become observations; dropped emails create
+    no observation or entity, and every decision is counted in ``relevance``.
+    ``dry_run`` only runs and counts those decisions, writing nothing.
+    """
     from datetime import UTC, datetime, timedelta
 
     from patina.ports.calendar import CalendarPort
     from patina.ports.chat import ChatPort
     from patina.ports.email import EmailPort
+
+    if dry_run:
+        return _outlook_relevance_dry_run(port, source, home=home, lookback_days=lookback_days)
 
     db_path = get_db_path(home)
     init_db(db_path)
@@ -416,6 +514,7 @@ def ingest_live(
         since = time.time() - (lookback_days * 86400)
         messages: list[ChatMessage] = []
         skip_reasons: dict[str, int] = {}
+        relevance: dict[str, int] = {}
 
         if isinstance(port, ChatPort):
             messages.extend(port.list_dm_messages(since))
@@ -465,6 +564,10 @@ def ingest_live(
 
         if isinstance(port, EmailPort):
             emails = port.list_inbox(since)
+            if _source_family(source) == "outlook" and _outlook_filter_enabled(home):
+                emails = _apply_outlook_relevance(
+                    emails, objectives=_active_objectives(conn), counts=relevance, home=home
+                )
             messages.extend(_emails_to_chat_messages(emails, skip_reasons))
 
         if isinstance(port, CalendarPort):
@@ -491,12 +594,21 @@ def ingest_live(
             "newly_watched": newly_watched if isinstance(port, ChatPort) else 0,
             "zero_streak": zero_streak,
             "skip_reasons": skip_reasons,
+            "relevance": relevance,
         }
     finally:
         conn.close()
 
 
-def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
+def _add_counts(totals: dict[str, int], counts: dict[str, int]) -> None:
+    for key, count in counts.items():
+        totals[key] = totals.get(key, 0) + count
+
+
+def ingest_all(*, home: Path | None = None, lookback_days: int = 3, dry_run: bool = False) -> dict:
+    if dry_run:
+        return _dry_run_all(home=home, lookback_days=lookback_days)
+
     totals = {
         "messages_inserted": 0,
         "messages_skipped": 0,
@@ -509,6 +621,7 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
         "newly_watched": 0,
         "zero_streak": 0,
         "skip_reasons": {},
+        "relevance": {},
     }
 
     adapters = _load_adapters(home)
@@ -527,17 +640,42 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
             totals["channels_seen"] += result.get("channels_seen", 0)
             totals["newly_watched"] += result.get("newly_watched", 0)
             totals["zero_streak"] = result.get("zero_streak", 0)
-            for reason, count in result.get("skip_reasons", {}).items():
-                totals["skip_reasons"][reason] = totals["skip_reasons"].get(reason, 0) + count
+            _add_counts(totals["skip_reasons"], result.get("skip_reasons", {}))
+            _add_counts(totals["relevance"], result.get("relevance", {}))
     finally:
-        for _, port in adapters:
-            if hasattr(port, "close"):
-                try:
-                    port.close()
-                except Exception:
-                    pass
+        _close_adapters(adapters)
 
     return totals
+
+
+def _dry_run_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
+    """Count Outlook keep/drop decisions across configured adapters; writes nothing."""
+    totals = {"adapters_run": 0, "relevance": {}}
+    adapters = _load_adapters(home)
+    try:
+        for source_name, port in adapters:
+            result = ingest_live(
+                port=port,
+                source=source_name,
+                home=home,
+                lookback_days=lookback_days,
+                dry_run=True,
+            )
+            totals["adapters_run"] += 1
+            _add_counts(totals["relevance"], result["relevance"])
+    finally:
+        _close_adapters(adapters)
+
+    return totals
+
+
+def _close_adapters(adapters: list[tuple[str, object]]) -> None:
+    for _, port in adapters:
+        if hasattr(port, "close"):
+            try:
+                port.close()
+            except Exception:
+                pass
 
 
 def _load_adapters(home: Path | None = None) -> list[tuple[str, object]]:

@@ -1362,3 +1362,257 @@ def test_outlook_relevance_on_stored_live_shape_source_facts(tmp_path):
     for case, raw in items.items():
         result = outlook_relevance(by_thread[raw["conversationId"]], objectives=[], home=home)
         assert tuple(result) == _RELEVANCE_EXPECTED[case], case
+
+
+# --- #618: relevance filter at Outlook ingest ---
+
+_JORDAN = "Example, Jordan (Contractor)"
+_OWNER_TO = [
+    {"name": "Owner, Jane", "email": "owner@example.com"},
+    {"name": "Müller, Avery", "email": "avery.muller@example.com"},
+]
+_TEAM_ALL_TO = [{"name": "Team All", "email": "team-all@example.com", "isDistributionList": True}]
+_CC_CASEY = [{"name": "Lee, Casey", "email": "casey.lee@example.com"}]
+
+
+def _filter_home(tmp_path, *, enabled: bool = True):
+    import yaml
+
+    home = tmp_path / "patina_home"
+    home.mkdir(parents=True, exist_ok=True)
+    config = {"owner": {"emails": ["owner@example.com"]}}
+    if enabled:
+        config["ingest"] = {"outlook_relevance_filter": True}
+    (home / "config.yaml").write_text(yaml.dump(config))
+    return home
+
+
+def _inbox_item(n: int, **overrides) -> dict:
+    """Live-shape inbox item with its own conversation/message id and received time."""
+    item = dict(LIVE_SHAPE_INBOX_ITEM)
+    item["conversationId"] = f"AAQkADExampleConv6{n:02d}="
+    item["id"] = f"AAMkADExampleMsg6{n:02d}="
+    item["receivedDateTime"] = f"2026-11-03T09:{n:02d}:42Z"
+    item.update(overrides)
+    return item
+
+
+def _direct_item(n: int = 1) -> dict:
+    return _inbox_item(n, toRecipients=_OWNER_TO, ccRecipients=_CC_CASEY, senders=[_JORDAN])
+
+
+def _dl_only_item(n: int = 2, *, senders: list[str] | None = None, **overrides) -> dict:
+    return _inbox_item(
+        n,
+        toRecipients=_TEAM_ALL_TO,
+        ccRecipients=_CC_CASEY,
+        senders=senders or [_JORDAN],
+        **overrides,
+    )
+
+
+def _bot_item(n: int, sender: str) -> dict:
+    return _inbox_item(
+        n,
+        topic="Your weekly digest — The quick brown fox",
+        toRecipients=_OWNER_TO,
+        senders=[sender],
+    )
+
+
+def _customer_item(n: int = 7) -> dict:
+    return _dl_only_item(n, senders=["dana.placeholder@customer.example.com"])
+
+
+def _add_fox_objective(home, **kwargs):
+    from patina.priority.objectives import add_objective
+
+    return add_objective("Fox launch", "quick brown fox", home=home, **kwargs)
+
+
+def _ingest_outlook(home, items):
+    return ingest_live(
+        port=_RawEmailPort(items), source="outlook_mcp_email", home=home, lookback_days=10000
+    )
+
+
+def _table_rows(home, table: str) -> list[tuple]:
+    conn = connect(get_db_path(home))
+    try:
+        return [tuple(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+    finally:
+        conn.close()
+
+
+def test_relevance_filter_keeps_direct_email(tmp_path):
+    """AC: Owner as a named To recipient + person sender -> one observation, kept ``direct``."""
+    home = _filter_home(tmp_path)
+    result = _ingest_outlook(home, [_direct_item()])
+
+    assert result["messages_inserted"] == 1
+    assert result["relevance"] == {"direct": 1}
+    assert len(_stored_email_rows(home)) == 1
+
+
+def test_relevance_filter_drops_distribution_list_only_email(tmp_path):
+    """AC: Owner reached only via team-all@example.com, no objective -> dropped_not_direct."""
+    home = _filter_home(tmp_path)
+    result = _ingest_outlook(home, [_dl_only_item()])
+
+    assert result["messages_inserted"] == 0
+    assert result["relevance"] == {"dropped_not_direct": 1}
+    assert _stored_email_rows(home) == []
+
+
+@pytest.mark.parametrize("sender", ["no-reply@example.com", "notifications@tool.example"])
+def test_relevance_filter_drops_bot_sender(tmp_path, sender):
+    """AC: a no-reply / notifications sender with the Owner in To -> dropped_bot_or_list."""
+    home = _filter_home(tmp_path)
+    result = _ingest_outlook(home, [_bot_item(3, sender)])
+
+    assert result["messages_inserted"] == 0
+    assert result["relevance"] == {"dropped_bot_or_list": 1}
+    assert _stored_email_rows(home) == []
+
+
+def test_relevance_filter_dropped_email_writes_nothing(tmp_path, monkeypatch):
+    """AC: a dropped email adds no observation, no entity and no extraction input."""
+    import patina.ingest as ingest_mod
+
+    home = _filter_home(tmp_path)
+    _ingest_outlook(home, [_direct_item(1)])
+    obs_before = _table_rows(home, "observations")
+    entities_before = _table_rows(home, "entities")
+
+    seen_texts: list[str] = []
+    real_extract = ingest_mod.extract_entities_from_text
+
+    def _spy(text, *args, **kwargs):
+        seen_texts.append(text)
+        return real_extract(text, *args, **kwargs)
+
+    monkeypatch.setattr(ingest_mod, "extract_entities_from_text", _spy)
+    dropped = _dl_only_item(
+        4,
+        senders=["Placeholder, Taylor"],
+        topic="Quarterly sync with Morgan Sample",
+        preview="Taylor Placeholder asked Quinn Fictional about the lazy dog.",
+    )
+    result = _ingest_outlook(home, [dropped])
+
+    assert result["relevance"] == {"dropped_not_direct": 1}
+    assert result["messages_inserted"] == 0
+    assert _table_rows(home, "observations") == obs_before
+    assert _table_rows(home, "entities") == entities_before
+    assert seen_texts == []
+
+
+def test_relevance_filter_subject_keyword_alone_is_dropped(tmp_path):
+    """AC: a subject matching an objective keyword is not a keep signal on its own."""
+    home = _filter_home(tmp_path)
+    _add_fox_objective(
+        home,
+        participants=["riley.sample@example.com"],
+        customer_domains=["customer.example.com"],
+    )
+    result = _ingest_outlook(home, [_dl_only_item(5, topic="The quick brown fox — launch notes")])
+
+    assert result["relevance"] == {"dropped_not_direct": 1}
+    assert _stored_email_rows(home) == []
+
+
+def test_relevance_filter_keeps_active_objective_engagement(tmp_path):
+    """AC: an active objective's participant or customer domain, Owner not in To -> kept."""
+    home = _filter_home(tmp_path)
+    _add_fox_objective(
+        home,
+        participants=["riley.sample@example.com"],
+        customer_domains=["customer.example.com"],
+    )
+    from_participant = _dl_only_item(6, senders=["riley.sample@example.com"])
+    result = _ingest_outlook(home, [from_participant, _customer_item()])
+
+    assert result["relevance"] == {"engagement": 2}
+    assert result["messages_inserted"] == 2
+
+
+def test_relevance_filter_drops_inactive_objective_customer_domain(tmp_path):
+    """AC: the same customer domain with the objective inactive is dropped."""
+    from patina.priority.objectives import remove_objective
+
+    home = _filter_home(tmp_path)
+    obj = _add_fox_objective(home, customer_domains=["customer.example.com"])
+    assert remove_objective(obj.id, home=home)
+    result = _ingest_outlook(home, [_customer_item()])
+
+    assert result["relevance"] == {"dropped_not_direct": 1}
+    assert _stored_email_rows(home) == []
+
+
+def test_relevance_filter_counts_every_decision(tmp_path):
+    """AC: a per-reason count for every decision, summing to the emails fetched."""
+    home = _filter_home(tmp_path)
+    _add_fox_objective(home, customer_domains=["customer.example.com"])
+    items = [
+        _direct_item(1),
+        _dl_only_item(2),
+        _bot_item(3, "no-reply@example.com"),
+        _bot_item(8, "notifications@tool.example"),
+        _customer_item(7),
+    ]
+    result = _ingest_outlook(home, items)
+
+    assert result["relevance"] == {
+        "direct": 1,
+        "engagement": 1,
+        "dropped_not_direct": 1,
+        "dropped_bot_or_list": 2,
+    }
+    assert sum(result["relevance"].values()) == len(items)
+    assert result["messages_inserted"] == 2
+
+
+def test_relevance_filter_counts_undated_email(tmp_path):
+    """Undated emails still get a decision, so the counts match the emails fetched."""
+    home = _filter_home(tmp_path)
+    undated = _without(_direct_item(9), "receivedDateTime")
+    result = _ingest_outlook(home, [_direct_item(1), undated, _dl_only_item(2)])
+
+    assert result["relevance"] == {"direct": 2, "dropped_not_direct": 1}
+    assert result["skip_reasons"] == {"missing_timestamp": 1}
+    assert result["messages_inserted"] == 1
+
+
+def test_relevance_filter_off_by_default(tmp_path):
+    """Without ``ingest.outlook_relevance_filter`` every email is ingested as before."""
+    home = _filter_home(tmp_path, enabled=False)
+    result = _ingest_outlook(home, [_direct_item(1), _dl_only_item(2)])
+
+    assert result["messages_inserted"] == 2
+    assert result["relevance"] == {}
+
+
+def test_relevance_filter_applies_to_outlook_only(tmp_path):
+    """Non-Outlook email sources are never filtered."""
+    home = _filter_home(tmp_path)
+    result = ingest_live(
+        port=_RawEmailPort([_dl_only_item(2)]), source="imap", home=home, lookback_days=10000
+    )
+
+    assert result["messages_inserted"] == 1
+    assert result["relevance"] == {}
+
+
+def test_relevance_dry_run_counts_without_creating_store(tmp_path):
+    """ingest_live(dry_run=True) counts decisions (even with the filter off), writes nothing."""
+    home = _filter_home(tmp_path, enabled=False)
+    result = ingest_live(
+        port=_RawEmailPort([_direct_item(1), _dl_only_item(2)]),
+        source="outlook_mcp_email",
+        home=home,
+        lookback_days=10000,
+        dry_run=True,
+    )
+
+    assert result == {"relevance": {"direct": 1, "dropped_not_direct": 1}}
+    assert not get_db_path(home).exists()
