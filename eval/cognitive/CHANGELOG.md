@@ -11,7 +11,8 @@
 - #626: Feat: Source facts for Outlook calendar, Slack and IMAP/Gmail, plu ($2.43)
 - #627: Feat: Implement the deterministic outlook_relevance keep/drop deci ($1.82)
 - #628: Feat: record per-claim observation ids in extract_beliefs, store m ($1.47)
-Total: 12 PRs, $17.50
+- #630: Feat: cleanup-meeting-obs counts only real observation ids and rep ($1.45)
+Total: 13 PRs, $18.95
 
 ## v0.36.0 (2026-11-04)
 - #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
