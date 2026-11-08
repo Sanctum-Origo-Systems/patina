@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from patina.extraction import CALENDAR_CHANNEL_PREFIX
 from patina.maintenance import is_plausible_person_name as _is_plausible_person_name
 from patina.store import connect, get_db_path, init_db, record_extraction_run
 
@@ -494,15 +495,17 @@ def extract_beliefs(
                 )
                 conn.commit()
 
+        # Calendar rows are skipped and left unprocessed so they stay untouched.
         rows = conn.execute(
             """SELECT o.id, o.text, o.sender_entity_id, o.source, o.timestamp,
                       e.name AS sender_name
                FROM observations o
                LEFT JOIN entities e ON o.sender_entity_id = e.id
                WHERE o.processed = 0 AND o.text IS NOT NULL AND o.text != ''
+                 AND (o.channel_id IS NULL OR substr(o.channel_id, 1, ?) != ?)
                ORDER BY o.timestamp ASC
                LIMIT ?""",
-            (limit,),
+            (len(CALENDAR_CHANNEL_PREFIX), CALENDAR_CHANNEL_PREFIX, limit),
         ).fetchall()
 
         if not rows:

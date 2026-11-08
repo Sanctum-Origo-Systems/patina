@@ -28,6 +28,10 @@ _CREDENTIAL_PARAMS = frozenset(
 )
 _CREDENTIAL_PARAM_PREFIX = "x-amz-"
 
+# Channel prefix for calendar observations (see ingest._events_to_chat_messages).
+# Schedule data, not messages: kept queryable but excluded from belief extraction.
+CALENDAR_CHANNEL_PREFIX = "calendar:"
+
 
 def _make_id(entity_type: str, key: str) -> str:
     return hashlib.sha256(f"{entity_type}:{key}".encode()).hexdigest()[:16]
