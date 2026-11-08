@@ -117,6 +117,7 @@ class EmailMessage:
     sender_name: str | None = None
     sender_dn: str | None = None
     source_facts: dict = field(default_factory=dict)
+    thread_participants: list[str] = field(default_factory=list)
 
 
 @dataclass

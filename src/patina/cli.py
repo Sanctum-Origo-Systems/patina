@@ -334,13 +334,46 @@ def _write_journal_warning(home: Path | None, warning: str) -> None:
         conn.close()
 
 
+def _echo_relevance(counts: dict[str, int]) -> None:
+    """Print Outlook keep/drop counts by reason (counts and reasons only)."""
+    from patina.ingest import DROPPED_PREFIX
+
+    dropped = sum(n for k, n in counts.items() if k.startswith(DROPPED_PREFIX))
+    total = sum(counts.values())
+    typer.echo(f"Outlook relevance: {total} fetched, {total - dropped} kept, {dropped} dropped")
+    for reason in sorted(counts, key=lambda k: (k.startswith(DROPPED_PREFIX), k)):
+        typer.echo(f"  {reason}: {counts[reason]}")
+
+
+def _ingest_dry_run(from_export: Path | None, lookback_days: int, home: Path | None) -> None:
+    if from_export:
+        typer.echo("--dry-run applies to live adapters only.", err=True)
+        raise typer.Exit(2)
+
+    from patina.ingest import ingest_all
+
+    result = ingest_all(home=home, lookback_days=lookback_days, dry_run=True)
+    if result.get("adapters_run", 0) == 0:
+        typer.echo("No adapters configured. Use 'patina connect slack'.")
+        return
+    typer.echo("Dry run: nothing written.")
+    _echo_relevance(result["relevance"])
+
+
 @app.command()
 def ingest(
     from_export: Path | None = typer.Option(None, "--from-export", help="Path to Slack export zip"),
     lookback_days: int = typer.Option(3, "--lookback-days", help="Days to look back for messages"),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report Outlook keep/drop counts by reason without writing"
+    ),
 ) -> None:
     """Ingest messages from export file or configured live adapters."""
+    if dry_run:
+        _ingest_dry_run(from_export, lookback_days, home)
+        return
+
     if from_export:
         if not from_export.exists():
             typer.echo(f"Error: {from_export} not found", err=True)
@@ -367,6 +400,8 @@ def ingest(
         f"Total: {result['total_observations']} observations, "
         f"{result['total_entities']} entities."
     )
+    if result.get("relevance"):
+        _echo_relevance(result["relevance"])
 
     channels_seen = result.get("channels_seen", 0)
     newly_watched = result.get("newly_watched", 0)

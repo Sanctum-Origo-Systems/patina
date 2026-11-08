@@ -1508,3 +1508,141 @@ def test_objectives_update_unknown_id_fails(tmp_path):
     )
     assert result.exit_code == 1
     assert "No objective updated" in result.output
+
+
+# --- #618: ingest --dry-run relevance report ---
+
+_DRY_OWNER_TO = [{"name": "Owner, Jane", "email": "owner@example.com"}]
+_DRY_TEAM_ALL = [{"name": "Team All", "email": "team-all@example.com", "isDistributionList": True}]
+
+
+def _dry_item(n: int, subject: str, senders: list[str], to: list[dict]) -> dict:
+    return {
+        "conversationId": f"AAQkADDryConv{n:03d}=",
+        "id": f"AAMkADDryMsg{n:03d}=",
+        "itemClasses": ["IPM.Note"],
+        "topic": subject,
+        "senders": senders,
+        "toRecipients": to,
+        "ccRecipients": [{"name": "Lee, Casey", "email": "casey.lee@example.com"}],
+        "receivedDateTime": f"2026-11-03T09:{n:02d}:42Z",
+        "preview": f"Body {n}: the lazy dog naps in the sun.",
+    }
+
+
+_DRY_ITEMS = [
+    _dry_item(1, "Re: The quick brown fox — Q3 plan", ["Example, Jordan"], _DRY_OWNER_TO),
+    _dry_item(2, "Fox launch notes", ["Sample, Riley"], _DRY_OWNER_TO),
+    _dry_item(3, "All-hands recap", ["Placeholder, Taylor"], _DRY_TEAM_ALL),
+    _dry_item(4, "Your weekly digest", ["no-reply@example.com"], _DRY_OWNER_TO),
+    _dry_item(5, "Build finished", ["notifications@tool.example"], _DRY_OWNER_TO),
+]
+
+
+class _DryRunOutlookPort:
+    def __init__(self, items: list[dict]) -> None:
+        self._items = items
+
+    @property
+    def platform(self) -> str:
+        return "outlook_mcp"
+
+    def list_inbox(self, since: float):
+        return [_email_from_raw(item) for item in self._items]
+
+    def search_sent(self, query: str):
+        return []
+
+
+def _dry_run_home(tmp_path, monkeypatch, *, seed: bool = True):
+    from patina.ingest import ingest_live
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "owner": {"emails": ["owner@example.com"]},
+                "ingest": {"outlook_relevance_filter": True},
+            }
+        )
+    )
+    if seed:
+        # Pre-existing store holding one earlier observation.
+        seed_item = _dry_item(9, "Earlier thread", ["Example, Jordan"], _DRY_OWNER_TO)
+        ingest_live(
+            port=_DryRunOutlookPort([seed_item]),
+            source="outlook_mcp_email",
+            home=tmp_path,
+            lookback_days=10000,
+        )
+    monkeypatch.setattr(
+        "patina.ingest._load_adapters",
+        lambda home: [("outlook_mcp_email", _DryRunOutlookPort(_DRY_ITEMS))],
+    )
+    return get_db_path(tmp_path)
+
+
+def _sqlite_dump(db_path) -> list[str]:
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return list(conn.iterdump())
+    finally:
+        conn.close()
+
+
+def test_ingest_dry_run_prints_counts_by_reason(tmp_path, monkeypatch):
+    _dry_run_home(tmp_path, monkeypatch)
+
+    result = runner.invoke(app, ["ingest", "--dry-run", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Outlook relevance: 5 fetched, 2 kept, 3 dropped" in result.output
+    assert "  direct: 2" in result.output
+    assert "  dropped_bot_or_list: 2" in result.output
+    assert "  dropped_not_direct: 1" in result.output
+
+
+def test_ingest_dry_run_leaves_store_byte_identical(tmp_path, monkeypatch):
+    db_path = _dry_run_home(tmp_path, monkeypatch)
+    before_hash = _sha256(db_path)
+    before_dump = _sqlite_dump(db_path)
+
+    result = runner.invoke(app, ["ingest", "--dry-run", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "direct: 2" in result.output  # emails that would be kept are still not written
+    assert _sha256(db_path) == before_hash
+    assert _sqlite_dump(db_path) == before_dump
+
+
+def test_ingest_dry_run_without_store_creates_none(tmp_path, monkeypatch):
+    db_path = _dry_run_home(tmp_path, monkeypatch, seed=False)
+
+    result = runner.invoke(app, ["ingest", "--dry-run", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert not db_path.exists()
+
+
+def test_ingest_dry_run_output_has_no_email_content(tmp_path, monkeypatch):
+    _dry_run_home(tmp_path, monkeypatch)
+
+    result = runner.invoke(app, ["ingest", "--dry-run", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    out = result.output.casefold()
+    for item in _DRY_ITEMS:
+        assert item["topic"].casefold() not in out
+        assert "lazy dog" not in out
+        for sender in item["senders"]:
+            assert sender.casefold() not in out
+        for recipient in [*item["toRecipients"], *item["ccRecipients"]]:
+            assert recipient["email"] not in out
+            assert recipient["name"].casefold() not in out
+    assert "@" not in out
+
+
+def test_ingest_dry_run_rejects_from_export(tmp_path):
+    result = runner.invoke(
+        app, ["ingest", "--dry-run", "--from-export", "x.zip", "--home", str(tmp_path)]
+    )
+    assert result.exit_code == 2

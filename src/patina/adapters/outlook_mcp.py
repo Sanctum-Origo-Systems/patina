@@ -224,6 +224,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
         sender_name=sender_name,
         sender_dn=sender_dn,
         source_facts=source_facts,
+        thread_participants=[s for s in senders if isinstance(s, str) and s],
     )
 
 
