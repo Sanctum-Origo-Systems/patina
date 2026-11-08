@@ -6,7 +6,9 @@
 - #622: Feat: Exclude calendar observations from belief extraction ($1.19)
 - #621: Feat: Source-facts metadata contract, Outlook email adapter and mi ($1.85)
 - #620: Feat: Add participants and customer_domains to objectives, with a ($1.44)
-Total: 7 PRs, $9.66
+- #625: Feat: [patina] fix: contradictions still fill the cap on live data ($0.85)
+- #624: Feat: [patina] fix: cleanup-meeting-obs selects 0 rows on the live ($1.27)
+Total: 9 PRs, $11.78
 
 ## v0.36.0 (2026-11-04)
 - #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
