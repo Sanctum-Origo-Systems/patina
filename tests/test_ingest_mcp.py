@@ -733,3 +733,152 @@ def test_still_failing_lookup_leaves_entity_unchanged(tmp_path):
     assert entity_row is not None
     assert entity_row["name"] == "W0NOPROF01"
     conn.close()
+
+
+LIVE_SHAPE_INBOX_ITEM = {
+    "conversationId": "AAQkADExampleConv001=",
+    "id": "AAMkADExampleMsg001=",
+    "itemClasses": ["IPM.Note"],
+    "topic": "Re: The quick brown fox — Q3 plan",
+    "senders": ["Example, Jordan (Contractor)", "Sample, Riley"],
+    "toRecipients": [
+        {"name": "Owner, Jane", "email": "owner@example.com"},
+        {"name": "Müller, Avery", "email": "avery.muller@example.com"},
+        {"name": "Team Alpha DL", "email": "team-alpha@example.com", "isDistributionList": True},
+    ],
+    "ccRecipients": [{"name": "Lee, Casey", "email": "casey.lee@example.com"}],
+    "receivedDateTime": "2026-11-03T09:15:42Z",
+    "preview": "The quick brown fox jumps over the lazy dog.",
+}
+
+
+class _RawEmailPort:
+    """EmailPort that runs raw Outlook items through ``_email_from_raw``."""
+
+    def __init__(self, items: list[dict]) -> None:
+        self._items = items
+
+    @property
+    def platform(self) -> str:
+        return "outlook_mcp"
+
+    def list_inbox(self, since: float) -> list[EmailMessage]:
+        from patina.adapters.outlook_mcp import _email_from_raw
+
+        return [_email_from_raw(item) for item in self._items]
+
+    def search_sent(self, query: str) -> list[EmailMessage]:
+        return []
+
+
+def _without(raw: dict, *keys: str) -> dict:
+    return {k: v for k, v in raw.items() if k not in keys}
+
+
+def _stored_email_rows(home) -> list[dict]:
+    import json
+
+    conn = connect(get_db_path(home))
+    rows = conn.execute(
+        "SELECT channel_id, thread_id, timestamp, metadata FROM observations"
+    ).fetchall()
+    conn.close()
+    return [
+        {
+            "channel_id": r["channel_id"],
+            "thread_id": r["thread_id"],
+            "timestamp": r["timestamp"],
+            "metadata": json.loads(r["metadata"]),
+        }
+        for r in rows
+    ]
+
+
+def test_outlook_email_source_facts_live_shape(tmp_path):
+    """AC: live-shape inbox item stores its raw source facts in metadata["source"]."""
+    from patina.adapters.outlook_mcp import _email_from_raw
+    from patina.ingest import _emails_to_chat_messages
+
+    raw = LIVE_SHAPE_INBOX_ITEM
+    chat = _emails_to_chat_messages([_email_from_raw(raw)])
+    assert len(chat) == 1
+    assert chat[0].source_facts["message_id"] == raw["id"]
+
+    home = tmp_path / "patina_home"
+    result = ingest_live(
+        port=_RawEmailPort([raw]), source="outlook_mcp_email", home=home, lookback_days=10000
+    )
+    assert result["messages_inserted"] == 1
+
+    rows = _stored_email_rows(home)
+    assert len(rows) == 1
+    row = rows[0]
+    source = row["metadata"]["source"]
+    assert source["message_id"] == raw["id"]
+    assert source["item_class"] == raw["itemClasses"]
+    assert source["sender_key"] == raw["senders"][0]
+    assert source["to"] == raw["toRecipients"]
+    assert source["to"][2]["isDistributionList"] is True
+    assert source["cc"] == raw["ccRecipients"]
+    assert source["received_raw"] == raw["receivedDateTime"]
+    assert "timestamp_missing" not in source
+
+    assert row["thread_id"] == raw["conversationId"]
+    assert row["channel_id"] == f"email:{raw['conversationId']}"
+    assert row["metadata"]["channel_name"] is None
+    assert row["metadata"]["reactions"] == []
+    assert row["timestamp"] > 0
+
+
+def test_outlook_email_source_facts_omit_absent_recipients(tmp_path):
+    """AC: no toRecipients/ccRecipients key -> no ``to``/``cc`` key, not empty lists."""
+    raw = _without(LIVE_SHAPE_INBOX_ITEM, "toRecipients", "ccRecipients")
+    home = tmp_path / "patina_home"
+    ingest_live(
+        port=_RawEmailPort([raw]), source="outlook_mcp_email", home=home, lookback_days=10000
+    )
+
+    (row,) = _stored_email_rows(home)
+    source = row["metadata"]["source"]
+    assert "to" not in source
+    assert "cc" not in source
+    assert source["message_id"] == raw["id"]
+
+
+def test_outlook_email_source_facts_omit_absent_ids_and_sender(tmp_path):
+    """AC: missing itemClasses, id and sender -> keys absent, never "", None or 0."""
+    raw = _without(LIVE_SHAPE_INBOX_ITEM, "itemClasses", "id", "senders")
+    home = tmp_path / "patina_home"
+    ingest_live(
+        port=_RawEmailPort([raw]), source="outlook_mcp_email", home=home, lookback_days=10000
+    )
+
+    (row,) = _stored_email_rows(home)
+    source = row["metadata"]["source"]
+    assert "item_class" not in source
+    assert "message_id" not in source
+    assert "sender_key" not in source
+    for value in source.values():
+        assert value not in (None, "", 0, [])
+    assert source["received_raw"] == raw["receivedDateTime"]
+
+
+def test_outlook_email_missing_timestamp_skipped_and_counted(tmp_path):
+    """AC: an item with no received time is skipped and counted, never stored at 0.0."""
+    undated = _without(LIVE_SHAPE_INBOX_ITEM, "receivedDateTime")
+    undated["conversationId"] = "AAQkADExampleConv002="
+    undated["id"] = "AAMkADExampleMsg002="
+    home = tmp_path / "patina_home"
+    result = ingest_live(
+        port=_RawEmailPort([LIVE_SHAPE_INBOX_ITEM, undated]),
+        source="outlook_mcp_email",
+        home=home,
+        lookback_days=10000,
+    )
+
+    assert result["skip_reasons"] == {"missing_timestamp": 1}
+    assert result["messages_inserted"] == 1
+    rows = _stored_email_rows(home)
+    assert len(rows) == 1
+    assert all(r["timestamp"] != 0.0 for r in rows)
+    assert rows[0]["thread_id"] == LIVE_SHAPE_INBOX_ITEM["conversationId"]

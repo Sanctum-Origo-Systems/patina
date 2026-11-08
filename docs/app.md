@@ -453,6 +453,31 @@ class ExportPort(Protocol):
     def load(self, path: Path) -> list[ChatMessage]: ...
 ```
 
+#### Source facts: `metadata["source"]`
+
+Adapters record what the source system actually sent under the observation's `metadata["source"]` dict. These are raw facts, kept as given (no normalization), so later passes can re-derive meaning without re-fetching. The adapter fills `source_facts` on `EmailMessage` / `ChatMessage`; ingest copies it to `metadata["source"]`. Entity resolution and dedupe do not read it.
+
+**Omit-if-absent rule.** A key is written only when the source sent a value. A field the source left out is absent from `metadata["source"]`. It is never written as `""`, `0`, `null` or an empty list. When the source sent nothing at all, `metadata["source"]` itself is absent.
+
+**Keys** (shared names; each adapter uses the subset it has):
+
+| Key | Meaning |
+|---|---|
+| `message_id` | The item's own source ID (not the thread/conversation ID) |
+| `item_class` | Message class(es) as given, e.g. Outlook `itemClasses` list or `messageClass` string |
+| `sender_key` | Raw sender identifier before normalization (display-name suffixes, legacy DNs etc. intact) |
+| `to` | Raw To recipients as given, including any distribution-list/group marker the source sets |
+| `cc` | Raw Cc recipients as given, same rule as `to` |
+| `received_raw` | The source's received-time string, verbatim |
+
+**Outlook email (`outlook_mcp_email`)** — `_email_from_raw` maps: `id` → `message_id`; `itemClasses` (else `messageClass` / `message_class`) → `item_class`; the raw `senders` entry that became the sender (else the `from` email/name) → `sender_key`; `toRecipients` → `to`; `ccRecipients` → `cc`; `lastDeliveryTime` (else `receivedDateTime`) → `received_raw`. `thread_id` stays the `conversationId` and `channel_id` stays `email:<conversationId>`. The `channel_name`, `reactions`, `sender_dn` and `organizer_dn` keys are unchanged.
+
+**Missing-timestamp policy: skip and count.** An email with no usable received time (absent or unparseable) is not stored, so no row gets `timestamp = 0.0`. It is counted under the `missing_timestamp` reason in the ingest result's `skip_reasons` dict (e.g. `{"missing_timestamp": 1}`). The other possible policy, storing the row with a `timestamp_missing` flag, is not used.
+
+**Legacy rows.** Observations ingested before this contract existed have no `metadata["source"]` key. They cannot be reliably backfilled: the raw payload was not kept, and re-fetching only returns what the source still holds now. Consumers must treat a missing `metadata["source"]` as "unknown", not as "the source sent nothing".
+
+Calendar, Slack and IMAP/Gmail adapters should reuse these key names and the omit-if-absent rule when they add source facts.
+
 ---
 
 ### Graduated Autonomy
