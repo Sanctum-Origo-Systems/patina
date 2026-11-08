@@ -1,7 +1,8 @@
 ## v0.37.0 (2026-11-07)
 - #603: Feat: [patina] fix: contradictions still fills the cap with org an ($0.98)
 - #602: Feat: Meeting-observation classification, selection and guarded re ($1.57)
-Total: 2 PRs, $2.55
+- #605: Feat: `patina cleanup-meeting-obs` CLI: read-only dry run, --, and ($1.68)
+Total: 3 PRs, $4.23
 
 ## v0.36.0 (2026-11-04)
 - #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
