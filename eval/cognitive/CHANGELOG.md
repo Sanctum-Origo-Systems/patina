@@ -14,7 +14,8 @@
 - #630: Feat: cleanup-meeting-obs counts only real observation ids and rep ($1.45)
 - #629: Feat: Apply the filter at Outlook ingest, count drops by reason, a ($2.28)
 - #632: Docs: README tool count, owner.emails and Outlook relevance filter ($0.00)
-Total: 15 PRs, $21.23
+- #635: Docs: explain why cross-app identity resolution is hard ($0.00)
+Total: 16 PRs, $21.23
 
 ## v0.36.0 (2026-11-04)
 - #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
