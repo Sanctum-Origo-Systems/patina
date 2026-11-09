@@ -6,8 +6,17 @@ import sqlite3
 import pytest
 
 from patina.store import connect, record_alias_provenance, run_pending_migrations
+from tests.conftest import _clear_migration_markers
 
 _NOW = "2025-01-01T00:00:00+00:00"
+
+
+@pytest.fixture
+def db_path(db_path):
+    conn = connect(db_path)
+    _clear_migration_markers(conn)
+    conn.close()
+    return db_path
 
 
 def _seed_entity(conn, eid, name, aliases):
@@ -157,6 +166,7 @@ def test_entities_aliases_unchanged(db_path):
 def test_legacy_table_rebuilt_to_accept_merge_rows(db_path):
     """#555: a pre-'merge' table keeps its rows and gains the 'merge' action."""
     conn = connect(db_path)
+    conn.execute("DROP TABLE entity_alias_provenance")
     conn.execute(
         """CREATE TABLE entity_alias_provenance (
                entity_id TEXT NOT NULL,

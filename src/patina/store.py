@@ -289,6 +289,9 @@ def init_db(db_path: Path) -> None:
             (_SCHEMA_VERSION,),
         )
         conn.commit()
+        # CREATE TABLE IF NOT EXISTS never alters an existing table, so every
+        # command that opens the store migrates it here before any write (#642).
+        run_pending_migrations(conn)
     finally:
         conn.close()
 
@@ -305,6 +308,31 @@ def ensure_objective_target_columns(conn: sqlite3.Connection) -> None:
     for col in _OBJECTIVE_TARGET_COLUMNS:
         if col not in cols:
             conn.execute(f"ALTER TABLE objectives ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'")
+
+
+def _require_live_backup(conn: sqlite3.Connection, migration: str) -> None:
+    """Refuse an observation-rewriting migration on the live store without a backup.
+
+    A store with no observations has nothing to rewrite, so a fresh install
+    migrates without one.
+    """
+    db_row = conn.execute("PRAGMA database_list").fetchone()
+    db_file = Path(db_row[2]) if db_row and db_row[2] else None
+    default_live = DEFAULT_HOME / "store.db"
+    if not db_file or db_file.resolve() != default_live.resolve():
+        return
+    if not conn.execute("SELECT 1 FROM observations LIMIT 1").fetchone():
+        return
+    backup_exists = any(default_live.parent.glob("store.db.bak*")) or any(
+        default_live.parent.glob("store.db.backup*")
+    )
+    if not backup_exists and not os.environ.get("PATINA_DEDUP_ALLOW_LIVE"):
+        raise RuntimeError(
+            f"Refusing to run {migration} on the live store "
+            f"({db_file}) without a backup. Copy the store first:\n"
+            f"  cp {db_file} {db_file}.bak\n"
+            "Or set PATINA_DEDUP_ALLOW_LIVE=1 to proceed without a backup."
+        )
 
 
 def run_pending_migrations(conn: sqlite3.Connection) -> None:
@@ -352,20 +380,7 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
         "SELECT 1 FROM migrations WHERE name = 'deduplicate_observations_v1'"
     ).fetchone()
     if not row:
-        db_row = conn.execute("PRAGMA database_list").fetchone()
-        db_file = Path(db_row[2]) if db_row and db_row[2] else None
-        default_live = DEFAULT_HOME / "store.db"
-        if db_file and db_file.resolve() == default_live.resolve():
-            backup_exists = any(default_live.parent.glob("store.db.bak*")) or any(
-                default_live.parent.glob("store.db.backup*")
-            )
-            if not backup_exists and not os.environ.get("PATINA_DEDUP_ALLOW_LIVE"):
-                raise RuntimeError(
-                    "Refusing to run deduplicate_observations_v1 on the live store "
-                    f"({db_file}) without a backup. Copy the store first:\n"
-                    f"  cp {db_file} {db_file}.bak\n"
-                    "Or set PATINA_DEDUP_ALLOW_LIVE=1 to proceed without a backup."
-                )
+        _require_live_backup(conn, "deduplicate_observations_v1")
 
         score = (
             "(CASE WHEN channel_id IS NOT NULL AND channel_id != ''"
@@ -457,20 +472,7 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
         "SELECT 1 FROM migrations WHERE name = 'deduplicate_observations_v2'"
     ).fetchone()
     if not row:
-        db_row = conn.execute("PRAGMA database_list").fetchone()
-        db_file = Path(db_row[2]) if db_row and db_row[2] else None
-        default_live = DEFAULT_HOME / "store.db"
-        if db_file and db_file.resolve() == default_live.resolve():
-            backup_exists = any(default_live.parent.glob("store.db.bak*")) or any(
-                default_live.parent.glob("store.db.backup*")
-            )
-            if not backup_exists and not os.environ.get("PATINA_DEDUP_ALLOW_LIVE"):
-                raise RuntimeError(
-                    "Refusing to run deduplicate_observations_v2 on the live store "
-                    f"({db_file}) without a backup. Copy the store first:\n"
-                    f"  cp {db_file} {db_file}.bak\n"
-                    "Or set PATINA_DEDUP_ALLOW_LIVE=1 to proceed without a backup."
-                )
+        _require_live_backup(conn, "deduplicate_observations_v2")
 
         family_expr = (
             "CASE"
@@ -603,20 +605,7 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
 
     row = conn.execute("SELECT 1 FROM migrations WHERE name = 'rekey_observations_v3'").fetchone()
     if not row:
-        db_row = conn.execute("PRAGMA database_list").fetchone()
-        db_file = Path(db_row[2]) if db_row and db_row[2] else None
-        default_live = DEFAULT_HOME / "store.db"
-        if db_file and db_file.resolve() == default_live.resolve():
-            backup_exists = any(default_live.parent.glob("store.db.bak*")) or any(
-                default_live.parent.glob("store.db.backup*")
-            )
-            if not backup_exists and not os.environ.get("PATINA_DEDUP_ALLOW_LIVE"):
-                raise RuntimeError(
-                    "Refusing to run rekey_observations_v3 on the live store "
-                    f"({db_file}) without a backup. Copy the store first:\n"
-                    f"  cp {db_file} {db_file}.bak\n"
-                    "Or set PATINA_DEDUP_ALLOW_LIVE=1 to proceed without a backup."
-                )
+        _require_live_backup(conn, "rekey_observations_v3")
 
         obs_rows = conn.execute(
             "SELECT rowid, id, source, channel_id, thread_id, timestamp FROM observations"

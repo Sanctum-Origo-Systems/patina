@@ -650,7 +650,7 @@ def _dedup_v2_setup(home):
     init_db(db_path)
     conn = connect(db_path)
     conn.execute(
-        "INSERT INTO migrations (name, applied_at)"
+        "INSERT OR IGNORE INTO migrations (name, applied_at)"
         " VALUES ('deduplicate_observations_v2', datetime('now'))"
     )
     conn.commit()
