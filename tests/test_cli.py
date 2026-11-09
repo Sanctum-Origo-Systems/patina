@@ -14,8 +14,8 @@ from typer.testing import CliRunner
 import patina.cleanup_meeting_obs as cleanup_meeting_obs
 from patina.adapters.outlook_mcp import _email_from_raw
 from patina.cli import _bootstrap_home, app
-from patina.graph import insert_claim, insert_observation
-from patina.models import Claim, Observation
+from patina.graph import insert_claim, insert_observation, upsert_entity
+from patina.models import Claim, Entity, Observation
 from patina.store import connect, get_db_path, init_db, run_pending_migrations
 
 runner = CliRunner()
@@ -1646,3 +1646,23 @@ def test_ingest_dry_run_rejects_from_export(tmp_path):
         app, ["ingest", "--dry-run", "--from-export", "x.zip", "--home", str(tmp_path)]
     )
     assert result.exit_code == 2
+
+
+def test_contradictions_prints_uncapped_totals_before_capped_listing(tmp_path):
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    conn = connect(db_path)
+    upsert_entity(conn, Entity(id="e1", type="person", name="Jordan"))
+    claims = [("location", f"Town {i}") for i in range(15)]  # 105 pairs, over the cap
+    claims += [("org", "Example Corp"), ("org", "Sample Industries")]
+    claims += [("title", "Engineer"), ("title", "Designer")]
+    for i, (predicate, obj) in enumerate(claims):
+        insert_claim(conn, Claim(id=f"c{i:02d}", subject_id="e1", predicate=predicate, object=obj))
+    conn.close()
+
+    result = runner.invoke(app, ["contradictions", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0] == "Uncapped totals: location=105, org=1, title=1"
+    assert lines[1] == "Found 100 contradiction(s):"
