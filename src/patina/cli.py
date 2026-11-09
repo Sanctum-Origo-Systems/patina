@@ -23,7 +23,11 @@ from patina.autonomy.tracker import (
     clear_anti_pattern,
     get_anti_patterns,
 )
-from patina.beliefs.contradictions import find_contradictions_tier1
+from patina.beliefs.contradictions import (
+    MAX_CONTRADICTIONS,
+    count_by_predicate,
+    find_all_contradictions,
+)
 from patina.beliefs.decay import get_stale_beliefs
 from patina.beliefs.relationships import get_relationship_map
 from patina.decisions import record_decision
@@ -874,11 +878,14 @@ def contradictions_cmd(
 
     conn = connect(db_path)
     try:
-        results = find_contradictions_tier1(conn)
-        if not results:
+        all_results = find_all_contradictions(conn)
+        if not all_results:
             typer.echo("No contradictions found.")
             return
 
+        totals = count_by_predicate(all_results)
+        typer.echo("Uncapped totals: " + ", ".join(f"{p}={n}" for p, n in totals.items()))
+        results = all_results[:MAX_CONTRADICTIONS]
         typer.echo(f"Found {len(results)} contradiction(s):")
         for item in results:
             tag = "" if item["relation"] == "conflict" else f" [{item['relation']}]"
