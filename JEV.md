@@ -2,6 +2,8 @@
 
 **Verdict:** Jev agreed on 88% (n=16 live) of confident calls
 
+**Band:** 0.15–0.85 (from config)
+
 ## Charts
 
 ```mermaid
@@ -15,9 +17,9 @@ xychart-beta
 ```mermaid
 xychart-beta
     title "Auto-Merge Confidence by Action Zone (n=132 live)"
-    x-axis ["Act: reject (below 0.35)", "Pipeline (0.35-0.65)", "Act: merge (0.65+)"]
-    y-axis "Count" 0 --> 84
-    bar [16, 83, 33]
+    x-axis ["Act: reject (below 0.15)", "Pipeline (0.15-0.85)", "Act: merge (0.85+)"]
+    y-axis "Count" 0 --> 129
+    bar [0, 128, 4]
 ```
 
 ```mermaid
@@ -66,18 +68,64 @@ xychart-beta
 
 | Zone | Agreed | Total | Agreement |
 |------|--------|-------|-----------|
-| Act: reject (below 0.35) | 1 | 8 | 12% (n=8 live) |
-| Pipeline (0.35-0.65) | 31 | 41 | 76% (n=41 live) |
-| Act: merge (0.65+) | 12 | 12 | 100% (n=12 live) |
+| Act: reject (below 0.15) | — | 0 | no outcomes yet |
+| Pipeline (0.15-0.85) | 44 | 61 | 72% (n=61 live) |
+| Act: merge (0.85+) | — | 0 | no outcomes yet |
+
+## Calibration
+
+Live rows only; shadow and backfilled rows are excluded. A suggested band edge needs Jev to match the incumbent on at least 95% of the calls beyond it, with at least n=30 calls.
+
+### triage.well_formed
+
+| Bin | n | % not rejected |
+|-----|---|---|
+| 0–0.15 | n=1 | 0% |
+| 0.15–0.35 | n=0 | — |
+| 0.35–0.5 | n=0 | — |
+| 0.5–0.65 | n=0 | — |
+| 0.65–0.85 | n=21 | 76% |
+| 0.85–1 | n=122 | 84% |
+
+- **Suggested band edges:** no edge reaches 95% (n=144)
+- **Baseline:** always accept: 83%, n=144 vs Jev: 83%, n=144
+
+### triage.needs_decomposition
+
+| Bin | n | % needs-decomposition |
+|-----|---|---|
+| 0–0.15 | n=7 | 0% |
+| 0.15–0.35 | n=36 | 8% |
+| 0.35–0.5 | n=22 | 9% |
+| 0.5–0.65 | n=29 | 17% |
+| 0.65–0.85 | n=39 | 46% |
+| 0.85–1 | n=11 | 73% |
+
+- **Suggested band edges:** no edge reaches 95% (n=144)
+- **Baseline:** never decompose: 75%, n=144 vs Jev: 63%, n=144
+
+### auto-merge.meets_acceptance_criteria
+
+| Bin | n | % approved |
+|-----|---|---|
+| 0–0.15 | n=0 | — |
+| 0.15–0.35 | n=8 | 88% |
+| 0.35–0.5 | n=11 | 73% |
+| 0.5–0.65 | n=30 | 93% |
+| 0.65–0.85 | n=12 | 100% |
+| 0.85–1 | n=0 | — |
+
+- **Suggested band edges:** low: not enough data; high 0.5 (95%, n=42)
+- **Baseline:** always approve: 90%, n=61 vs Jev: 72%, n=61
 
 ## Backfill
 
 ```mermaid
 xychart-beta
     title "Auto-Merge Confidence by Action Zone (n=57 backfill)"
-    x-axis ["Act: reject (below 0.35)", "Pipeline (0.35-0.65)", "Act: merge (0.65+)"]
-    y-axis "Count" 0 --> 27
-    bar [26, 10, 21]
+    x-axis ["Act: reject (below 0.15)", "Pipeline (0.15-0.85)", "Act: merge (0.85+)"]
+    y-axis "Count" 0 --> 53
+    bar [3, 52, 2]
 ```
 
 ### Backfill Auto-Merge Agreement
@@ -90,18 +138,18 @@ xychart-beta
 
 | Zone | Agreed | Total | Agreement |
 |------|--------|-------|-----------|
-| Act: reject (below 0.35) | 3 | 26 | 12% (n=26 backfill) |
-| Pipeline (0.35-0.65) | 2 | 10 | 20% (n=10 backfill) |
-| Act: merge (0.65+) | 9 | 9 | 100% (n=9 backfill) |
+| Act: reject (below 0.15) | 0 | 3 | 0% (n=3 backfill) |
+| Pipeline (0.15-0.85) | 14 | 42 | 33% (n=42 backfill) |
+| Act: merge (0.85+) | — | 0 | no outcomes yet |
 
 ## Legend
 
 - **Incumbent decision:** the human/pipeline decision that was actually used
 - **Fell back:** Jev returned an uncertain result and deferred to the incumbent
-- **Pipeline (0.35–0.65):** confidence too close to call; Jev defers to the incumbent
+- **Pipeline (0.15–0.85):** confidence too close to call; Jev defers to the incumbent
 - **Backfilled:** a decision reconstructed from historical data, not made live
 - **n=… live / n=… backfill:** the sample behind a number; live and backfilled decisions are never pooled
 
 ---
 
-*Generated at 2026-11-09 05:10 UTC*
+*Generated at 2026-11-09 15:37 UTC*
