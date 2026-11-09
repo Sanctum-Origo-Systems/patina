@@ -35,7 +35,12 @@ from patina.maintenance import (
 from patina.models import ChatMessage
 from patina.owner import get_owner_entity_id, get_owner_identifiers, normalize_alias
 from patina.store import connect, get_db_path, init_db
-from tests.conftest import _assert_identity_invariants, _seed_claim, _seed_identity_entity
+from tests.conftest import (
+    _assert_identity_invariants,
+    _clear_migration_markers,
+    _seed_claim,
+    _seed_identity_entity,
+)
 
 # --- Fictitious identities ---
 
@@ -245,6 +250,8 @@ def _build_store(home: Path, monkeypatch, *, sink_aliases: list[str]) -> SimpleN
 
     _seed_identity_entity(conn, SINK_ID, TRUNC_DN, aliases=sink_aliases)
     conn.commit()
+    # The sink predates the migrations; the first ingest's init_db backfills it.
+    _clear_migration_markers(conn)
 
     ingest_live(
         port=FakeSlackPort(SLACK_MESSAGES),

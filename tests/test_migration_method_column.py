@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
+from patina.beliefs.extractor import extract_beliefs
 from patina.ingest import _obs_id
-from patina.store import connect, run_pending_migrations
+from patina.store import connect, get_db_path, init_db, run_pending_migrations
+from tests.conftest import _clear_migration_markers
 
 _NOW = "2025-01-01T00:00:00+00:00"
 _LABELS = ["extraction", "behavioral_extraction", "envoy_migration"]
@@ -16,6 +19,7 @@ _OBS_ID = _obs_id("test", "", None, 1.0)
 def _legacy_store(db_path):
     """Open a store whose claims and relationships predate the method column."""
     conn = connect(db_path)
+    _clear_migration_markers(conn)
     conn.execute("ALTER TABLE claims DROP COLUMN method")
     conn.execute("ALTER TABLE relationships DROP COLUMN method")
     for eid, name in [("ent-a", "Jordan Example"), ("ent-b", "Casey Sample")]:
@@ -211,4 +215,121 @@ def test_fresh_store_has_method_column(db_path):
     conn = connect(db_path)
     assert "method" in _columns(conn, "claims")
     assert "method" in _columns(conn, "relationships")
+    conn.close()
+
+
+def _pre_613_store(db_path):
+    """#642: the old-schema trigger shape, with no ingest run since.
+
+    The legacy claim is ("c1", "Jordan Example", "prefers", "The quick brown fox",
+    '["extraction"]', 0.8); the relationship carries '["behavioral_extraction"]'.
+    """
+    conn = _legacy_store(db_path)
+    conn.execute(
+        "INSERT INTO claims"
+        " (id, subject_id, predicate, object, confidence,"
+        "  first_asserted, last_confirmed, decay_rate, source_ids)"
+        " VALUES ('c1', 'ent-a', 'prefers', 'The quick brown fox', 0.8, ?, ?, 0.02, ?)",
+        (_NOW, _NOW, '["extraction"]'),
+    )
+    _insert_rel(conn, "r1", '["behavioral_extraction"]')
+    conn.execute(
+        "INSERT INTO observations (id, source, timestamp, sender_entity_id, text, ingested_at)"
+        " VALUES (?, 'test', 1.0, 'ent-a', 'Jordan Example: the quick brown fox — très bien', ?)",
+        (_OBS_ID, _NOW),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _full_snapshot(conn):
+    return {
+        table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+        for table in ("claims", "relationships", "observations", "migrations")
+    }
+
+
+def test_extract_on_pre_613_store_without_ingest(tmp_path):
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    _pre_613_store(db_path)
+    mock_response = json.dumps(
+        {
+            "entities": [],
+            "claims": [
+                {
+                    "subject": "Jordan Example",
+                    "predicate": "likes",
+                    "object": "The quick brown fox",
+                    "confidence": 0.8,
+                }
+            ],
+            "relationships": [
+                {
+                    "subject": "Jordan Example",
+                    "predicate": "works_with",
+                    "object": "Casey Sample",
+                    "confidence": 0.6,
+                }
+            ],
+            "behavioral": [],
+        }
+    )
+
+    with patch("patina.beliefs.extractor._call_claude", return_value=mock_response):
+        stats = extract_beliefs(home=tmp_path, batch_size=5)
+
+    assert stats["errors"] == 0
+    assert stats["claims_extracted"] == 1
+    assert stats["relationships_extracted"] == 1
+    conn = connect(db_path)
+    assert "method" in _columns(conn, "claims")
+    assert "method" in _columns(conn, "relationships")
+    legacy_claim = conn.execute("SELECT method, source_ids FROM claims WHERE id = 'c1'").fetchone()
+    assert legacy_claim["method"] == "extraction"
+    assert json.loads(legacy_claim["source_ids"]) == []
+    legacy_rel = conn.execute(
+        "SELECT method, source_ids FROM relationships WHERE id = 'r1'"
+    ).fetchone()
+    assert legacy_rel["method"] == "behavioral_extraction"
+    assert json.loads(legacy_rel["source_ids"]) == []
+    for table in ("claims", "relationships"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE method IS NULL").fetchone()[0] == 0
+        for (raw,) in conn.execute(f"SELECT source_ids FROM {table}").fetchall():
+            assert not set(json.loads(raw)) & set(_LABELS)
+    conn.close()
+
+
+def test_init_db_migrates_pre_613_store(tmp_path):
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    _pre_613_store(db_path)
+
+    init_db(db_path)
+
+    conn = connect(db_path)
+    assert _snapshot(conn) == {
+        "claims": [("c1", "[]", "extraction")],
+        "relationships": [("r1", "[]", "behavioral_extraction")],
+    }
+    conn.close()
+
+
+def test_second_migration_run_changes_nothing(tmp_path):
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    _pre_613_store(db_path)
+    init_db(db_path)
+    conn = connect(db_path)
+    first = _full_snapshot(conn)
+    changes_before = conn.total_changes
+
+    run_pending_migrations(conn)
+
+    assert conn.total_changes == changes_before
+    assert _full_snapshot(conn) == first
+    conn.close()
+    init_db(db_path)
+    conn = connect(db_path)
+    assert _full_snapshot(conn) == first
     conn.close()

@@ -154,7 +154,7 @@ _LEGACY_DN_RE = re.compile(r"^/[Oo]=")
 _PAREN_SUFFIX_RE = re.compile(r"\s*\(.*$")
 
 
-def _normalize_sender(sender: str) -> str:
+def normalize_sender(sender: str) -> str:
     if not sender:
         return sender
     if _LEGACY_DN_RE.match(sender):
@@ -185,10 +185,10 @@ def _email_from_raw(raw: dict) -> EmailMessage:
         if s and _LEGACY_DN_RE.match(s):
             sender_dn = s
             break
-    clean_senders = [s for s in (_normalize_sender(s) for s in senders) if s]
+    clean_senders = [s for s in (normalize_sender(s) for s in senders) if s]
     sender = clean_senders[0] if clean_senders else ""
     sender_name = sender if sender else None
-    sender_key = next((s for s in senders if _normalize_sender(s)), None)
+    sender_key = next((s for s in senders if normalize_sender(s)), None)
 
     if not sender:
         from_raw = raw.get("from", {})
@@ -196,7 +196,7 @@ def _email_from_raw(raw: dict) -> EmailMessage:
             sender = from_raw.get("email", from_raw.get("name", ""))
             raw_name = from_raw.get("name", "")
             if raw_name:
-                normalized = _normalize_sender(raw_name)
+                normalized = normalize_sender(raw_name)
                 sender_name = normalized if normalized else None
         elif from_raw:
             sender = str(from_raw)

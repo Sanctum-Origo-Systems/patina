@@ -8,6 +8,7 @@ from patina.store import (
     record_extraction_run,
     run_pending_migrations,
 )
+from tests.conftest import _clear_migration_markers
 
 
 def test_get_db_path_creates_dir(tmp_path):
@@ -75,6 +76,8 @@ def test_fts_tables_created(db_path):
 
 def test_migration_creates_extraction_runs_table(db_path):
     conn = connect(db_path)
+    _clear_migration_markers(conn)
+    conn.execute("DROP TABLE extraction_runs")
     for name in (
         "fix_datamark_whitespace_v1",
         "rebuild_journal_fts_v1",

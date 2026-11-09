@@ -650,7 +650,7 @@ def _dedup_v2_setup(home):
     init_db(db_path)
     conn = connect(db_path)
     conn.execute(
-        "INSERT INTO migrations (name, applied_at)"
+        "INSERT OR IGNORE INTO migrations (name, applied_at)"
         " VALUES ('deduplicate_observations_v2', datetime('now'))"
     )
     conn.commit()
@@ -1908,6 +1908,87 @@ def test_outlook_relevance_bot_sender_beats_objective_engagement(tmp_path):
     result = _relevance(home, facts, objectives=[objective])
 
     assert tuple(result) == (False, "bot_or_list")
+
+
+LIVE_SENDER_KEY = "Example, Jordan (Contractor)"
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY},
+        {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY, "to": [], "cc": []},
+        {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY, "to": "Lee, Casey"},
+        {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY, "to": {"name": "Lee, Casey"}},
+        {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY, "to": 7, "cc": None},
+    ],
+    ids=["no-to-cc", "empty-to-cc", "str-to", "dict-to", "int-to"],
+)
+def test_outlook_relevance_missing_or_odd_to_cc_is_not_direct(tmp_path, facts):
+    """AC: no/empty/non-list To and Cc, no objectives -> (False, "not_direct"), no error."""
+    home = _relevance_home(tmp_path)
+
+    assert tuple(_relevance(home, facts, objectives=[])) == (False, "not_direct")
+
+
+def test_outlook_sender_address_from_recipient_dict_with_same_name():
+    """A display-name sender takes the address of its own To/Cc entry (normalized name)."""
+    from patina.ingest import outlook_sender_address
+
+    facts = _facts(
+        to=[{"name": "Owner, Jane", "email": OWNER_EMAIL}],
+        cc=[{"name": "Example, Jordan", "email": PERSON_SENDER}],
+        sender_key=LIVE_SENDER_KEY,
+    )
+
+    assert outlook_sender_address(facts) == PERSON_SENDER
+    assert outlook_sender_address(_facts(sender_key=LIVE_SENDER_KEY)) == ""
+    assert outlook_sender_address(_facts(sender_key=PERSON_SENDER)) == PERSON_SENDER
+
+
+def test_outlook_relevance_customer_domain_from_resolved_sender_address(tmp_path):
+    """A display-name sender with a caller-resolved ``sender_address`` matches the domain."""
+    home = _relevance_home(tmp_path)
+    facts = {**_facts(sender_key=LIVE_SENDER_KEY), "sender_address": PERSON_SENDER}
+
+    active = _objective(customer_domains=["partner.example"])
+    inactive = _objective(active=False, customer_domains=["partner.example"])
+
+    assert tuple(_relevance(home, facts, objectives=[active])) == (True, "engagement")
+    assert tuple(_relevance(home, facts, objectives=[inactive])) == (False, "not_direct")
+    unresolved = _facts(sender_key=LIVE_SENDER_KEY)
+    assert tuple(_relevance(home, unresolved, objectives=[active])) == (False, "not_direct")
+
+
+_DROP_FIXTURES = {
+    "bot": _facts(
+        to=[{"name": "Owner, Jane", "email": OWNER_EMAIL}], sender_key="no-reply@x.example"
+    ),
+    "list_only": _facts(
+        to=[{"name": "Team All", "email": "team-all@example.com", "isDistributionList": True}]
+    ),
+    "unresolved_live": {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY},
+    "live_recipients": {
+        "item_class": ["IPM.Note"],
+        "sender_key": LIVE_SENDER_KEY,
+        "recipients": ["Team All", "Lee, Casey"],
+    },
+    "non_list_to": {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY, "to": "Lee, Casey"},
+}
+
+
+@pytest.mark.parametrize("name", sorted(_DROP_FIXTURES))
+def test_outlook_relevance_drop_reasons_are_exported(tmp_path, name):
+    """AC: every drop reason is in RELEVANCE_DROP_REASONS, which the ingest stats use."""
+    from patina.ingest import RELEVANCE_DROP_REASONS
+
+    home = _relevance_home(tmp_path)
+    inactive = _objective(active=False, customer_domains=["partner.example"])
+
+    result = _relevance(home, _DROP_FIXTURES[name], objectives=[inactive])
+
+    assert result.keep is False
+    assert result.reason in RELEVANCE_DROP_REASONS
 
 
 def _store_snapshot(home) -> dict:

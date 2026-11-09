@@ -1771,5 +1771,148 @@ def test_relevance_dry_run_counts_without_creating_store(tmp_path):
         dry_run=True,
     )
 
-    assert result == {"relevance": {"direct": 1, "dropped_not_direct": 1}}
+    # No store: the display-name sender of the dropped email has no known address.
+    assert result == {
+        "relevance": {"direct": 1, "dropped_not_direct": 1},
+        "sender_unresolved": 1,
+    }
     assert not get_db_path(home).exists()
+
+
+# --- #633: customer-domain engagement on live (display-name sender) items ---
+
+# #641 live shape: display-name senders and recipients, Owner not named.
+_CUSTOMER_LIVE_RECIPIENTS = ["Team All", "Lee, Casey"]
+
+
+def _seed_sender_entity(home, name: str, aliases: list[str]) -> None:
+    """A store entity for the sender, holding its email alias."""
+    from patina.graph import upsert_entity
+    from patina.models import Entity
+    from patina.store import init_db
+
+    db_path = get_db_path(home)
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        upsert_entity(conn, Entity(id="ent-jordan", type="person", name=name, aliases=aliases))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _dry_run_outlook(home, items):
+    return ingest_live(
+        port=_RawEmailPort(items),
+        source="outlook_mcp_email",
+        home=home,
+        lookback_days=10000,
+        dry_run=True,
+    )
+
+
+def test_live_sender_resolved_from_store_customer_domain_is_engagement(tmp_path):
+    """AC: sender address resolves to partner.example, Owner not named, active -> engagement."""
+    home = _live_filter_home(tmp_path)
+    _seed_sender_entity(home, "Example, Jordan", ["jordan.example@partner.example"])
+    _add_fox_objective(home, customer_domains=["partner.example"])
+    item = _live_641_item(20, recipients=_CUSTOMER_LIVE_RECIPIENTS)
+    assert item["senders"][0] == "Example, Jordan (Contractor)"
+
+    result = _dry_run_outlook(home, [item])
+
+    assert result == {"relevance": {"engagement": 1}, "sender_unresolved": 0}
+
+
+def test_live_sender_resolved_from_store_inactive_objective_is_dropped(tmp_path):
+    """AC: the same email with the objective inactive -> dropped not_direct."""
+    from patina.priority.objectives import remove_objective
+
+    home = _live_filter_home(tmp_path)
+    _seed_sender_entity(home, "Example, Jordan", ["jordan.example@partner.example"])
+    obj = _add_fox_objective(home, customer_domains=["partner.example"])
+    assert remove_objective(obj.id, home=home)
+
+    result = _dry_run_outlook(home, [_live_641_item(21, recipients=_CUSTOMER_LIVE_RECIPIENTS)])
+
+    # Resolved, so not counted as unresolved: the objective is just inactive.
+    assert result == {"relevance": {"dropped_not_direct": 1}, "sender_unresolved": 0}
+
+
+def test_live_sender_resolved_from_store_keeps_under_filter(tmp_path):
+    """With the filter on, the customer's email is ingested; its stored facts are unchanged."""
+    home = _live_filter_home(tmp_path)
+    _seed_sender_entity(home, "Example, Jordan", ["jordan.example@partner.example"])
+    _add_fox_objective(home, customer_domains=["partner.example"])
+
+    result = _ingest_outlook(home, [_live_641_item(22, recipients=_CUSTOMER_LIVE_RECIPIENTS)])
+
+    assert result["relevance"] == {"engagement": 1}
+    assert result["sender_unresolved"] == 0
+    assert result["messages_inserted"] == 1
+    (row,) = _stored_email_rows(home)
+    assert "sender_address" not in row["metadata"]["source"]
+
+
+def test_live_sender_unresolved_is_dropped_and_counted(tmp_path):
+    """AC: a sender with no known address -> dropped not_direct, counted as unresolved."""
+    home = _live_filter_home(tmp_path)
+    _seed_sender_entity(home, "Sample, Riley", ["riley.sample@partner.example"])
+    _add_fox_objective(home, customer_domains=["partner.example"])
+    item = _live_641_item(23, recipients=_CUSTOMER_LIVE_RECIPIENTS)
+
+    result = _dry_run_outlook(home, [item])
+
+    assert result == {"relevance": {"dropped_not_direct": 1}, "sender_unresolved": 1}
+
+
+def test_dry_run_all_totals_sender_unresolved(tmp_path, monkeypatch):
+    from patina.ingest import ingest_all
+
+    home = _live_filter_home(tmp_path)
+    items = [
+        LIVE_INBOX_ITEM_641,
+        _live_641_item(24, recipients=_CUSTOMER_LIVE_RECIPIENTS),
+        _live_641_item(25, senders=["no-reply@example.com"], recipients=["Lee, Casey"]),
+    ]
+    monkeypatch.setattr(
+        "patina.ingest._load_adapters",
+        lambda home: [("outlook_mcp_email", _RawEmailPort(items))],
+    )
+
+    result = ingest_all(home=home, lookback_days=10000, dry_run=True)
+
+    assert result["relevance"] == {
+        "direct": 1,
+        "dropped_not_direct": 1,
+        "dropped_bot_or_list": 1,
+    }
+    assert result["sender_unresolved"] == 1
+
+
+@pytest.mark.parametrize(
+    ("participant", "recipients"),
+    [
+        ("Müller, Avery (Contractor)", ["Team All", "Müller, Avery"]),
+        ("Müller, Avery", ["Team All", "Müller, Avery (Contractor)"]),
+    ],
+)
+def test_live_participant_with_suffix_matches_thread(tmp_path, participant, recipients):
+    """AC: a participant stored as "Müller, Avery (Contractor)" matches the same person."""
+    home = _live_filter_home(tmp_path)
+    _add_fox_objective(home, participants=[participant])
+
+    result = _dry_run_outlook(home, [_live_641_item(26, recipients=recipients)])
+
+    assert result["relevance"] == {"engagement": 1}
+
+
+def test_live_participant_stored_as_address_matches_resolved_sender(tmp_path):
+    """A participant stored as an address matches a sender named on the thread only by name."""
+    home = _live_filter_home(tmp_path)
+    _seed_sender_entity(home, "Example, Jordan", ["jordan.example@partner.example"])
+    _add_fox_objective(home, participants=["jordan.example@partner.example"])
+
+    result = _dry_run_outlook(home, [_live_641_item(27, recipients=_CUSTOMER_LIVE_RECIPIENTS)])
+
+    assert result["relevance"] == {"engagement": 1}

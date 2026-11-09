@@ -30,6 +30,16 @@ def _isolate_home(tmp_path, monkeypatch):
     monkeypatch.setenv("PATINA_DEDUP_ALLOW_LIVE", "1")
 
 
+def _clear_migration_markers(conn):
+    """Mark every migration pending, as on a store created before they existed.
+
+    init_db applies pending migrations (#642), so a test that seeds legacy data
+    after init_db clears the markers for the next run to migrate that data.
+    """
+    conn.execute("DELETE FROM migrations")
+    conn.commit()
+
+
 def _seed_entity(conn, eid, etype, name, aliases=None, is_owner=0):
     now = "2025-01-01T00:00:00+00:00"
     conn.execute(

@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import pytest
+
 from patina.store import connect, run_pending_migrations
+from tests.conftest import _clear_migration_markers
+
+
+@pytest.fixture
+def db_path(db_path):
+    conn = connect(db_path)
+    _clear_migration_markers(conn)
+    conn.close()
+    return db_path
 
 
 def _skip_prior_migrations(conn):

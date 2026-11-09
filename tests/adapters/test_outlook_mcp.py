@@ -9,10 +9,10 @@ from patina.adapters.outlook_mcp import (
     OutlookMcpAdapter,
     _email_from_raw,
     _is_meeting_message,
-    _normalize_sender,
     _parse_outlook_datetime,
     _strip_caution_banner,
     _unwrap_email_list,
+    normalize_sender,
 )
 from patina.ports.calendar import CalendarPort
 from patina.ports.email import EmailPort
@@ -857,25 +857,25 @@ class TestNormalizeSender:
             "/O=EXCHANGELABS/OU=EXCHANGE ADMINISTRATIVE GROUP"
             " (FYDIBOHF23SPDLT)/CN=RECIPIENTS/CN=abc123def456"
         )
-        assert _normalize_sender(dn) == ""
+        assert normalize_sender(dn) == ""
 
     def test_legacy_dn_lowercase(self):
-        assert _normalize_sender("/o=EXCHANGELABS/ou=GROUP/cn=abc") == ""
+        assert normalize_sender("/o=EXCHANGELABS/ou=GROUP/cn=abc") == ""
 
     def test_parenthetical_stripped(self):
-        assert _normalize_sender("Brook, Dana (Marketing)") == "Brook, Dana"
+        assert normalize_sender("Brook, Dana (Marketing)") == "Brook, Dana"
 
     def test_truncated_bracket_stripped(self):
-        assert _normalize_sender("Brook, Dana (") == "Brook, Dana"
+        assert normalize_sender("Brook, Dana (") == "Brook, Dana"
 
     def test_clean_name_unchanged(self):
-        assert _normalize_sender("Park, David") == "Park, David"
+        assert normalize_sender("Park, David") == "Park, David"
 
     def test_empty_unchanged(self):
-        assert _normalize_sender("") == ""
+        assert normalize_sender("") == ""
 
     def test_email_address_unchanged(self):
-        assert _normalize_sender("dpark@example.com") == "dpark@example.com"
+        assert normalize_sender("dpark@example.com") == "dpark@example.com"
 
 
 class TestSenderNormalizationInEmail:
