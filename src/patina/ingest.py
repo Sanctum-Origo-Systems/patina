@@ -330,14 +330,22 @@ def outlook_relevance(
     """Decide deterministically whether an Outlook email is relevant enough to keep.
 
     ``source_facts`` is the email's ``metadata["source"]`` dict (``to``, ``cc``,
-    ``sender_key``, ``item_class``); ``thread_participants`` are the thread's
-    senders. Owner identifiers come from ``get_owner_identifiers`` unless given,
-    and are matched case-insensitively.
+    ``recipients``, ``sender_key``, ``item_class``); ``thread_participants`` are
+    the thread's senders. Owner identifiers come from ``get_owner_identifiers``
+    unless given, and are matched case-insensitively.
 
     - ``bot_or_list`` (drop): the sender is a no-reply, notification, mailer or
       list address. Checked first, so it wins over every keep rule.
     - ``direct`` (keep): the Owner is a named To recipient (not reached through a
-      distribution list) or sent/replied in the thread.
+      distribution list), is named in ``recipients``, or sent/replied in the
+      thread.
+
+      Live ``email_inbox`` items send no ``toRecipients``/``ccRecipients``, only
+      ``recipients``: display names with no To/Cc split and no list flag. Any
+      Owner match in ``recipients`` counts as direct, so an Owner on Cc is kept
+      too (no per-message re-fetch for the real To/Cc). Mail that reached the
+      Owner only through a list names the list, not the Owner, so it still
+      does not match.
     - ``engagement`` (keep): an active objective's participant is on the thread,
       or the sender's domain is one of its customer domains. Inactive objectives
       are ignored.
@@ -356,14 +364,17 @@ def outlook_relevance(
 
     to = _as_list(source_facts.get("to"))
     cc = _as_list(source_facts.get("cc"))
-    named_to = [r for r in to if not (isinstance(r, dict) and r.get("isDistributionList"))]
+    recipients = _as_list(source_facts.get("recipients"))
+    named = [
+        r for r in [*to, *recipients] if not (isinstance(r, dict) and r.get("isDistributionList"))
+    ]
     thread_people = [sender, *thread_participants]
 
-    if owner_keys and any(owner_keys & _identity_keys(v) for v in [*named_to, *thread_people]):
+    if owner_keys and any(owner_keys & _identity_keys(v) for v in [*named, *thread_people]):
         return Relevance(True, RELEVANCE_DIRECT)
 
     on_thread: set[str] = set()
-    for v in [*thread_people, *to, *cc]:
+    for v in [*thread_people, *to, *cc, *recipients]:
         on_thread |= _identity_keys(v)
     sender_domain = sender.rsplit("@", 1)[1].casefold() if "@" in sender else ""
 
@@ -436,19 +447,36 @@ def _apply_outlook_relevance(
 
 
 def _outlook_relevance_dry_run(
-    port, source: str, *, home: Path | None = None, lookback_days: int = 3
+    port,
+    source: str,
+    *,
+    home: Path | None = None,
+    lookback_days: int = 3,
+    seen: set[tuple[str, str]] | None = None,
 ) -> dict:
     """Run the Outlook keep/drop decisions and count them; nothing is written.
 
     The store is only opened read-only (for active objectives), and not at
-    all when it does not exist yet.
+    all when it does not exist yet. ``seen`` holds ``(source family, email id)``
+    keys already counted by an earlier adapter; matching emails are skipped and
+    new ones added, so an inbox listed by two adapters is counted once.
     """
     from patina.ports.email import EmailPort
     from patina.store import connect_readonly
 
     relevance: dict[str, int] = {}
-    if isinstance(port, EmailPort) and _source_family(source) == "outlook":
+    family = _source_family(source)
+    if isinstance(port, EmailPort) and family == "outlook":
         emails = port.list_inbox(time.time() - (lookback_days * 86400))
+        if seen is not None:
+            fresh = []
+            for em in emails:
+                if em.id and (family, em.id) in seen:
+                    continue
+                if em.id:
+                    seen.add((family, em.id))
+                fresh.append(em)
+            emails = fresh
         objectives: list[Objective] = []
         db_path = get_db_path(home)
         if db_path.exists():
@@ -647,17 +675,18 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3, dry_run: boo
 
 
 def _dry_run_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
-    """Count Outlook keep/drop decisions across configured adapters; writes nothing."""
+    """Count Outlook keep/drop decisions across configured adapters; writes nothing.
+
+    The Outlook email and calendar adapters are both ``outlook_mcp`` EmailPorts
+    over the same inbox, so each email is counted once across adapters.
+    """
     totals = {"adapters_run": 0, "relevance": {}}
+    seen: set[tuple[str, str]] = set()
     adapters = _load_adapters(home)
     try:
         for source_name, port in adapters:
-            result = ingest_live(
-                port=port,
-                source=source_name,
-                home=home,
-                lookback_days=lookback_days,
-                dry_run=True,
+            result = _outlook_relevance_dry_run(
+                port, source_name, home=home, lookback_days=lookback_days, seen=seen
             )
             totals["adapters_run"] += 1
             _add_counts(totals["relevance"], result["relevance"])
