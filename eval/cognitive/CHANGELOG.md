@@ -1,7 +1,8 @@
 ## v0.38.0 (2026-11-09)
 - #645: Feat: [patina] Contradictions still mostly noise on live: org/titl ($1.46)
 - #644: Feat: [patina] Outlook relevance filter reads fields the live inbo ($1.48)
-Total: 2 PRs, $2.94
+- #646: Feat: [patina] `patina extract` fails on a pre-#613 store until an ($3.39)
+Total: 3 PRs, $6.33
 
 ## v0.37.1 (2026-11-08)
 - #637: Docs: ingestion pipeline page and sink diagram ($0.00)
