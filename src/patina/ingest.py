@@ -282,6 +282,13 @@ RELEVANCE_ENGAGEMENT = "engagement"
 RELEVANCE_BOT_OR_LIST = "bot_or_list"
 RELEVANCE_NOT_DIRECT = "not_direct"
 
+# Every reason ``outlook_relevance`` can drop an email for (``dropped_<reason>`` stats).
+RELEVANCE_DROP_REASONS = frozenset({RELEVANCE_BOT_OR_LIST, RELEVANCE_NOT_DIRECT})
+
+# Source-fact key for a sender address resolved by the caller (e.g. from the store)
+# when the payload names the sender by display name only.
+SENDER_ADDRESS_FACT = "sender_address"
+
 
 class Relevance(NamedTuple):
     """A keep/drop decision; a dropped ``reason`` maps to the ``dropped_<reason>`` stat."""
@@ -292,14 +299,14 @@ class Relevance(NamedTuple):
 
 def _identity_keys(value) -> set[str]:
     """Casefolded match keys for a recipient dict or a sender/participant string."""
-    from patina.adapters.outlook_mcp import _normalize_sender
+    from patina.adapters.outlook_mcp import normalize_sender
 
     raw = [value.get("email"), value.get("name")] if isinstance(value, dict) else [value]
     keys: set[str] = set()
     for v in raw:
         if not isinstance(v, str):
             continue
-        for form in (v, _normalize_sender(v)):
+        for form in (v, normalize_sender(v)):
             form = form.strip().casefold()
             if form:
                 keys.add(form)
@@ -313,9 +320,36 @@ def _as_list(value) -> list:
 
 
 def _is_bot_or_list_sender(sender: str) -> bool:
-    from patina.maintenance import _is_automated_address
+    from patina.maintenance import is_automated_address
 
-    return is_non_person_sender(sender) or ("@" in sender and _is_automated_address(sender))
+    return is_non_person_sender(sender) or ("@" in sender and is_automated_address(sender))
+
+
+def outlook_sender_address(source_facts: dict) -> str:
+    """The sender's email address, or ``""`` when it cannot be resolved.
+
+    In order: ``sender_key`` when it is an address, a caller-resolved
+    ``sender_address`` fact, then a To/Cc recipient dict with the sender's
+    normalized display name. Live ``email_inbox`` items name the sender by
+    display name only and carry no recipient dicts, so for them the address
+    has to come from the store (see ``_resolve_sender_addresses``).
+    """
+    sender = str(source_facts.get("sender_key") or "").strip()
+    if "@" in sender:
+        return sender
+    resolved = source_facts.get(SENDER_ADDRESS_FACT)
+    if isinstance(resolved, str) and "@" in resolved:
+        return resolved.strip()
+    sender_keys = _identity_keys(sender)
+    if not sender_keys:
+        return ""
+    for r in [*_as_list(source_facts.get("to")), *_as_list(source_facts.get("cc"))]:
+        if not isinstance(r, dict):
+            continue
+        email = r.get("email")
+        if isinstance(email, str) and "@" in email and sender_keys & _identity_keys(r.get("name")):
+            return email.strip()
+    return ""
 
 
 def outlook_relevance(
@@ -330,9 +364,12 @@ def outlook_relevance(
     """Decide deterministically whether an Outlook email is relevant enough to keep.
 
     ``source_facts`` is the email's ``metadata["source"]`` dict (``to``, ``cc``,
-    ``recipients``, ``sender_key``, ``item_class``); ``thread_participants`` are
-    the thread's senders. Owner identifiers come from ``get_owner_identifiers``
-    unless given, and are matched case-insensitively.
+    ``recipients``, ``sender_key``, ``item_class``), optionally with a
+    caller-resolved ``sender_address``; ``thread_participants`` are the
+    thread's senders. Owner identifiers come from ``get_owner_identifiers``
+    unless given, and are matched case-insensitively. Objective participants
+    are matched on the same normalized forms as thread identities, so
+    ``"Müller, Avery (Contractor)"`` matches ``"Müller, Avery"``.
 
     - ``bot_or_list`` (drop): the sender is a no-reply, notification, mailer or
       list address. Checked first, so it wins over every keep rule.
@@ -347,10 +384,12 @@ def outlook_relevance(
       Owner only through a list names the list, not the Owner, so it still
       does not match.
     - ``engagement`` (keep): an active objective's participant is on the thread,
-      or the sender's domain is one of its customer domains. Inactive objectives
-      are ignored.
+      or the domain of the sender's address (``outlook_sender_address``) is one
+      of its customer domains. Inactive objectives are ignored.
     - ``not_direct`` (drop): none of the above. A ``subject`` keyword match is
-      never a keep signal on its own.
+      never a keep signal on its own. When the sender's address could not be
+      resolved, the customer-domain rule could not run; ingest stats count
+      those drops as ``sender_unresolved``.
 
     Pure: reads the config only, writes nothing.
     """
@@ -373,15 +412,18 @@ def outlook_relevance(
     if owner_keys and any(owner_keys & _identity_keys(v) for v in [*named, *thread_people]):
         return Relevance(True, RELEVANCE_DIRECT)
 
+    sender_address = outlook_sender_address(source_facts)
     on_thread: set[str] = set()
-    for v in [*thread_people, *to, *cc, *recipients]:
+    for v in [*thread_people, sender_address, *to, *cc, *recipients]:
         on_thread |= _identity_keys(v)
-    sender_domain = sender.rsplit("@", 1)[1].casefold() if "@" in sender else ""
+    sender_domain = sender_address.rsplit("@", 1)[1].casefold() if sender_address else ""
 
     for obj in objectives:
         if not obj.active:
             continue
-        participants = {p.strip().casefold() for p in obj.participants}
+        participants: set[str] = set()
+        for p in obj.participants:
+            participants |= _identity_keys(p)
         domains = {d.strip().casefold() for d in obj.customer_domains}
         if on_thread & participants or (sender_domain and sender_domain in domains):
             return Relevance(True, RELEVANCE_ENGAGEMENT)
@@ -421,19 +463,65 @@ def _active_objectives(conn) -> list[Objective]:
     return [_row_to_objective(r) for r in rows]
 
 
+def _resolve_sender_addresses(conn, emails: list[EmailMessage]) -> dict[str, str]:
+    """Map each display-name ``sender_key`` to its sender entity's email alias.
+
+    Read-only. Senders that match no single entity, or whose entity holds no
+    email alias, are left out.
+    """
+    import json
+
+    from patina.adapters.outlook_mcp import normalize_sender
+    from patina.graph import resolve_entity_id
+    from patina.owner import normalize_alias
+
+    resolved: dict[str, str] = {}
+    looked_up: set[str] = set()
+    for em in emails:
+        sender_key = str(em.source_facts.get("sender_key") or "").strip()
+        if not sender_key or "@" in sender_key or sender_key in looked_up:
+            continue
+        looked_up.add(sender_key)
+        name = normalize_sender(sender_key)
+        entity_id = resolve_entity_id(conn, name) if name else None
+        if entity_id is None:
+            continue
+        row = conn.execute("SELECT aliases FROM entities WHERE id = ?", (entity_id,)).fetchone()
+        for alias in json.loads(row["aliases"] or "[]") if row else []:
+            address = normalize_alias(alias).strip() if isinstance(alias, str) else ""
+            if "@" in address:
+                resolved[sender_key] = address
+                break
+    return resolved
+
+
 def _apply_outlook_relevance(
     emails: list[EmailMessage],
     *,
     objectives: list[Objective],
     counts: dict[str, int],
     home: Path | None = None,
-) -> list[EmailMessage]:
-    """Return the kept emails; every decision is counted in ``counts`` by stats key."""
+    conn=None,
+) -> tuple[list[EmailMessage], int]:
+    """Return the kept emails and the ``sender_unresolved`` count.
+
+    Every decision is counted in ``counts`` by stats key. With ``conn``, a
+    display-name sender's address is looked up in the store and passed to
+    ``outlook_relevance`` as ``sender_address`` (the stored source facts are
+    not changed). A ``not_direct`` drop whose sender address is still unknown
+    counts as ``sender_unresolved``.
+    """
     owner_identifiers = get_owner_identifiers(home)
+    addresses = _resolve_sender_addresses(conn, emails) if conn is not None else {}
     kept = []
+    unresolved = 0
     for em in emails:
+        facts = em.source_facts
+        address = addresses.get(str(facts.get("sender_key") or "").strip())
+        if address:
+            facts = {**facts, SENDER_ADDRESS_FACT: address}
         relevance = outlook_relevance(
-            em.source_facts,
+            facts,
             objectives=objectives,
             thread_participants=em.thread_participants,
             subject=em.subject,
@@ -443,7 +531,9 @@ def _apply_outlook_relevance(
         counts[key] = counts.get(key, 0) + 1
         if relevance.keep:
             kept.append(em)
-    return kept
+        elif relevance.reason == RELEVANCE_NOT_DIRECT and not outlook_sender_address(facts):
+            unresolved += 1
+    return kept, unresolved
 
 
 def _outlook_relevance_dry_run(
@@ -460,11 +550,15 @@ def _outlook_relevance_dry_run(
     all when it does not exist yet. ``seen`` holds ``(source family, email id)``
     keys already counted by an earlier adapter; matching emails are skipped and
     new ones added, so an inbox listed by two adapters is counted once.
+    The read-only store also resolves display-name senders to addresses;
+    ``not_direct`` drops whose sender stays unresolved are counted in
+    ``sender_unresolved``.
     """
     from patina.ports.email import EmailPort
     from patina.store import connect_readonly
 
     relevance: dict[str, int] = {}
+    unresolved = 0
     family = _source_family(source)
     if isinstance(port, EmailPort) and family == "outlook":
         emails = port.list_inbox(time.time() - (lookback_days * 86400))
@@ -477,16 +571,24 @@ def _outlook_relevance_dry_run(
                     seen.add((family, em.id))
                 fresh.append(em)
             emails = fresh
-        objectives: list[Objective] = []
         db_path = get_db_path(home)
         if db_path.exists():
             conn = connect_readonly(db_path)
             try:
-                objectives = _active_objectives(conn)
+                _, unresolved = _apply_outlook_relevance(
+                    emails,
+                    objectives=_active_objectives(conn),
+                    counts=relevance,
+                    home=home,
+                    conn=conn,
+                )
             finally:
                 conn.close()
-        _apply_outlook_relevance(emails, objectives=objectives, counts=relevance, home=home)
-    return {"relevance": relevance}
+        else:
+            _, unresolved = _apply_outlook_relevance(
+                emails, objectives=[], counts=relevance, home=home
+            )
+    return {"relevance": relevance, "sender_unresolved": unresolved}
 
 
 def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:
@@ -541,6 +643,7 @@ def ingest_live(
         messages: list[ChatMessage] = []
         skip_reasons: dict[str, int] = {}
         relevance: dict[str, int] = {}
+        sender_unresolved = 0
 
         if isinstance(port, ChatPort):
             messages.extend(port.list_dm_messages(since))
@@ -591,8 +694,12 @@ def ingest_live(
         if isinstance(port, EmailPort):
             emails = port.list_inbox(since)
             if _source_family(source) == "outlook" and _outlook_filter_enabled(home):
-                emails = _apply_outlook_relevance(
-                    emails, objectives=_active_objectives(conn), counts=relevance, home=home
+                emails, sender_unresolved = _apply_outlook_relevance(
+                    emails,
+                    objectives=_active_objectives(conn),
+                    counts=relevance,
+                    home=home,
+                    conn=conn,
                 )
             messages.extend(_emails_to_chat_messages(emails, skip_reasons))
 
@@ -621,6 +728,7 @@ def ingest_live(
             "zero_streak": zero_streak,
             "skip_reasons": skip_reasons,
             "relevance": relevance,
+            "sender_unresolved": sender_unresolved,
         }
     finally:
         conn.close()
@@ -648,6 +756,7 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3, dry_run: boo
         "zero_streak": 0,
         "skip_reasons": {},
         "relevance": {},
+        "sender_unresolved": 0,
     }
 
     adapters = _load_adapters(home)
@@ -668,6 +777,7 @@ def ingest_all(*, home: Path | None = None, lookback_days: int = 3, dry_run: boo
             totals["zero_streak"] = result.get("zero_streak", 0)
             _add_counts(totals["skip_reasons"], result.get("skip_reasons", {}))
             _add_counts(totals["relevance"], result.get("relevance", {}))
+            totals["sender_unresolved"] += result.get("sender_unresolved", 0)
     finally:
         _close_adapters(adapters)
 
@@ -680,7 +790,7 @@ def _dry_run_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
     The Outlook email and calendar adapters are both ``outlook_mcp`` EmailPorts
     over the same inbox, so each email is counted once across adapters.
     """
-    totals = {"adapters_run": 0, "relevance": {}}
+    totals = {"adapters_run": 0, "relevance": {}, "sender_unresolved": 0}
     seen: set[tuple[str, str]] = set()
     adapters = _load_adapters(home)
     try:
@@ -690,6 +800,7 @@ def _dry_run_all(*, home: Path | None = None, lookback_days: int = 3) -> dict:
             )
             totals["adapters_run"] += 1
             _add_counts(totals["relevance"], result["relevance"])
+            totals["sender_unresolved"] += result["sender_unresolved"]
     finally:
         _close_adapters(adapters)
 

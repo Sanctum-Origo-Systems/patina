@@ -642,7 +642,7 @@ _AUTOMATED_LOCAL_RE = re.compile(
 )
 
 
-def _is_automated_address(address: str) -> bool:
+def is_automated_address(address: str) -> bool:
     """An email address or mailbox handle whose local part is notification-style."""
     local = address.strip().split("@", 1)[0]
     return bool(local) and bool(_NON_PERSON_RE.search(local) or _AUTOMATED_LOCAL_RE.search(local))
@@ -765,7 +765,7 @@ def _is_automated_sender(conn: sqlite3.Connection, ent: dict) -> bool:
 
     if not addresses:
         return _is_automated_by_structure(conn, ent, obs_rows)
-    return all(_is_automated_address(a) for a in addresses)
+    return all(is_automated_address(a) for a in addresses)
 
 
 def _collect_dns(tokens: list[str]) -> set[str]:
