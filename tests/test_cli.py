@@ -1601,6 +1601,23 @@ def test_ingest_dry_run_prints_counts_by_reason(tmp_path, monkeypatch):
     assert "  dropped_not_direct: 1" in result.output
 
 
+def test_ingest_dry_run_counts_shared_outlook_inbox_once(tmp_path, monkeypatch):
+    """#641: the email and calendar adapters both list the one outlook_mcp inbox."""
+    _dry_run_home(tmp_path, monkeypatch, seed=False)
+    monkeypatch.setattr(
+        "patina.ingest._load_adapters",
+        lambda home: [
+            ("outlook_mcp_email", _DryRunOutlookPort(_DRY_ITEMS)),
+            ("outlook_mcp_calendar", _DryRunOutlookPort(_DRY_ITEMS)),
+        ],
+    )
+
+    result = runner.invoke(app, ["ingest", "--dry-run", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert f"Outlook relevance: {len(_DRY_ITEMS)} fetched, 2 kept, 3 dropped" in result.output
+
+
 def test_ingest_dry_run_leaves_store_byte_identical(tmp_path, monkeypatch):
     db_path = _dry_run_home(tmp_path, monkeypatch)
     before_hash = _sha256(db_path)

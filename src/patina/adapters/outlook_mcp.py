@@ -162,6 +162,22 @@ def _normalize_sender(sender: str) -> str:
     return _PAREN_SUFFIX_RE.sub("", sender).strip()
 
 
+def _message_id(raw: dict) -> str | None:
+    """The item's source id: ``id``, else the first ``itemIds`` entry, else ``conversationId``.
+
+    Live ``email_inbox`` conversations send no ``id``, only an ``itemIds`` list,
+    so stored source facts would otherwise never carry an id.
+    """
+    if raw.get("id"):
+        return raw["id"]
+    item_ids = raw.get("itemIds")
+    if isinstance(item_ids, list):
+        for item_id in item_ids:
+            if isinstance(item_id, str) and item_id:
+                return item_id
+    return raw.get("conversationId") or None
+
+
 def _email_from_raw(raw: dict) -> EmailMessage:
     senders = raw.get("senders", [])
     sender_dn = None
@@ -200,11 +216,14 @@ def _email_from_raw(raw: dict) -> EmailMessage:
 
     item_class = raw.get("itemClasses", raw.get("messageClass", raw.get("message_class")))
     source_facts: dict = {}
-    put_fact(source_facts, "message_id", raw.get("id"))
+    put_fact(source_facts, "message_id", _message_id(raw))
     put_fact(source_facts, "item_class", item_class)
     put_fact(source_facts, "sender_key", sender_key)
     put_fact(source_facts, "to", raw.get("toRecipients"))
     put_fact(source_facts, "cc", raw.get("ccRecipients"))
+    # Live ``email_inbox`` items send only ``recipients``: display-name strings
+    # with no To/Cc split and no distribution-list flag. Kept as given.
+    put_fact(source_facts, "recipients", raw.get("recipients"))
     put_fact(source_facts, "received_raw", received)
 
     subject = raw.get("topic", raw.get("subject", ""))

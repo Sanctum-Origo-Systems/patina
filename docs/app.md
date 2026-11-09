@@ -465,16 +465,17 @@ Adapters record what the source system actually sent under the observation's `me
 
 | Key | Meaning |
 |---|---|
-| `message_id` | The item's own source ID (not the thread/conversation ID) |
+| `message_id` | The item's own source ID (not the thread/conversation ID, except as the Outlook fallback below) |
 | `item_class` | Message class(es) as given, e.g. Outlook `itemClasses` list or `messageClass` string |
 | `sender_key` | Raw sender identifier before normalization (display-name suffixes, legacy DNs etc. intact) |
 | `to` | Raw To recipients as given, including any distribution-list/group marker the source sets |
 | `cc` | Raw Cc recipients as given, same rule as `to` |
+| `recipients` | Raw recipient list as given, when the source does not split To and Cc (live Outlook `email_inbox`) |
 | `received_raw` | The source's received-time string, verbatim |
 | `channel_id` | The source channel/conversation id the message came from, as given (Slack) |
 | `attendees` | Raw attendee list as given (calendar) |
 
-**Outlook email (`outlook_mcp_email`)** — `_email_from_raw` maps: `id` → `message_id`; `itemClasses` (else `messageClass` / `message_class`) → `item_class`; the raw `senders` entry that became the sender (else the `from` email/name) → `sender_key`; `toRecipients` → `to`; `ccRecipients` → `cc`; `lastDeliveryTime` (else `receivedDateTime`) → `received_raw`. `thread_id` stays the `conversationId` and `channel_id` stays `email:<conversationId>`. The `channel_name`, `reactions`, `sender_dn` and `organizer_dn` keys are unchanged.
+**Outlook email (`outlook_mcp_email`)** — `_email_from_raw` maps: `id` (else the first `itemIds` entry, else `conversationId`) → `message_id`; `itemClasses` (else `messageClass` / `message_class`) → `item_class`; the raw `senders` entry that became the sender (else the `from` email/name) → `sender_key`; `toRecipients` → `to`; `ccRecipients` → `cc`; `recipients` → `recipients`; `lastDeliveryTime` (else `receivedDateTime`) → `received_raw`. Live `email_inbox` items send no `id`, `toRecipients` or `ccRecipients`. They carry an `itemIds` list and `recipients` as display-name strings, with no To/Cc split and no distribution-list flag, so the relevance rule counts any Owner match in `recipients` as direct. `thread_id` stays the `conversationId` and `channel_id` stays `email:<conversationId>`. The `channel_name`, `reactions`, `sender_dn` and `organizer_dn` keys are unchanged.
 
 **Missing-timestamp policy: skip and count.** An email with no usable received time (absent or unparseable) is not stored, so no row gets `timestamp = 0.0`. It is counted under the `missing_timestamp` reason in the ingest result's `skip_reasons` dict (e.g. `{"missing_timestamp": 1}`). The other possible policy, storing the row with a `timestamp_missing` flag, is not used.
 
