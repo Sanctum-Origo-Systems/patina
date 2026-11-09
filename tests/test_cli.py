@@ -1599,6 +1599,8 @@ def test_ingest_dry_run_prints_counts_by_reason(tmp_path, monkeypatch):
     assert "  direct: 2" in result.output
     assert "  dropped_bot_or_list: 2" in result.output
     assert "  dropped_not_direct: 1" in result.output
+    # #633: the not_direct sender has only a display name and no address in the store.
+    assert "  sender_unresolved: 1" in result.output
 
 
 def test_ingest_dry_run_counts_shared_outlook_inbox_once(tmp_path, monkeypatch):

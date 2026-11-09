@@ -338,15 +338,18 @@ def _write_journal_warning(home: Path | None, warning: str) -> None:
         conn.close()
 
 
-def _echo_relevance(counts: dict[str, int]) -> None:
+def _echo_relevance(counts: dict[str, int], sender_unresolved: int = 0) -> None:
     """Print Outlook keep/drop counts by reason (counts and reasons only)."""
-    from patina.ingest import DROPPED_PREFIX
+    from patina.ingest import DROPPED_PREFIX, RELEVANCE_DROP_REASONS
 
-    dropped = sum(n for k, n in counts.items() if k.startswith(DROPPED_PREFIX))
+    drop_keys = {f"{DROPPED_PREFIX}{r}" for r in RELEVANCE_DROP_REASONS}
+    dropped = sum(n for k, n in counts.items() if k in drop_keys)
     total = sum(counts.values())
     typer.echo(f"Outlook relevance: {total} fetched, {total - dropped} kept, {dropped} dropped")
-    for reason in sorted(counts, key=lambda k: (k.startswith(DROPPED_PREFIX), k)):
+    for reason in sorted(counts, key=lambda k: (k in drop_keys, k)):
         typer.echo(f"  {reason}: {counts[reason]}")
+    if sender_unresolved:
+        typer.echo(f"  sender_unresolved: {sender_unresolved} (not_direct, no sender address)")
 
 
 def _ingest_dry_run(from_export: Path | None, lookback_days: int, home: Path | None) -> None:
@@ -361,7 +364,7 @@ def _ingest_dry_run(from_export: Path | None, lookback_days: int, home: Path | N
         typer.echo("No adapters configured. Use 'patina connect slack'.")
         return
     typer.echo("Dry run: nothing written.")
-    _echo_relevance(result["relevance"])
+    _echo_relevance(result["relevance"], result.get("sender_unresolved", 0))
 
 
 @app.command()
@@ -405,7 +408,7 @@ def ingest(
         f"{result['total_entities']} entities."
     )
     if result.get("relevance"):
-        _echo_relevance(result["relevance"])
+        _echo_relevance(result["relevance"], result.get("sender_unresolved", 0))
 
     channels_seen = result.get("channels_seen", 0)
     newly_watched = result.get("newly_watched", 0)
