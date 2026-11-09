@@ -5,6 +5,8 @@ Its input per row comes from stored class fields in metadata, else a read-only
 re-fetch of the source payload, else the row is undetermined and never removed.
 The re-fetch ID is ``conversationId``/``id`` in metadata, else ``thread_id``,
 else ``channel_id`` without its ``email:`` prefix (where ingest stores it).
+A row with no re-fetch ID on a ``calendar:`` channel is a calendar event, out of
+scope for this email cleanup, and is counted apart from undetermined rows.
 A claim or relationship cites a row only when its ``source_ids`` hold that
 row's observation id; rows citing no existing observation are reported as
 unknown provenance, never matched by text or time.
@@ -19,6 +21,7 @@ from pathlib import Path
 from typing import Protocol
 
 from patina.adapters import outlook_mcp
+from patina.extraction import CALENDAR_CHANNEL_PREFIX
 from patina.maintenance import backup_store
 from patina.store import connect, connect_readonly, delete_observations
 
@@ -27,6 +30,7 @@ SOURCE = "outlook_mcp_email"
 SELECTED = "selected"
 UNDETERMINED = "undetermined"
 NOT_MEETING = "not_meeting"
+CALENDAR_OUT_OF_SCOPE = "calendar_out_of_scope"
 
 _CLASS_KEYS = ("itemClasses", "messageClass", "message_class")
 _CHANNEL_PREFIX = "email:"
@@ -73,12 +77,20 @@ class Selection:
     unprocessed_count: int
     undetermined: UndeterminedBucket
     not_meeting_count: int
+    # Rows of SOURCE classified: selected + undetermined + not meeting + calendar.
+    total_count: int = 0
+    calendar_out_of_scope_count: int = 0
     # Claims and relationships whose source_ids name no existing observation.
-    unknown_provenance: int = 0
+    unknown_provenance_claims: int = 0
+    unknown_provenance_relationships: int = 0
 
     @property
     def selected_count(self) -> int:
         return len(self.selected)
+
+    @property
+    def unknown_provenance(self) -> int:
+        return self.unknown_provenance_claims + self.unknown_provenance_relationships
 
 
 @dataclass
@@ -163,6 +175,12 @@ def _classify_with_reason(
 ) -> tuple[str, list[str], str | None]:
     payload, reason = _resolve_input(metadata, adapter, thread_id, channel_id)
     if payload is None:
+        if (
+            reason == NO_SOURCE_ID
+            and isinstance(channel_id, str)
+            and channel_id.startswith(CALENDAR_CHANNEL_PREFIX)
+        ):
+            return CALENDAR_OUT_OF_SCOPE, [], None
         return UNDETERMINED, [], reason
     if outlook_mcp._is_meeting_message(payload):
         return SELECTED, _matching_classes(payload), None
@@ -199,8 +217,10 @@ def _load_source_ids(raw: str | None) -> set[str]:
     return {s for s in sids if isinstance(s, str)} if isinstance(sids, list) else set()
 
 
-def _citation_counts(conn: sqlite3.Connection, obs_ids: set[str]) -> tuple[dict[str, int], int]:
-    """Return ``(citing rows per selected id, unknown-provenance row count)``.
+def _citation_counts_by_table(
+    conn: sqlite3.Connection, obs_ids: set[str]
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Return ``(citing rows per selected id, unknown-provenance rows per table)``.
 
     Claims and relationships are both counted. Only source ids that name an
     existing observation are citations; method labels such as ``"extraction"``
@@ -208,16 +228,22 @@ def _citation_counts(conn: sqlite3.Connection, obs_ids: set[str]) -> tuple[dict[
     """
     counts = dict.fromkeys(obs_ids, 0)
     known = {r["id"] for r in conn.execute("SELECT id FROM observations").fetchall()}
-    unknown = 0
-    for table in ("claims", "relationships"):
+    unknown = {"claims": 0, "relationships": 0}
+    for table in unknown:
         for row in conn.execute(f"SELECT source_ids FROM {table}").fetchall():
             real = _load_source_ids(row["source_ids"]) & known
             if not real:
-                unknown += 1
+                unknown[table] += 1
             for sid in real:
                 if sid in counts:
                     counts[sid] += 1
     return counts, unknown
+
+
+def _citation_counts(conn: sqlite3.Connection, obs_ids: set[str]) -> tuple[dict[str, int], int]:
+    """Return ``(citing rows per selected id, unknown-provenance row count)``."""
+    counts, unknown = _citation_counts_by_table(conn, obs_ids)
+    return counts, sum(unknown.values())
 
 
 def _count_source_rows(conn: sqlite3.Connection) -> int:
@@ -241,6 +267,7 @@ def select_meeting_observations(
         picked: list[tuple[sqlite3.Row, list[str]]] = []
         undetermined = UndeterminedBucket()
         not_meeting = 0
+        calendar = 0
         for row in rows:
             verdict, classes, reason = _classify_with_reason(
                 _load_metadata(row["metadata"]), adapter, row["thread_id"], row["channel_id"]
@@ -261,10 +288,12 @@ def select_meeting_observations(
                 undetermined.latest = (
                     ts if undetermined.latest is None else max(undetermined.latest, ts)
                 )
+            elif verdict == CALENDAR_OUT_OF_SCOPE:
+                calendar += 1
             else:
                 not_meeting += 1
 
-        citations, unknown_provenance = _citation_counts(conn, {r["id"] for r, _ in picked})
+        citations, unknown = _citation_counts_by_table(conn, {r["id"] for r, _ in picked})
     finally:
         conn.close()
 
@@ -289,7 +318,10 @@ def select_meeting_observations(
         unprocessed_count=len(selected) - processed,
         undetermined=undetermined,
         not_meeting_count=not_meeting,
-        unknown_provenance=unknown_provenance,
+        total_count=len(rows),
+        calendar_out_of_scope_count=calendar,
+        unknown_provenance_claims=unknown["claims"],
+        unknown_provenance_relationships=unknown["relationships"],
     )
 
 

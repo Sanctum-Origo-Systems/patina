@@ -6,6 +6,15 @@ from patina.graph import insert_observation
 from patina.ingest import _obs_id
 from patina.models import Observation
 from patina.store import connect, init_db, run_pending_migrations
+from tests.conftest import _clear_migration_markers
+
+
+@pytest.fixture
+def db_path(db_path):
+    conn = connect(db_path)
+    _clear_migration_markers(conn)
+    conn.close()
+    return db_path
 
 
 def _insert_obs(
@@ -367,12 +376,28 @@ def test_dedup_aborts_on_live_store_without_backup(tmp_path, monkeypatch):
     db_path = live_home / "store.db"
     init_db(db_path)
     conn = connect(db_path)
+    _clear_migration_markers(conn)
     _insert_obs(conn, "obs-a", channel_id="", text="test")
     _insert_obs(conn, "obs-b", channel_id="C1", text="test")
     conn.commit()
 
     with pytest.raises(RuntimeError, match="without a backup"):
         run_pending_migrations(conn)
+    conn.close()
+
+
+def test_init_db_on_fresh_live_store_needs_no_backup(tmp_path, monkeypatch):
+    live_home = tmp_path / ".patina"
+    live_home.mkdir()
+    monkeypatch.setattr("patina.store.DEFAULT_HOME", live_home)
+    monkeypatch.delenv("PATINA_DEDUP_ALLOW_LIVE", raising=False)
+
+    db_path = live_home / "store.db"
+    init_db(db_path)
+
+    conn = connect(db_path)
+    names = {r["name"] for r in conn.execute("SELECT name FROM migrations").fetchall()}
+    assert {"deduplicate_observations_v1", "rekey_observations_v3"} <= names
     conn.close()
 
 
@@ -387,6 +412,7 @@ def test_dedup_proceeds_on_live_store_with_backup_file(tmp_path, monkeypatch):
     (live_home / "store.db.bak").write_bytes(db_path.read_bytes())
 
     conn = connect(db_path)
+    _clear_migration_markers(conn)
     _insert_obs(conn, "obs-a", channel_id="", text="test")
     _insert_obs(conn, "obs-b", channel_id="C1", text="test")
     conn.commit()
@@ -407,6 +433,7 @@ def test_dedup_proceeds_on_live_store_with_env_override(tmp_path, monkeypatch):
     db_path = live_home / "store.db"
     init_db(db_path)
     conn = connect(db_path)
+    _clear_migration_markers(conn)
     _insert_obs(conn, "obs-a", channel_id="", text="test")
     _insert_obs(conn, "obs-b", channel_id="C1", text="test")
     conn.commit()

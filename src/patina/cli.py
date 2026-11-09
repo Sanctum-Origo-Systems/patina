@@ -1835,6 +1835,7 @@ def _format_obs_ts(ts: float | None) -> str | None:
 def _meeting_selection_report(selection) -> dict:
     und = selection.undetermined
     return {
+        "total_count": selection.total_count,
         "selected_count": selection.selected_count,
         "earliest": _format_obs_ts(selection.earliest),
         "latest": _format_obs_ts(selection.latest),
@@ -1851,6 +1852,8 @@ def _meeting_selection_report(selection) -> dict:
         ],
         "total_citations": selection.total_citations,
         "unknown_provenance": selection.unknown_provenance,
+        "unknown_provenance_claims": selection.unknown_provenance_claims,
+        "unknown_provenance_relationships": selection.unknown_provenance_relationships,
         "undetermined": {
             "count": und.count,
             "earliest": _format_obs_ts(und.earliest),
@@ -1858,6 +1861,8 @@ def _meeting_selection_report(selection) -> dict:
             "reasons": dict(und.reasons),
             "zero_timestamp": und.zero_timestamp,
         },
+        "not_meeting": selection.not_meeting_count,
+        "calendar_out_of_scope": selection.calendar_out_of_scope_count,
     }
 
 
@@ -1873,6 +1878,7 @@ def cleanup_meeting_obs_cmd(
     import json
 
     from patina.cleanup_meeting_obs import (
+        SOURCE,
         RemovalRefused,
         remove_meeting_observations,
         select_meeting_observations,
@@ -1900,6 +1906,7 @@ def cleanup_meeting_obs_cmd(
     report = _meeting_selection_report(selection)
 
     if not as_json:
+        typer.echo(f"Total {SOURCE} rows: {report['total_count']}")
         typer.echo(f"Selected: {report['selected_count']} meeting observation(s)")
         if report["selected_count"]:
             typer.echo(f"  Earliest: {report['earliest']}")
@@ -1911,7 +1918,6 @@ def cleanup_meeting_obs_cmd(
                 f"  citing claims: {row['citing_claims']}"
             )
         typer.echo(f"Total citing claims: {report['total_citations']}")
-        typer.echo(f"unknown provenance: {report['unknown_provenance']}")
         und = report["undetermined"]
         und_range = f" ({und['earliest']} to {und['latest']})" if und["earliest"] else ""
         typer.echo(f"Undetermined (not selected): {und['count']}{und_range}")
@@ -1919,6 +1925,11 @@ def cleanup_meeting_obs_cmd(
             for reason, count in und["reasons"].items():
                 typer.echo(f"  {reason}: {count}")
             typer.echo(f"  zero_timestamp: {und['zero_timestamp']}")
+        typer.echo(f"Not meeting: {report['not_meeting']}")
+        typer.echo(f"Calendar, out of scope: {report['calendar_out_of_scope']}")
+        typer.echo("Unknown provenance (cite no existing observation):")
+        typer.echo(f"  claims: {report['unknown_provenance_claims']}")
+        typer.echo(f"  relationships: {report['unknown_provenance_relationships']}")
 
     if not confirm:
         if as_json:

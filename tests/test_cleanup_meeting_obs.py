@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 import patina.cleanup_meeting_obs as cleanup
 from patina.adapters.outlook_mcp import _email_from_raw
 from patina.cleanup_meeting_obs import (
+    CALENDAR_OUT_OF_SCOPE,
     NO_CLASS_FIELDS,
     NO_SOURCE_ID,
     NOT_IN_CURRENT_INBOX,
@@ -713,7 +714,9 @@ class TestProvenanceCli:
         assert text.exit_code == 0, text.output
         assert "Total citing claims: 1" in text.stdout
         assert "obs_meet" in text.stdout and "citing claims: 1" in text.stdout
-        assert "unknown provenance: 0" in text.stdout.splitlines()
+        lines = text.stdout.splitlines()
+        assert "  claims: 0" in lines
+        assert "  relationships: 0" in lines
         data = json.loads(result.stdout)
         assert data["total_citations"] == 1
         assert data["selected"][0]["citing_claims"] == 1
@@ -748,7 +751,9 @@ class TestProvenanceCli:
 
         assert text.exit_code == 0, text.output
         assert "Total citing claims: 0" in text.stdout
-        assert f"unknown provenance: {n}" in text.stdout.splitlines()
+        lines = text.stdout.splitlines()
+        assert f"  claims: {n}" in lines
+        assert "  relationships: 0" in lines
         data = json.loads(result.stdout)
         assert data["total_citations"] == 0
         assert data["unknown_provenance"] == n
@@ -762,6 +767,7 @@ class TestProvenanceCli:
         assert result.exit_code == 0, result.output
         data = json.loads(result.stdout)
         assert set(data) == {
+            "total_count",
             "selected_count",
             "earliest",
             "latest",
@@ -770,7 +776,11 @@ class TestProvenanceCli:
             "selected",
             "total_citations",
             "unknown_provenance",
+            "unknown_provenance_claims",
+            "unknown_provenance_relationships",
             "undetermined",
+            "not_meeting",
+            "calendar_out_of_scope",
         }
         assert set(data["selected"][0]) == {
             "observation_id",
@@ -786,3 +796,113 @@ class TestProvenanceCli:
             "zero_timestamp",
         }
         assert data["unknown_provenance"] == 1
+
+
+def _add_calendar(conn, obs_id, event_id):
+    """#642 live shape: a calendar event stored under outlook_mcp_email, no source id."""
+    _add_obs(conn, obs_id, dict(LIVE_META_ORGANIZER), channel_id=f"calendar:{event_id}")
+
+
+def _count_line(lines, label):
+    line = next(line for line in lines if line.startswith(f"{label}: "))
+    return int(line.removeprefix(f"{label}: ").split()[0])
+
+
+class TestDryRunCounts:
+    """#642: dry-run counts add up to the outlook_mcp_email row total."""
+
+    def _seed(self, conn):
+        _add_obs(conn, "obs_meet_a", MEETING_META)
+        _add_obs(conn, "obs_meet_b", MEETING_META)
+        _add_obs(conn, "obs_note_a", NOTE_META)
+        _add_obs(conn, "obs_note_b", NOTE_META)
+        _add_obs(conn, "obs_note_c", NOTE_META)
+        _add_live(conn, "obs_old", "CONV_OLD_FOX")
+        _add_obs(conn, "obs_bare", dict(LIVE_META), channel_id=None)
+        _add_calendar(conn, "obs_cal_a", "AAMkADExampleFox=")
+        _add_calendar(conn, "obs_cal_b", "AAMkADExampleDog=")
+        _add_obs(conn, "obs_slack", MEETING_META, source="slack_mcp")
+
+    def test_text_counts_sum_to_total(self, store, db_path):
+        self._seed(store)
+
+        result = _invoke(db_path)
+
+        assert result.exit_code == 0, result.output
+        lines = result.stdout.splitlines()
+        total = _count_line(lines, "Total outlook_mcp_email rows")
+        selected = _count_line(lines, "Selected")
+        undetermined = _count_line(lines, "Undetermined (not selected)")
+        not_meeting = _count_line(lines, "Not meeting")
+        calendar = _count_line(lines, "Calendar, out of scope")
+        assert (total, selected, undetermined, not_meeting, calendar) == (9, 2, 2, 3, 2)
+        assert selected + undetermined + not_meeting + calendar == total
+
+    def test_json_counts_sum_to_total(self, store, db_path):
+        self._seed(store)
+
+        data = json.loads(_invoke(db_path, "--json").stdout)
+
+        assert data["total_count"] == 9
+        assert (
+            data["selected_count"]
+            + data["undetermined"]["count"]
+            + data["not_meeting"]
+            + data["calendar_out_of_scope"]
+            == data["total_count"]
+        )
+
+    def test_calendar_rows_out_of_scope_not_undetermined(self, store, db_path):
+        _add_calendar(store, "obs_cal_a", "AAMkADExampleFox=")
+        _add_calendar(store, "obs_cal_b", "AAMkADExampleDog=")
+        _add_obs(store, "obs_bare", dict(LIVE_META), channel_id=None)
+        adapter = FakeAdapter()
+
+        selection = select_meeting_observations(db_path, adapter)
+        result = _invoke(db_path)
+
+        assert selection.calendar_out_of_scope_count == 2
+        assert selection.undetermined.count == 1
+        assert selection.undetermined.observation_ids == ["obs_bare"]
+        assert selection.undetermined.reasons[NO_SOURCE_ID] == 1
+        assert adapter.calls == []
+        lines = result.stdout.splitlines()
+        assert "Calendar, out of scope: 2" in lines
+        assert any(line.startswith("Undetermined (not selected): 1") for line in lines)
+        assert "  no_source_id: 1" in lines
+
+    def test_classify_calendar_channel_without_source_id(self):
+        verdict, classes = classify(dict(LIVE_META), None, None, "calendar:AAMkADExampleFox=")
+
+        assert (verdict, classes) == (CALENDAR_OUT_OF_SCOPE, [])
+
+    def test_calendar_channel_with_class_fields_is_classified(self, store, db_path):
+        _add_obs(store, "obs_cal_meet", MEETING_META, channel_id="calendar:AAMkADExampleFox=")
+
+        selection = select_meeting_observations(db_path)
+
+        assert _ids(selection) == {"obs_cal_meet"}
+        assert selection.calendar_out_of_scope_count == 0
+
+    def test_unknown_provenance_split_by_table(self, store, db_path):
+        _add_obs(store, "obs_meet", MEETING_META)
+        for i, source_ids in enumerate(LEGACY_SOURCE_IDS):
+            _cite(store, f"claim_old_{i}", source_ids)
+        _relate(store, "rel_old", ["extraction"])
+        _relate(store, "rel_empty", [])
+        store.commit()
+
+        selection = select_meeting_observations(db_path)
+        text = _invoke(db_path)
+        data = json.loads(_invoke(db_path, "--json").stdout)
+
+        assert selection.unknown_provenance_claims == len(LEGACY_SOURCE_IDS)
+        assert selection.unknown_provenance_relationships == 2
+        lines = text.stdout.splitlines()
+        assert "Unknown provenance (cite no existing observation):" in lines
+        assert f"  claims: {len(LEGACY_SOURCE_IDS)}" in lines
+        assert "  relationships: 2" in lines
+        assert not any(line.startswith("unknown provenance:") for line in lines)
+        assert data["unknown_provenance_claims"] == len(LEGACY_SOURCE_IDS)
+        assert data["unknown_provenance_relationships"] == 2
+        assert data["unknown_provenance"] == len(LEGACY_SOURCE_IDS) + 2

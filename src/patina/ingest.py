@@ -28,7 +28,7 @@ from patina.owner import (
     mark_entity_as_owner,
     owner_match_keys,
 )
-from patina.store import connect, get_db_path, init_db, kv_get, kv_set, run_pending_migrations
+from patina.store import connect, get_db_path, init_db, kv_get, kv_set
 
 if TYPE_CHECKING:
     from patina.priority.objectives import Objective
@@ -57,7 +57,6 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
     conn = connect(db_path)
 
     try:
-        run_pending_migrations(conn)
         messages, users, channels = parse_slack_export(zip_path)
         owner_ids = set(get_owner_user_ids(home))
 
@@ -538,7 +537,6 @@ def ingest_live(
     conn = connect(db_path)
 
     try:
-        run_pending_migrations(conn)
         since = time.time() - (lookback_days * 86400)
         messages: list[ChatMessage] = []
         skip_reasons: dict[str, int] = {}
