@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections import Counter
 
 from patina.llm import LLMPort
 
@@ -15,15 +16,20 @@ _TEMPORARY_LOCATION = re.compile(
     r"meeting room|conference room|staying at|visiting)\b",
     re.IGNORECASE,
 )
+# An engagement or description of the person's work, not an employer. Searched
+# over the whole value, so a note in a trailing parenthetical also counts.
 _ENGAGEMENT = re.compile(
-    r"\b(?:works? (?:on|with|in)|involved in|has access to|engagement|account|customer|client"
-    r"|project|teams?|workshop)\b"
+    r"\b(?:work(?:s|ing)? (?:on|with|in|alongside)|interfaces? with|involved in|has access to"
+    r"|engagement|account|customer|client|project|teams?|workshop|workstream|external to"
+    r"|goals? (?:is|are) to)\b"
     r"|\bon (?:a|the)\b.*\b(?:program(?:me)?|initiative|pilot|rollout|migration|launch|deal)\b",
     re.IGNORECASE,
 )
+# "Has an Example Health email address (jordan@example.com)" names the employer.
+_EMAIL_OWNER = re.compile(r"^\s*has an? (.+?) email(?: address)?\b", re.IGNORECASE)
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _DOMAIN = re.compile(r"^(?:[\w-]+\.)+[a-z]{2,}$", re.IGNORECASE)
-_TRAILING_PAREN = re.compile(r"\s*\([^()]*\)\s*$")
+_TRAILING_PAREN = re.compile(r"\s*\(([^()]*)\)\s*$")
 _PUNCTUATION = re.compile(r"[\W_]+")
 _LEGAL_SUFFIXES = frozenset(
     {"llp", "llc", "inc", "ltd", "corp", "corporation", "co", "gmbh", "plc"}
@@ -32,6 +38,11 @@ _LEGAL_SUFFIXES = frozenset(
 _LEVEL_CODE = re.compile(r"^[a-z]{1,2}\d{1,2}$")
 _STATUS = re.compile(
     r"\b(?:on leave|parental leave|pto|promoted|promotion candidate|feedback due|sabbatical)\b",
+    re.IGNORECASE,
+)
+# A description stored as a title ("employee with 4 years of tenure") never pairs.
+_TITLE_DESCRIPTION = re.compile(
+    r"\b(?:blog author|employee with|tenure|previously)\b|^\s*was\b",
     re.IGNORECASE,
 )
 
@@ -53,6 +64,22 @@ def _strip_extras(text: str) -> str:
     """Drop email addresses and a trailing parenthetical such as "(contractor)"."""
     text = _TRAILING_PAREN.sub("", _EMAIL.sub("", text))
     return text.strip(" ()[]<>,;-")
+
+
+def _employer(obj: str) -> str:
+    """The org named in "Has an Example Health email address (...)", else ``obj``."""
+    match = _EMAIL_OWNER.match(obj)
+    return match.group(1) if match else obj
+
+
+def _org_parts(obj: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Tokens before and inside a trailing parenthetical, ignoring email addresses."""
+    text = _EMAIL.sub("", obj).strip(" []<>,;-")
+    match = _TRAILING_PAREN.search(text)
+    if not match:
+        return _strip_legal(_tokens(text)), ()
+    before, inside = text[: match.start()], match.group(1)
+    return _strip_legal(_tokens(before)), _strip_legal(_tokens(inside))
 
 
 def _tokens(text: str) -> tuple[str, ...]:
@@ -96,6 +123,7 @@ def _classify(predicate: str, obj: str) -> tuple[str, str | tuple[str, ...]]:
         kind = "temporary" if _TEMPORARY_LOCATION.search(obj) else "home"
         return kind, _normalize(obj)
     if predicate == "org":
+        obj = _employer(obj)
         if _ENGAGEMENT.search(obj):
             return "engagement", _normalize(obj)
         # Drop email addresses so "Example Corp (jordan@examplecorp.com)"
@@ -108,7 +136,11 @@ def _classify(predicate: str, obj: str) -> tuple[str, str | tuple[str, ...]]:
         tokens = _tokens(_strip_extras(obj) or obj)
         # Search the raw text, so a status in a parenthetical ("PTO (on leave)")
         # is not stripped before the check.
-        if _STATUS.search(obj) or (len(tokens) == 1 and _LEVEL_CODE.match(tokens[0])):
+        if (
+            _STATUS.search(obj)
+            or _TITLE_DESCRIPTION.search(obj)
+            or (len(tokens) == 1 and _LEVEL_CODE.match(tokens[0]))
+        ):
             return "status", tokens
         return "title", tokens
     return "", obj
@@ -121,6 +153,16 @@ def _relation(predicate: str, object_1: str, object_2: str) -> str | None:
     if kind_1 != kind_2 or kind_1 == "status" or value_1 == value_2:
         return None
     if predicate == "org" and kind_1 == "name":
+        (base_1, paren_1), (base_2, paren_2) = (
+            _org_parts(_employer(object_1)),
+            _org_parts(_employer(object_2)),
+        )
+        # "Example Corp (Example Cloud)" vs "Example Cloud (Example Corp)".
+        if paren_1 and paren_2 and {base_1, paren_1} == {base_2, paren_2}:
+            return None
+        # "Example Cloud" vs "Example Corp (Example Cloud)": a unit and its parent.
+        if (paren_2 and base_1 == paren_2) or (paren_1 and base_2 == paren_1):
+            return _CONTAINED_ORG
         if _same_org(value_1, value_2):
             return None
         # The claim carrying the person's own email names the employer; the
@@ -138,6 +180,18 @@ def _relation(predicate: str, object_1: str, object_2: str) -> str | None:
 
 
 def find_contradictions_tier1(conn: sqlite3.Connection) -> list[dict]:
+    return find_all_contradictions(conn)[:MAX_CONTRADICTIONS]
+
+
+def count_by_predicate(results: list[dict]) -> dict[str, int]:
+    """Pair count per predicate, unranked predicates first and title last."""
+    counts = Counter(item["predicate"] for item in results)
+    order = sorted(counts, key=lambda p: (-_FIELD_RANK.get(p, len(_FIELD_RANK)), p))
+    return {predicate: counts[predicate] for predicate in order}
+
+
+def find_all_contradictions(conn: sqlite3.Connection) -> list[dict]:
+    """Every reported pair, ranked, without the MAX_CONTRADICTIONS cap."""
     rows = conn.execute(
         """SELECT c1.id AS id1, c2.id AS id2,
                   c1.subject_id, c1.predicate,
@@ -178,7 +232,7 @@ def find_contradictions_tier1(conn: sqlite3.Connection) -> list[dict]:
         )
         ranked.append((key, result))
     ranked.sort(key=lambda item: item[0])
-    return [result for _, result in ranked[:MAX_CONTRADICTIONS]]
+    return [result for _, result in ranked]
 
 
 def find_contradictions_tier3(conn: sqlite3.Connection, llm: LLMPort) -> list[dict]:

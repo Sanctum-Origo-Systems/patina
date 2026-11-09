@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from patina.beliefs.contradictions import (
+    count_by_predicate,
+    find_all_contradictions,
     find_contradictions_tier1,
     find_contradictions_tier3,
 )
@@ -394,3 +396,128 @@ def test_behavioral_predicates_excluded(db_conn):
     _claim(db_conn, "c2", "behavioral:communication_style", "verbose")
 
     assert find_contradictions_tier1(db_conn) == []
+
+
+def _seed_pairs(db_conn, predicate, shapes):
+    for i, (obj_1, obj_2) in enumerate(shapes):
+        eid = f"e{i}"
+        _setup_entity(db_conn, eid, f"Person {i}")
+        _claim(db_conn, f"c{i}a", predicate, obj_1, subject=eid)
+        _claim(db_conn, f"c{i}b", predicate, obj_2, subject=eid)
+
+
+def test_org_unit_named_in_parent_paren_is_contained(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Cloud")
+    _claim(db_conn, "c2", "org", "Example Corp (Example Cloud)")
+
+    results = find_contradictions_tier1(db_conn)
+    assert [r["relation"] for r in results] == ["contained_org"]
+
+
+def test_org_same_pair_both_orders_not_reported(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Corp (Example Cloud)")
+    _claim(db_conn, "c2", "org", "Example Cloud (Example Corp)")
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_org_engagement_note_in_trailing_paren_not_contradiction(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Corp")
+    _claim(db_conn, "c2", "org", "Widget Services (goal is to change how Widget Services delivers)")
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_org_more_description_phrasings_not_contradiction(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c0", "org", "Example Corp")
+    notes = [
+        "works alongside or interfaces with Widget Services",
+        "partner working on the Alpha workstream",
+        "External to the organization (flagged by email security)",
+    ]
+    for i, obj in enumerate(notes, start=1):
+        _claim(db_conn, f"c{i}", "org", obj)
+
+    pairs = _pairs(find_contradictions_tier1(db_conn))
+    for obj in notes:
+        assert frozenset(("Example Corp", obj)) not in pairs
+
+
+def test_org_has_email_address_resolves_to_named_org(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Health")
+    _claim(db_conn, "c2", "org", "Has an Example Health email address (jordan@example.com)")
+    _setup_entity(db_conn, "e2", "Riley")
+    _claim(
+        db_conn,
+        "d1",
+        "org",
+        "Has an Example Health email address (riley@example.com)",
+        subject="e2",
+    )
+    _claim(db_conn, "d2", "org", "Widget Labs", subject="e2")
+
+    results = find_contradictions_tier1(db_conn)
+    assert [(r["subject"], r["relation"]) for r in results] == [("Riley", "contained_org")]
+
+
+def test_title_descriptions_never_pair(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c0", "title", "Cloud Architect")
+    descriptions = [
+        "blog author (jordan_123)",
+        "employee with 4 years of tenure",
+        "was L4 when previously a tech lead",
+    ]
+    for i, obj in enumerate(descriptions, start=1):
+        _claim(db_conn, f"c{i}", "title", obj)
+
+    assert find_contradictions_tier1(db_conn) == []
+
+
+def test_live_org_and_title_noise_shapes_not_conflicts(db_conn):
+    _seed_pairs(
+        db_conn,
+        "org",
+        [
+            ("Example Cloud", "Example Corp (Example Cloud)"),
+            ("Example Corp (Example Cloud)", "Example Cloud (Example Corp)"),
+            ("Example Corp", "Widget Services (goal is to change how Widget Services delivers)"),
+            ("Example Corp", "works alongside or interfaces with Widget Services"),
+            ("Example Corp", "partner working on the Alpha workstream"),
+            ("Example Corp", "External to the organization (flagged by email security)"),
+            ("Example Health", "Has an Example Health email address (jordan@example.com)"),
+            ("Example Corp", "Sample Industries"),
+        ],
+    )
+    _setup_entity(db_conn, "t1", "Taylor")
+    _claim(db_conn, "t1a", "title", "Engineer", subject="t1")
+    _claim(db_conn, "t1b", "title", "blog author (jordan_123)", subject="t1")
+
+    results = find_contradictions_tier1(db_conn)
+    conflicts = [r for r in results if r["relation"] == "conflict"]
+    assert _pairs(conflicts) == {frozenset(("Example Corp", "Sample Industries"))}
+    contained = [r for r in results if r["relation"] == "contained_org"]
+    assert _pairs(contained) == {frozenset(("Example Cloud", "Example Corp (Example Cloud)"))}
+
+
+def test_count_by_predicate_is_uncapped(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    # 15 distinct home locations -> 105 location pairs.
+    for i in range(15):
+        _claim(db_conn, f"a{i:02d}", "location", f"Town {i}")
+    _claim(db_conn, "b1", "org", "Example Corp")
+    _claim(db_conn, "b2", "org", "Sample Industries")
+    _claim(db_conn, "d1", "expertise", "Rust")
+    _claim(db_conn, "d2", "expertise", "Go")
+
+    all_results = find_all_contradictions(db_conn)
+    assert len(find_contradictions_tier1(db_conn)) == 100
+    assert len(all_results) == 107
+    totals = count_by_predicate(all_results)
+    assert totals == {"expertise": 1, "location": 105, "org": 1}
+    assert list(totals) == ["expertise", "location", "org"]
