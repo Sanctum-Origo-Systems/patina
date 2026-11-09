@@ -848,8 +848,8 @@ def test_outlook_email_source_facts_omit_absent_recipients(tmp_path):
 
 
 def test_outlook_email_source_facts_omit_absent_ids_and_sender(tmp_path):
-    """AC: missing itemClasses, id and sender -> keys absent, never "", None or 0."""
-    raw = _without(LIVE_SHAPE_INBOX_ITEM, "itemClasses", "id", "senders")
+    """AC: missing itemClasses, every id and sender -> keys absent, never "", None or 0."""
+    raw = _without(LIVE_SHAPE_INBOX_ITEM, "itemClasses", "id", "conversationId", "senders")
     home = tmp_path / "patina_home"
     ingest_live(
         port=_RawEmailPort([raw]), source="outlook_mcp_email", home=home, lookback_days=10000
@@ -1601,6 +1601,163 @@ def test_relevance_filter_applies_to_outlook_only(tmp_path):
 
     assert result["messages_inserted"] == 1
     assert result["relevance"] == {}
+
+
+# --- #641: live email_inbox shape (recipients strings, itemIds, no id/To/Cc) ---
+
+LIVE_INBOX_ITEM_641 = {
+    "conversationId": "AAQkADExampleConv641=",
+    "topic": "RE: The quick brown fox — Q4 plan",
+    "senders": ["Example, Jordan (Contractor)", "Sample, Riley"],
+    "recipients": ["Owner, Jane", "Müller, Avery", "Lee, Casey"],
+    "lastDeliveryTime": "2026-11-07T16:42:05Z",
+    "preview": "The quick brown fox jumps over the lazy dog.",
+    "unreadCount": 1,
+    "hasAttachments": False,
+    "messageCount": 2,
+    "itemClasses": ["IPM.Note", "IPM.Note"],
+    "itemIds": ["AAMkADExampleItem641a=", "AAMkADExampleItem641b="],
+}
+
+_LIVE_641_KEYS = {
+    "conversationId",
+    "topic",
+    "senders",
+    "recipients",
+    "lastDeliveryTime",
+    "preview",
+    "unreadCount",
+    "hasAttachments",
+    "messageCount",
+    "itemClasses",
+    "itemIds",
+}
+
+
+def _live_641_item(n: int, **overrides) -> dict:
+    item = dict(LIVE_INBOX_ITEM_641)
+    item["conversationId"] = f"AAQkADExampleConv641{n:02d}="
+    item["itemIds"] = [f"AAMkADExampleItem641{n:02d}="]
+    item["lastDeliveryTime"] = f"2026-11-07T16:{n:02d}:05Z"
+    item.update(overrides)
+    return item
+
+
+def _live_filter_home(tmp_path):
+    """Filter on; the Owner is known by the display name live ``recipients`` use."""
+    import yaml
+
+    home = tmp_path / "patina_home"
+    home.mkdir(parents=True, exist_ok=True)
+    config = {
+        "owner": {"emails": ["owner@example.com"], "display_names": ["Owner, Jane"]},
+        "ingest": {"outlook_relevance_filter": True},
+    }
+    (home / "config.yaml").write_text(yaml.dump(config))
+    return home
+
+
+def test_live_641_fixture_has_exactly_the_live_keys():
+    assert set(LIVE_INBOX_ITEM_641) == _LIVE_641_KEYS
+    assert all(isinstance(r, str) for r in LIVE_INBOX_ITEM_641["recipients"])
+
+
+def test_live_inbox_source_facts_carry_item_id_and_recipients(tmp_path):
+    """AC: message_id comes from itemIds; recipients stored as given; no to/cc keys."""
+    home = tmp_path / "patina_home"
+    ingest_live(
+        port=_RawEmailPort([LIVE_INBOX_ITEM_641]),
+        source="outlook_mcp_email",
+        home=home,
+        lookback_days=10000,
+    )
+
+    (row,) = _stored_email_rows(home)
+    source = row["metadata"]["source"]
+    assert source["message_id"] == "AAMkADExampleItem641a="
+    assert source["recipients"] == LIVE_INBOX_ITEM_641["recipients"]
+    assert "to" not in source
+    assert "cc" not in source
+    assert source["sender_key"] == "Example, Jordan (Contractor)"
+    assert source["received_raw"] == LIVE_INBOX_ITEM_641["lastDeliveryTime"]
+    assert row["thread_id"] == LIVE_INBOX_ITEM_641["conversationId"]
+
+
+@pytest.mark.parametrize("item_ids", [None, [], [""]])
+def test_live_inbox_message_id_falls_back_to_conversation_id(item_ids):
+    """AC: with no usable itemIds the conversation id is the message_id."""
+    from patina.adapters.outlook_mcp import _email_from_raw
+
+    raw = _without(LIVE_INBOX_ITEM_641, "itemIds")
+    if item_ids is not None:
+        raw["itemIds"] = item_ids
+    em = _email_from_raw(raw)
+    assert em.source_facts["message_id"] == raw["conversationId"]
+
+
+def test_relevance_filter_keeps_owner_named_in_live_recipients(tmp_path):
+    """AC: the Owner listed in live ``recipients`` strings is kept as direct."""
+    home = _live_filter_home(tmp_path)
+    result = _ingest_outlook(home, [LIVE_INBOX_ITEM_641])
+
+    assert result["relevance"] == {"direct": 1}
+    assert result["messages_inserted"] == 1
+
+
+def test_relevance_filter_live_recipients_rule(tmp_path):
+    """Any Owner match in ``recipients`` keeps (To and Cc are not split live);
+    a list-only email, where ``recipients`` names the list, not the Owner, drops."""
+    home = _live_filter_home(tmp_path)
+    owner_last = _live_641_item(1, recipients=["Müller, Avery", "Lee, Casey", "Owner, Jane"])
+    owner_case = _live_641_item(2, recipients=["owner, jane"])
+    list_only = _live_641_item(3, recipients=["Team All", "Lee, Casey"])
+    bot = _live_641_item(4, senders=["no-reply@example.com"])
+    result = _ingest_outlook(home, [owner_last, owner_case, list_only, bot])
+
+    assert result["relevance"] == {
+        "direct": 2,
+        "dropped_not_direct": 1,
+        "dropped_bot_or_list": 1,
+    }
+
+
+def test_relevance_live_recipients_count_as_engagement(tmp_path):
+    """An active objective participant named only in ``recipients`` is engagement."""
+    home = _live_filter_home(tmp_path)
+    _add_fox_objective(home, participants=["Lee, Casey"])
+    item = _live_641_item(5, recipients=["Team All", "Lee, Casey"])
+    result = _ingest_outlook(home, [item])
+
+    assert result["relevance"] == {"engagement": 1}
+
+
+def test_dry_run_counts_inbox_once_across_email_and_calendar_adapters(tmp_path, monkeypatch):
+    """AC: email and calendar adapters share outlook_mcp; fetched == distinct items."""
+    from patina.ingest import ingest_all
+
+    home = _live_filter_home(tmp_path)
+    items = [
+        LIVE_INBOX_ITEM_641,
+        _live_641_item(1, recipients=["Müller, Avery"]),
+        _live_641_item(2, senders=["no-reply@example.com"]),
+    ]
+    monkeypatch.setattr(
+        "patina.ingest._load_adapters",
+        lambda home: [
+            ("outlook_mcp_email", _RawEmailPort(items)),
+            ("outlook_mcp_calendar", _RawEmailPort(items)),
+        ],
+    )
+    result = ingest_all(home=home, lookback_days=10000, dry_run=True)
+
+    assert result["adapters_run"] == 2
+    assert sum(result["relevance"].values()) == len(items)
+    assert result["relevance"] == {
+        "direct": 1,
+        "dropped_not_direct": 1,
+        "dropped_bot_or_list": 1,
+    }
+    assert not get_db_path(home).exists()
 
 
 def test_relevance_dry_run_counts_without_creating_store(tmp_path):
