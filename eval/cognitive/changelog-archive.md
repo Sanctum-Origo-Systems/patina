@@ -312,3 +312,7 @@ Total: 4 PRs, $9.09
 - #492: Fix: repair multi-identity entities retaining stolen member handles ($0.00)
 Total: 1 PRs, $0.00
 
+## v0.29.2 (2026-10-26)
+- #499: Fix: normalize_name returns empty string for @-prefixed aliases ($0.19)
+Total: 1 PRs, $0.19
+

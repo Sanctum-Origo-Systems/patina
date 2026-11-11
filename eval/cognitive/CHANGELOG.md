@@ -1,3 +1,7 @@
+## v0.39.0 (2026-11-11)
+- #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
+Total: 1 PRs, $1.38
+
 ## v0.38.0 (2026-11-09)
 - #645: Feat: [patina] Contradictions still mostly noise on live: org/titl ($1.46)
 - #644: Feat: [patina] Outlook relevance filter reads fields the live inbo ($1.48)
@@ -82,8 +86,4 @@ Total: 2 PRs, $2.13
 - #517: Feat: centralize IDENTIFIER_PRECEDENCE in graph.py and add identit ($2.76)
 - #516: Fix: DN sink keeps bare handle alias, so handle resolves as ambig ($0.88)
 Total: 12 PRs, $22.02
-
-## v0.29.2 (2026-10-26)
-- #499: Fix: normalize_name returns empty string for @-prefixed aliases ($0.19)
-Total: 1 PRs, $0.19
 
