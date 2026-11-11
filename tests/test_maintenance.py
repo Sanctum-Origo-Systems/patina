@@ -3929,6 +3929,31 @@ def test_split_dn_sink_calendar_backfill_organizer_from_text(db_conn):
     assert json.loads(obs["metadata"])["organizer_dn"] == "dana@example.com"
 
 
+def test_split_dn_sink_calendar_backfill_organizer_without_attendees(db_conn):
+    """Calendar text with no ``Attendees:`` part (#651) still backfills the organizer."""
+    _add_person(db_conn, "p-dana", "Dana Brook", ["Brook, Dana"])
+    _add_person(db_conn, "sink", f"{_DN_PREFIX}TRUNC", [f"{_DN_PREFIX}ABC123-DBROOK"])
+
+    db_conn.execute(
+        "INSERT INTO observations"
+        " (id, source, channel_id, timestamp, sender_entity_id, text,"
+        "  metadata, ingested_at, processed)"
+        " VALUES ('obs-cal-noatt', 'outlook_mcp_calendar', 'calendar:M3', 1000.0, 'sink',"
+        "  '[Meeting: Weekly Sync] Organizer: Brook, Dana',"
+        "  '{}', '2025-01-01T00:00:00+00:00', 1)",
+    )
+    db_conn.commit()
+
+    result = split_dn_sink(db_conn, "sink", dry_run=False)
+    assert result["observations_routed"] == 1
+
+    obs = db_conn.execute(
+        "SELECT sender_entity_id, metadata FROM observations WHERE id = 'obs-cal-noatt'"
+    ).fetchone()
+    assert obs["sender_entity_id"] == "p-dana"
+    assert json.loads(obs["metadata"])["organizer_dn"] == "Brook, Dana"
+
+
 # ── split_dn_sink: Slack backfill and source widening (#485) ─────
 
 

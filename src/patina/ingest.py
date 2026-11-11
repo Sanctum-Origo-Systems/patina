@@ -594,8 +594,12 @@ def _outlook_relevance_dry_run(
 def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:
     results = []
     for ev in events:
-        attendee_list = ", ".join(ev.attendees) if ev.attendees else "none"
-        text = f"[Meeting: {ev.subject}] Organizer: {ev.organizer}, Attendees: {attendee_list}"
+        text = f"[Meeting: {ev.subject}] Organizer: {ev.organizer}"
+        # No attendees (live ``calendar_view`` sends none, #651) -> no
+        # ``Attendees:`` part, rather than claiming "none". Display names hold
+        # commas ("Example, Jordan"), so attendees are joined with "; ".
+        if ev.attendees:
+            text += f", Attendees: {'; '.join(ev.attendees)}"
         results.append(
             ChatMessage(
                 user_id=ev.organizer,
