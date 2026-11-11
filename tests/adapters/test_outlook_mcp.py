@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from patina.adapters.outlook_mcp import (
     OutlookMcpAdapter,
+    _calendar_event_from_raw,
     _email_from_raw,
     _is_meeting_message,
     _parse_outlook_datetime,
@@ -195,6 +196,53 @@ class TestListEvents:
         start = datetime(2026, 6, 24, tzinfo=UTC)
         end = datetime(2026, 6, 25, tzinfo=UTC)
         assert adapter.list_events(start, end) == []
+
+
+# Key layout of a live ``calendar_view`` item (#651): no attendee field at all.
+LIVE_CALENDAR_VIEW_ITEM = {
+    "meetingId": "AAMkADExampleEvt651=",
+    "subject": "Weekly Sync — the quick brown fox",
+    "start": "2026-11-10T09:00:00-06:00",
+    "end": "2026-11-10T09:30:00-06:00",
+    "organizer": {"email": "dana.brook@example.com", "name": "Brook, Dana"},
+}
+
+
+class TestCalendarAttendees:
+    def test_live_calendar_view_item_has_no_attendees(self):
+        bridge = _make_bridge({"calendar_view": json.dumps([LIVE_CALENDAR_VIEW_ITEM])})
+        adapter = OutlookMcpAdapter(bridge)
+        start = datetime(2026, 11, 10, tzinfo=UTC)
+        end = datetime(2026, 11, 11, tzinfo=UTC)
+        (event,) = adapter.list_events(start, end)
+        assert event.attendees == []
+        assert "attendees" not in event.source_facts
+        assert event.source_facts == {
+            "message_id": "AAMkADExampleEvt651=",
+            "sender_key": "dana.brook@example.com",
+        }
+
+    def test_display_name_string_attendees_kept_with_punctuation(self):
+        raw = {**LIVE_CALENDAR_VIEW_ITEM, "attendees": ["Example, Jordan", "Rivera, Sam (Ext)"]}
+        event = _calendar_event_from_raw(raw)
+        assert event.attendees == ["Example, Jordan", "Rivera, Sam (Ext)"]
+        assert event.source_facts["attendees"] == ["Example, Jordan", "Rivera, Sam (Ext)"]
+
+    def test_dict_attendees_email_else_name(self):
+        raw = {
+            **LIVE_CALENDAR_VIEW_ITEM,
+            "attendees": [
+                {"email": "jordan.example@example.com", "name": "Example, Jordan"},
+                {"name": "Müller, Avery"},
+                {"type": "required"},
+            ],
+        }
+        event = _calendar_event_from_raw(raw)
+        assert event.attendees == ["jordan.example@example.com", "Müller, Avery"]
+
+    def test_non_list_attendees_ignored(self):
+        event = _calendar_event_from_raw({**LIVE_CALENDAR_VIEW_ITEM, "attendees": "n/a"})
+        assert event.attendees == []
 
 
 class TestParseOutlookDatetime:

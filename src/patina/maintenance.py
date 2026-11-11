@@ -365,7 +365,8 @@ _DN_SMTP_RE = re.compile(
     re.IGNORECASE,
 )
 
-_ORGANIZER_RE = re.compile(r"Organizer:\s*(.+?),\s*Attendees:")
+# Calendar text ends at the organizer when the event has no attendees (#651).
+_ORGANIZER_RE = re.compile(r"Organizer:\s*(.+?)(?:,\s*Attendees:|\s*$)")
 
 
 def _dn_trailing_smtp(dn: str) -> str | None:

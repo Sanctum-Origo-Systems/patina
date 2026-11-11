@@ -248,6 +248,15 @@ def _email_from_raw(raw: dict) -> EmailMessage:
 
 
 def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
+    """Map one ``calendar_view`` item to a ``CalendarEvent``.
+
+    Live ``calendar_view`` items carry ``meetingId``, ``subject``, ``start``,
+    ``end`` and ``organizer`` only: no attendee field. Every live calendar row
+    to date (#651) was stored with no ``attendees`` source fact, so attendees
+    are unavailable from this tool and ``attendees`` stays empty. When an item
+    does carry ``attendees``, each entry is read as a dict (``email``, else
+    ``name``) or a display-name string such as ``"Example, Jordan"``.
+    """
     organizer_raw = raw.get("organizer", {})
     if isinstance(organizer_raw, dict):
         organizer = organizer_raw.get("email", organizer_raw.get("name", ""))
@@ -258,9 +267,12 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
     end = _parse_outlook_datetime(raw.get("end", ""))
 
     attendees = []
-    for att in raw.get("attendees", []):
+    raw_attendees = raw.get("attendees")
+    for att in raw_attendees if isinstance(raw_attendees, list) else []:
         if isinstance(att, dict):
-            attendees.append(att.get("email", ""))
+            att = att.get("email") or att.get("name") or ""
+        if isinstance(att, str) and att.strip():
+            attendees.append(att.strip())
 
     source_facts: dict = {}
     put_fact(source_facts, "message_id", raw.get("meetingId", raw.get("id")))

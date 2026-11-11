@@ -1084,6 +1084,49 @@ def test_calendar_source_facts_omit_absent_id_and_organizer(tmp_path):
     assert "organizer_dn" not in row["metadata"]
 
 
+# Key layout of a live ``calendar_view`` item (#651): no attendee field at all.
+LIVE_CALENDAR_VIEW_ITEM = {
+    "meetingId": "AAMkADExampleEvt651=",
+    "subject": "Weekly Sync",
+    "start": "2026-11-10T09:00:00-06:00",
+    "end": "2026-11-10T09:30:00-06:00",
+    "organizer": {"email": "dana.brook@example.com", "name": "Brook, Dana"},
+}
+
+
+def _stored_calendar_text(home) -> str:
+    conn = connect(get_db_path(home))
+    (row,) = conn.execute("SELECT text FROM observations").fetchall()
+    conn.close()
+    return row["text"]
+
+
+def test_calendar_live_view_item_omits_attendees_part(tmp_path):
+    """AC 3: the tool sends no attendees -> no ``Attendees:`` part, not "none"."""
+    home = tmp_path / "patina_home"
+    source = _ingest_source(
+        _RawCalendarPort([LIVE_CALENDAR_VIEW_ITEM]), "outlook_mcp_calendar", home
+    )
+
+    assert source == {"message_id": "AAMkADExampleEvt651=", "sender_key": "dana.brook@example.com"}
+    text = _stored_calendar_text(home)
+    assert text == "[Meeting: Weekly Sync] Organizer: dana.brook@example.com"
+    assert "Attendees" not in text
+
+
+def test_calendar_display_name_attendees_listed_in_text(tmp_path):
+    """Attendees given as display names keep their commas and are listed by name."""
+    raw = {**LIVE_CALENDAR_VIEW_ITEM, "attendees": ["Example, Jordan", "Rivera, Sam"]}
+    home = tmp_path / "patina_home"
+    source = _ingest_source(_RawCalendarPort([raw]), "outlook_mcp_calendar", home)
+
+    assert source["attendees"] == ["Example, Jordan", "Rivera, Sam"]
+    assert _stored_calendar_text(home) == (
+        "[Meeting: Weekly Sync] Organizer: dana.brook@example.com,"
+        " Attendees: Example, Jordan; Rivera, Sam"
+    )
+
+
 def test_slack_mcp_source_facts(tmp_path):
     """AC: slack_mcp keeps ts, channel id and raw user id, unmodified."""
     raw = LIVE_SHAPE_SLACK_MCP_MESSAGE
