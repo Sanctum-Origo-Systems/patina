@@ -419,9 +419,8 @@ class TestCalendarObservationsQueryable:
         msgs = _events_to_chat_messages(_CalendarPort().list_events(None, None))
         assert len(msgs) == 1
         assert msgs[0].channel_id.startswith(CALENDAR_CHANNEL_PREFIX)
-        assert msgs[0].text == (
-            "[Meeting: Quick Brown Fox Sync] Organizer: Jordan Example, Attendees: none"
-        )
+        # No attendees -> no ``Attendees:`` part (#651).
+        assert msgs[0].text == "[Meeting: Quick Brown Fox Sync] Organizer: Jordan Example"
 
     def test_ingested_calendar_event_searchable_after_extraction(self, tmp_path):
         from unittest.mock import patch
