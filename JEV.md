@@ -2,7 +2,7 @@
 
 **Verdict:** Jev agreed on 88% (n=16 live) of confident calls
 
-**Band:** 0.15–0.85 (from config)
+**Band:** 0.15–0.85 (from config); triage.needs_decomposition: 0.35–0.85
 
 ## Charts
 
@@ -87,6 +87,7 @@ Live rows only; shadow and backfilled rows are excluded. A suggested band edge n
 | 0.65–0.85 | n=21 | 76% |
 | 0.85–1 | n=123 | 85% |
 
+- **Band:** 0.15–0.85 (from config)
 - **Suggested band edges:** no edge reaches 95% (n=145)
 - **Baseline:** always accept: 83%, n=145 vs Jev: 83%, n=145
 
@@ -101,12 +102,13 @@ Live rows only; shadow and backfilled rows are excluded. A suggested band edge n
 | 0.65–0.85 | n=39 | 46% |
 | 0.85–1 | n=11 | 73% |
 
+- **Band:** 0.35–0.85 (from config)
 - **Suggested band edges:** no edge reaches 95% (n=145)
 - **Baseline:** never decompose: 75%, n=145 vs Jev: 63%, n=145
 
 ### auto-merge.meets_acceptance_criteria
 
-| Bin | n | % approved |
+| Bin | n | % approved (incumbent verdict) |
 |-----|---|---|
 | 0–0.15 | n=0 | — |
 | 0.15–0.35 | n=8 | 88% |
@@ -115,8 +117,12 @@ Live rows only; shadow and backfilled rows are excluded. A suggested band edge n
 | 0.65–0.85 | n=12 | 100% |
 | 0.85–1 | n=0 | — |
 
+- **Yardsticks:** **incumbent verdict** (approved), **final outcome** (merged), **7-day human edit** (no human edit). The incumbent's verdict is not ground truth.
+- **Band:** 0.15–0.85 (from config)
 - **Suggested band edges:** no edge reaches 95% (n=63)
 - **Baseline:** always approve: 89%, n=63 vs Jev: 70%, n=63
+- **Baseline (final outcome):** no data (no live rows with a merged or closed-unmerged final_outcome)
+- **Baseline (7-day human edit):** no data (run history has no 7-day human-edit signal)
 
 ## Backfill
 
@@ -146,10 +152,13 @@ xychart-beta
 
 - **Incumbent decision:** the human/pipeline decision that was actually used
 - **Fell back:** Jev returned an uncertain result and deferred to the incumbent
-- **Pipeline (0.15–0.85):** confidence too close to call; Jev defers to the incumbent
+- **Pipeline:** confidence too close to call; Jev defers to the incumbent
+  - triage.well_formed: 0.15–0.85
+  - triage.needs_decomposition: 0.35–0.85
+  - auto-merge.meets_acceptance_criteria: 0.15–0.85
 - **Backfilled:** a decision reconstructed from historical data, not made live
 - **n=… live / n=… backfill:** the sample behind a number; live and backfilled decisions are never pooled
 
 ---
 
-*Generated at 2026-11-11 05:10 UTC*
+*Generated at 2026-11-12 05:10 UTC*
