@@ -2237,3 +2237,235 @@ def test_policy_drops_use_defined_reason_codes_and_kept_rows_unchanged(tmp_path,
         expected = _PRE_CHANGE[case]
         assert obs["id"] == expected["id"]
         assert obs["metadata"] == expected["metadata"]
+
+
+# --- unknown vs none in readers and renderers (#666) ---
+
+# Anonymized live trigger shape: an Outlook item with no ``toRecipients`` key.
+_FOX_CAFE_ITEM = {
+    "id": "msg-0001",
+    "conversationId": "conv-0001",
+    "itemClasses": ["IPM.Note"],
+    "subject": "The quick brown fox — café meeting",
+    "senders": ["Jordan Example"],
+    "receivedDateTime": "2026-11-03T09:15:42Z",
+    "preview": "The quick brown fox jumps over the lazy dog.",
+}
+_FOX_CAFE_SUBJECT = "The quick brown fox — café meeting"
+
+
+def _stored_fox_cafe(home) -> tuple[str, dict]:
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(home))
+    try:
+        (row,) = conn.execute("SELECT text, metadata FROM observations").fetchall()
+    finally:
+        conn.close()
+    return row["text"], json.loads(row["metadata"])["source"]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "state", "rendered"),
+    [
+        ({}, None, "unknown"),
+        ({"toRecipients": None}, "unavailable", "unknown"),
+        ({"toRecipients": []}, "empty", "none"),
+    ],
+    ids=["missing", "null", "empty"],
+)
+def test_outlook_recipients_unknown_vs_none(tmp_path, overrides, state, rendered):
+    """AC: no ``toRecipients`` / ``null`` -> 'Recipients: unknown'; ``[]`` -> 'none'."""
+    from patina.adapters._source_facts import STATE_KEY, get_fact
+    from patina.mcp.tools_catch_up import store_search
+
+    result = _ingest_outlook(tmp_path, [{**_FOX_CAFE_ITEM, **overrides}])
+    assert result["messages_inserted"] == 1
+
+    text, facts = _stored_fox_cafe(tmp_path)
+    fact = get_fact(facts, "to")
+    assert (fact.state.value if fact else None) == state
+    if state is None:
+        assert "to" not in facts
+        assert "to" not in facts.get(STATE_KEY, {})
+    if state == "unavailable":
+        assert "to" not in facts
+    assert f"[Recipients: {rendered}]" in text
+    assert _FOX_CAFE_SUBJECT in text
+
+    out = store_search("café meeting")
+    assert f"Recipients: {rendered}" in out
+    assert _FOX_CAFE_SUBJECT in out
+    if rendered == "unknown":
+        assert "Recipients: none" not in out
+
+
+_LEGACY_TO = [{"name": "Owner, Jane", "email": "owner@example.com"}]
+
+
+@pytest.mark.parametrize("key", ["to", "cc", "recipients"])
+def test_as_list_keeps_missing_null_and_empty_apart(key):
+    """AC: missing, ``null`` and empty no longer resolve identically through ``_as_list``."""
+    from patina.adapters._source_facts import put_fact
+    from patina.ingest import _as_list
+    from patina.models import SourceFact, SourceFactState
+
+    missing: dict = {}
+    null: dict = {}
+    put_fact(null, key, None, present=True)
+    empty: dict = {}
+    put_fact(empty, key, [], present=True)
+
+    results = [_as_list(f, key) for f in (missing, null, empty)]
+    assert results == [
+        None,
+        SourceFact(SourceFactState.UNAVAILABLE, []),
+        SourceFact(SourceFactState.EMPTY, []),
+    ]
+    assert len({repr(r) for r in results}) == 3
+
+
+@pytest.mark.parametrize("key", ["to", "cc", "recipients"])
+def test_as_list_reads_legacy_rows_as_present(key):
+    """AC: rows stored before states existed (no ``_state``) read as ``present``."""
+    from patina.ingest import _as_list
+    from patina.models import SourceFact, SourceFactState
+
+    assert _as_list({key: _LEGACY_TO}, key) == SourceFact(SourceFactState.PRESENT, _LEGACY_TO)
+    assert _as_list({key: "Owner, Jane"}, key) == SourceFact(
+        SourceFactState.PRESENT, ["Owner, Jane"]
+    )
+
+
+def test_as_list_empty_string_is_empty_not_missing():
+    """An IMAP header sent as ``To:`` (``""``) is ``empty`` with no values."""
+    from patina.adapters._source_facts import put_fact
+    from patina.ingest import _as_list
+    from patina.models import SourceFact, SourceFactState
+
+    facts: dict = {}
+    put_fact(facts, "to", "", present=True)
+    assert _as_list(facts, "to") == SourceFact(SourceFactState.EMPTY, [])
+
+
+def _stated_facts(**fields) -> dict:
+    from patina.adapters._source_facts import put_fact
+
+    facts = {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY}
+    for key, value in fields.items():
+        put_fact(facts, key, value, present=True)
+    return facts
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{}, {"to": None, "cc": None}, {"to": [], "cc": []}, {"recipients": None}, {"recipients": []}],
+    ids=["missing", "null", "empty", "null-recipients", "empty-recipients"],
+)
+def test_outlook_relevance_reads_stated_recipients(tmp_path, fields):
+    """Missing, ``unavailable`` and ``empty`` recipients name no one: not direct, no error."""
+    from patina.ingest import outlook_sender_address
+
+    home = _relevance_home(tmp_path)
+    facts = _stated_facts(**fields)
+
+    assert tuple(_relevance(home, facts, objectives=[])) == (False, "not_direct")
+    assert outlook_sender_address(facts) == ""
+
+
+def test_outlook_relevance_reads_present_and_legacy_recipients(tmp_path):
+    """A present fact (stated or legacy, no ``_state``) still matches the Owner."""
+    home = _relevance_home(tmp_path)
+    stated = _stated_facts(to=_LEGACY_TO, cc=[])
+    legacy = {"item_class": ["IPM.Note"], "sender_key": LIVE_SENDER_KEY, "to": _LEGACY_TO}
+    recipients = _stated_facts(to=None, recipients=[{"name": "Owner, Jane", "email": OWNER_EMAIL}])
+
+    for facts in (stated, legacy, recipients):
+        assert tuple(_relevance(home, facts, objectives=[])) == (True, "direct")
+
+
+def test_outlook_sender_address_reads_stated_and_legacy_cc():
+    """The sender's own Cc entry gives the address with or without fact states."""
+    from patina.ingest import outlook_sender_address
+
+    own_cc = [{"name": "Example, Jordan", "email": PERSON_SENDER}]
+    stated = _stated_facts(to=None, cc=own_cc)
+    legacy = {"sender_key": LIVE_SENDER_KEY, "cc": own_cc}
+
+    assert outlook_sender_address(stated) == PERSON_SENDER
+    assert outlook_sender_address(legacy) == PERSON_SENDER
+
+
+def test_emails_to_chat_messages_never_defaults_timestamp():
+    """An undated email is dropped (never 0.0 or now); dated ones keep their facts."""
+    from patina.adapters.outlook_mcp import _email_from_raw
+    from patina.ingest import MISSING_TIMESTAMP, _emails_to_chat_messages
+
+    undated = _email_from_raw(_without(_FOX_CAFE_ITEM, "receivedDateTime"))
+    dated = _email_from_raw({**_FOX_CAFE_ITEM, "toRecipients": None})
+    assert undated.timestamp is None
+    assert "[Sent: unknown]" in undated.text
+
+    skip_reasons: dict[str, int] = {}
+    (msg,) = _emails_to_chat_messages([undated, dated], skip_reasons)
+
+    assert skip_reasons == {MISSING_TIMESTAMP: 1}
+    assert msg.timestamp == dated.timestamp
+    assert msg.timestamp not in (None, 0.0)
+    assert msg.source_facts == dated.source_facts
+    assert msg.source_facts["_state"] == {"to": "unavailable"}
+    assert "[Recipients: unknown]" in msg.text
+
+
+def _fox_event(**overrides):
+    from patina.models import CalendarEvent
+
+    fields = {
+        "id": "evt-0001",
+        "subject": "The quick brown fox — café sync",
+        "start": 1762160142.0,
+        "end": 1762163742.0,
+        "attendees": [],
+        "organizer": "Jordan Example",
+        "source_facts": {"sender_key": "Jordan Example"},
+    }
+    fields.update(overrides)
+    return CalendarEvent(**fields)
+
+
+@pytest.mark.parametrize(
+    ("attendees", "present", "expected"),
+    [
+        (None, False, None),
+        (None, True, ", Attendees: unknown"),
+        ([], True, ", Attendees: none"),
+    ],
+    ids=["missing", "null", "empty"],
+)
+def test_events_to_chat_messages_attendees_unknown_vs_none(attendees, present, expected):
+    """#651 kept: no attendees key never says 'none'; only ``[]`` does."""
+    from patina.adapters._source_facts import put_fact
+    from patina.ingest import _events_to_chat_messages
+
+    facts = {"sender_key": "Jordan Example"}
+    put_fact(facts, "attendees", attendees, present=present)
+    (msg,) = _events_to_chat_messages([_fox_event(source_facts=facts)])
+
+    assert msg.text.startswith("[Meeting: The quick brown fox — café sync] Organizer: Jordan")
+    if expected is None:
+        assert "Attendees" not in msg.text
+    else:
+        assert msg.text.endswith(expected)
+    if attendees is None:
+        assert "Attendees: none" not in msg.text
+
+
+def test_events_to_chat_messages_never_defaults_start():
+    """An event with no start is dropped, never stored at the epoch or now."""
+    from patina.ingest import MISSING_TIMESTAMP, _events_to_chat_messages
+
+    skip_reasons: dict[str, int] = {}
+    msgs = _events_to_chat_messages([_fox_event(start=None)], skip_reasons)
+
+    assert msgs == []
+    assert skip_reasons == {MISSING_TIMESTAMP: 1}

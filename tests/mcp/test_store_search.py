@@ -143,6 +143,55 @@ class TestStoreSearch:
         result = store_search("Atlas")
         assert "unknown" in result
 
+    def _insert_email(
+        self, db_conn, db_path, *, timestamp=None, source="outlook_mcp_email", facts=None
+    ):
+        init_db(db_path)
+        obs = Observation(
+            id="o_fox_cafe",
+            source=source,
+            channel_id="email:conv-0001",
+            thread_id="conv-0001",
+            timestamp=time.time() if timestamp is None else timestamp,
+            sender_entity_id=None,
+            text="[Subject: The quick brown fox — café meeting] [Participants: Jordan Example]",
+            metadata={} if facts is None else {"source": facts},
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+    def test_epoch_timestamp_shows_unknown_date(self, db_conn, db_path, tmp_path):
+        """#666: a ``0.0`` timestamp (old epoch default) is never shown as 1970-01-01."""
+        self._insert_email(db_conn, db_path, timestamp=0.0)
+        result = store_search("café meeting")
+        assert "[unknown date]" in result
+        assert "1970" not in result
+
+    def test_legacy_email_row_recipients_unknown(self, db_conn, db_path, tmp_path):
+        """#666: no ``metadata["source"]`` -> 'Recipients: unknown', not left out or 'none'."""
+        self._insert_email(db_conn, db_path)
+        result = store_search("café meeting")
+        assert "Recipients: unknown" in result
+        assert "Recipients: none" not in result
+
+    def test_empty_recipients_show_none(self, db_conn, db_path, tmp_path):
+        self._insert_email(db_conn, db_path, facts={"to": [], "_state": {"to": "empty"}})
+        result = store_search("café meeting")
+        assert "Recipients: none" in result
+
+    def test_unavailable_recipients_show_unknown(self, db_conn, db_path, tmp_path):
+        self._insert_email(db_conn, db_path, facts={"_state": {"to": "unavailable"}})
+        result = store_search("café meeting")
+        assert "Recipients: unknown" in result
+        assert "Recipients: none" not in result
+
+    def test_missing_sender_and_empty_source(self, db_conn, db_path, tmp_path):
+        """#666: missing sender is 'unknown'; an explicitly empty source is 'none'."""
+        self._insert_email(db_conn, db_path, source="")
+        result = store_search("café meeting")
+        assert "**unknown**" in result
+        assert "via none" in result
+
     def test_fts_trigger_on_new_insert(self, db_conn, db_path, tmp_path):
         init_db(db_path)
         obs = Observation(
