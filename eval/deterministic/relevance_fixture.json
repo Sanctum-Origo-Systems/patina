@@ -1,0 +1,277 @@
+{
+  "description": "Labeled Outlook emails for the relevance eval. Fictitious names and domains only; shapes follow anonymized live items (live email_inbox items carry display-name senders and a flat recipients list).",
+  "owner_identifiers": ["jane.owner@example.com", "Owner, Jane"],
+  "objectives": [
+    {
+      "id": "obj-fox",
+      "label": "The quick brown fox launch",
+      "keywords": "quick brown fox",
+      "active": true,
+      "created_at": "2026-10-01T09:00:00+00:00",
+      "participants": ["Example, Jordan", "riley.sample@partner.example"],
+      "customer_domains": ["partner.example"]
+    },
+    {
+      "id": "obj-harbor",
+      "label": "Harbor migration",
+      "keywords": "harbor migration",
+      "active": true,
+      "created_at": "2026-11-10T09:00:00+00:00",
+      "participants": ["Quinn, Avery"],
+      "customer_domains": []
+    },
+    {
+      "id": "obj-lazy-dog",
+      "label": "Lazy dog retrospective",
+      "keywords": "lazy dog",
+      "active": false,
+      "created_at": "2026-08-01T09:00:00+00:00",
+      "participants": ["Lee, Casey"],
+      "customer_domains": ["retro.example"]
+    }
+  ],
+  "items": [
+    {
+      "id": "eml-001",
+      "label": "relevant",
+      "note": "Owner named in To (Graph-style To/Cc dicts)",
+      "subject": "The quick brown fox — draft plan",
+      "received_at": "2026-11-02T08:15:00Z",
+      "thread_participants": ["riley.sample@partner.example"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "riley.sample@partner.example",
+        "to": [{"name": "Owner, Jane", "email": "jane.owner@example.com"}],
+        "cc": [{"name": "Lee, Casey", "email": "casey.lee@example.com"}]
+      }
+    },
+    {
+      "id": "eml-002",
+      "label": "relevant",
+      "note": "Live shape: display-name sender, Owner in flat recipients",
+      "subject": "Re: Jumps over the lazy dog",
+      "received_at": "2026-11-02T10:40:00Z",
+      "thread_participants": ["Lee, Casey"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Lee, Casey",
+        "recipients": ["Owner, Jane", "Sample, Riley"]
+      }
+    },
+    {
+      "id": "eml-003",
+      "label": "relevant",
+      "note": "Live shape: Owner only on Cc (no To/Cc split in recipients)",
+      "subject": "FYI: brown fox timeline",
+      "received_at": "2026-11-03T07:05:00Z",
+      "thread_participants": ["Rowe, Dana"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Rowe, Dana",
+        "recipients": ["Sample, Riley", "Owner, Jane"]
+      }
+    },
+    {
+      "id": "eml-004",
+      "label": "relevant",
+      "note": "Owner replied in a thread that reached them through a list",
+      "subject": "RE: RE: Fox launch checklist",
+      "received_at": "2026-11-03T12:30:00Z",
+      "thread_participants": ["Example, Jordan (Contractor)", "Owner, Jane"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Example, Jordan (Contractor)",
+        "recipients": ["Fox Launch Team"]
+      }
+    },
+    {
+      "id": "eml-005",
+      "label": "relevant",
+      "note": "Active-objective participant on the thread, suffix stripped",
+      "subject": "Fox launch: vendor status",
+      "received_at": "2026-11-04T09:00:00Z",
+      "thread_participants": ["Example, Jordan (Contractor)"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Example, Jordan (Contractor)",
+        "recipients": ["Fox Launch Team"]
+      }
+    },
+    {
+      "id": "eml-006",
+      "label": "relevant",
+      "note": "Sender from an active objective's customer domain, sent to a list",
+      "subject": "Pricing question for the fox rollout",
+      "received_at": "2026-11-04T14:20:00Z",
+      "thread_participants": ["morgan.test@partner.example"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "morgan.test@partner.example",
+        "to": [
+          {"name": "Fox Launch Team", "email": "fox-launch@example.com", "isDistributionList": true}
+        ]
+      }
+    },
+    {
+      "id": "eml-007",
+      "label": "relevant",
+      "edge_case": "late_added_objective",
+      "note": "Arrived before obj-harbor was created; its participant is the sender",
+      "subject": "Harbor migration — cutover window",
+      "received_at": "2026-11-03T16:45:00Z",
+      "thread_participants": ["Quinn, Avery"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Quinn, Avery",
+        "recipients": ["Harbor Working Group"]
+      }
+    },
+    {
+      "id": "eml-008",
+      "label": "relevant",
+      "edge_case": "unknown_participant",
+      "note": "Sender appears in no objective and no earlier thread; Owner is a recipient",
+      "subject": "Intro: brown fox data request",
+      "received_at": "2026-11-05T08:10:00Z",
+      "thread_participants": ["Drake, Sky (Vendor)"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Drake, Sky (Vendor)",
+        "recipients": ["Owner, Jane", "Example, Jordan"]
+      }
+    },
+    {
+      "id": "eml-009",
+      "label": "relevant",
+      "edge_case": "unseen_customer_domain",
+      "note": "New customer domain listed on no objective, reached the Owner via a sales list",
+      "subject": "Request for quote: quick brown fox licences",
+      "received_at": "2026-11-05T11:55:00Z",
+      "thread_participants": ["jamie.sample@northwind-example.test"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "jamie.sample@northwind-example.test",
+        "to": [
+          {"name": "Sales Team", "email": "sales-team@example.com", "isDistributionList": true}
+        ]
+      }
+    },
+    {
+      "id": "eml-010",
+      "label": "relevant",
+      "note": "Ticket assigned to the Owner, sent by a no-reply tool address",
+      "subject": "[FOX-142] Assigned to you: lazy dog import fails",
+      "received_at": "2026-11-06T06:30:00Z",
+      "thread_participants": ["noreply@tickets.example"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "noreply@tickets.example",
+        "to": [{"name": "Owner, Jane", "email": "jane.owner@example.com"}]
+      }
+    },
+    {
+      "id": "eml-011",
+      "label": "relevant",
+      "note": "Live shape with non-ASCII display name",
+      "subject": "Re: Überblick — fox launch",
+      "received_at": "2026-11-06T13:05:00Z",
+      "thread_participants": ["Müller, Avery (Contractor)"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Müller, Avery (Contractor)",
+        "recipients": ["Owner, Jane"]
+      }
+    },
+    {
+      "id": "eml-012",
+      "label": "relevant",
+      "note": "Owner is the sender",
+      "subject": "Fox launch next steps",
+      "received_at": "2026-11-07T09:20:00Z",
+      "thread_participants": ["jane.owner@example.com"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "jane.owner@example.com",
+        "to": [{"name": "Lee, Casey", "email": "casey.lee@example.com"}]
+      }
+    },
+    {
+      "id": "eml-101",
+      "label": "noise",
+      "note": "Newsletter to the Owner",
+      "subject": "This week in brown foxes",
+      "received_at": "2026-11-02T05:00:00Z",
+      "thread_participants": ["newsletter@news.example"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "newsletter@news.example",
+        "to": [{"name": "Owner, Jane", "email": "jane.owner@example.com"}]
+      }
+    },
+    {
+      "id": "eml-102",
+      "label": "noise",
+      "note": "Tool notification",
+      "subject": "Your weekly digest",
+      "received_at": "2026-11-03T05:00:00Z",
+      "thread_participants": ["notifications@tool.example"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "notifications@tool.example",
+        "to": [{"name": "Owner, Jane", "email": "jane.owner@example.com"}]
+      }
+    },
+    {
+      "id": "eml-103",
+      "label": "noise",
+      "note": "Bounce",
+      "subject": "Undeliverable: lazy dog",
+      "received_at": "2026-11-03T05:30:00Z",
+      "thread_participants": ["mailer-daemon@example.com"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "mailer-daemon@example.com",
+        "to": [{"name": "Owner, Jane", "email": "jane.owner@example.com"}]
+      }
+    },
+    {
+      "id": "eml-104",
+      "label": "noise",
+      "note": "Live shape all-staff list mail",
+      "subject": "Office closed Friday",
+      "received_at": "2026-11-04T07:00:00Z",
+      "thread_participants": ["Example, Taylor"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Example, Taylor",
+        "recipients": ["All Staff"]
+      }
+    },
+    {
+      "id": "eml-105",
+      "label": "noise",
+      "note": "Subject keyword match only, reached the Owner via a list",
+      "subject": "Re: The quick brown fox — swag order",
+      "received_at": "2026-11-05T15:00:00Z",
+      "thread_participants": ["Rowe, Dana"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Rowe, Dana",
+        "recipients": ["Sales All"]
+      }
+    },
+    {
+      "id": "eml-106",
+      "label": "noise",
+      "note": "Participant of an inactive objective, list mail",
+      "subject": "Lazy dog retro photos",
+      "received_at": "2026-11-06T10:00:00Z",
+      "thread_participants": ["Lee, Casey"],
+      "source_facts": {
+        "item_class": ["IPM.Note"],
+        "sender_key": "Lee, Casey",
+        "recipients": ["Retro Crew"]
+      }
+    }
+  ]
+}
