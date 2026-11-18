@@ -2,10 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+class IngestionOutcome(StrEnum):
+    """What ingestion keeps of an item, stored per observation (#669)."""
+
+    DROP = "DROP"
+    RETAIN_ONLY = "RETAIN_ONLY"
+    RETAIN_AND_EXTRACT = "RETAIN_AND_EXTRACT"
 
 
 @dataclass
@@ -75,6 +84,7 @@ class Observation:
     metadata: dict = field(default_factory=dict)
     ingested_at: str = ""
     processed: int = 0
+    outcome: IngestionOutcome = IngestionOutcome.RETAIN_AND_EXTRACT
 
     def __post_init__(self) -> None:
         if not self.ingested_at:

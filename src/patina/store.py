@@ -7,11 +7,20 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from patina.extraction import CALENDAR_CHANNEL_PREFIX
+from patina.models import IngestionOutcome
+
 DEFAULT_HOME = Path.home() / ".patina"
 
 _SCHEMA_VERSION = 4
 
-_TABLES = """
+# Shared by the fresh-store CREATE TABLE and the add_ingestion_outcome_v1 ALTER (#669).
+_OUTCOME_COLUMN = (
+    f"outcome TEXT NOT NULL DEFAULT '{IngestionOutcome.RETAIN_AND_EXTRACT}'"
+    f" CHECK(outcome IN ({', '.join(f"'{o}'" for o in IngestionOutcome)}))"
+)
+
+_TABLES = f"""
 CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
@@ -59,7 +68,8 @@ CREATE TABLE IF NOT EXISTS observations (
     text TEXT,
     metadata TEXT,
     ingested_at TEXT NOT NULL,
-    processed INTEGER DEFAULT 0
+    processed INTEGER DEFAULT 0,
+    {_OUTCOME_COLUMN}
 );
 
 CREATE TABLE IF NOT EXISTS decisions (
@@ -865,6 +875,53 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
         if moved > 0:
             print(f"Migration add_method_column_v1: moved {moved} method labels out of source_ids")
 
+    row = conn.execute(
+        "SELECT 1 FROM migrations WHERE name = 'add_ingestion_outcome_v1'"
+    ).fetchone()
+    if not row:
+        # Only adds the outcome column and drop_log table and sets outcome;
+        # no other observation column is touched. The marker keeps a later
+        # run from re-backfilling an outcome changed since.
+        _ensure_outcome_column(conn)
+        ensure_drop_log_table(conn)
+        backfilled = _backfill_calendar_outcome(conn)
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('add_ingestion_outcome_v1', datetime('now'))"
+        )
+        conn.commit()
+
+        if backfilled > 0:
+            print(
+                f"Migration add_ingestion_outcome_v1: marked {backfilled} calendar "
+                f"observations {IngestionOutcome.RETAIN_ONLY}"
+            )
+
+
+def _ensure_outcome_column(conn: sqlite3.Connection) -> None:
+    """Add outcome to an observations table created before #669.
+
+    Existing rows pick up the RETAIN_AND_EXTRACT default.
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(observations)").fetchall()]
+    if "outcome" not in cols:
+        conn.execute(f"ALTER TABLE observations ADD COLUMN {_OUTCOME_COLUMN}")
+
+
+def _backfill_calendar_outcome(conn: sqlite3.Connection) -> int:
+    """Mark calendar rows, which #619 already keeps out of extraction, RETAIN_ONLY."""
+    cur = conn.execute(
+        "UPDATE observations SET outcome = ?"
+        " WHERE channel_id IS NOT NULL AND substr(channel_id, 1, ?) = ? AND outcome != ?",
+        (
+            IngestionOutcome.RETAIN_ONLY,
+            len(CALENDAR_CHANNEL_PREFIX),
+            CALENDAR_CHANNEL_PREFIX,
+            IngestionOutcome.RETAIN_ONLY,
+        ),
+    )
+    return cur.rowcount
+
 
 # Labels older extractor code wrote into source_ids in place of observation ids (#613).
 METHOD_LABELS = ("behavioral_extraction", "extraction", "envoy_migration")
@@ -1069,6 +1126,37 @@ def record_extraction_run(
             stats["errors"],
             json.dumps(by_source, sort_keys=True),
         ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def ensure_drop_log_table(conn: sqlite3.Connection) -> None:
+    # Metadata only: a dropped item's content is never stored (#669).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS drop_log (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               source TEXT NOT NULL,
+               adapter TEXT NOT NULL,
+               reason_code TEXT NOT NULL,
+               timestamp TEXT NOT NULL
+           )"""
+    )
+
+
+def record_drop(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    adapter: str,
+    reason_code: str,
+    timestamp: str | None = None,
+) -> int:
+    """Log a dropped item; no observation row is written for it."""
+    ensure_drop_log_table(conn)
+    cur = conn.execute(
+        "INSERT INTO drop_log (source, adapter, reason_code, timestamp) VALUES (?, ?, ?, ?)",
+        (source, adapter, reason_code, timestamp or datetime.now(UTC).isoformat()),
     )
     conn.commit()
     return cur.lastrowid

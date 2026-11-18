@@ -604,8 +604,8 @@ def insert_observation(conn: sqlite3.Connection, obs: Observation) -> bool:
     conn.execute(
         """INSERT INTO observations
                (id, source, channel_id, thread_id, timestamp,
-                sender_entity_id, text, metadata, ingested_at, processed)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sender_entity_id, text, metadata, ingested_at, processed, outcome)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
                channel_id = CASE
                    WHEN observations.channel_id IS NULL OR observations.channel_id = ''
@@ -628,6 +628,7 @@ def insert_observation(conn: sqlite3.Connection, obs: Observation) -> bool:
             json.dumps(obs.metadata),
             obs.ingested_at,
             obs.processed,
+            obs.outcome,
         ),
     )
     conn.commit()
