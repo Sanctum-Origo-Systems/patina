@@ -14,6 +14,20 @@ from patina.ingest import (
     ingest_live,
 )
 from patina.models import ChatMessage, DmChannel
+from tests.test_ingest_mcp import (
+    _JORDAN,
+    _OWNER_TO,
+    _PRE_CHANGE,
+    _REGRESSION_CASES,
+    LIVE_SHAPE_INBOX_ITEM,
+    _dl_only_item,
+    _filter_home,
+    _inbox_item,
+    _ingest_outlook,
+    _RawEmailPort,
+    _table_rows,
+    _without,
+)
 
 
 @pytest.fixture
@@ -2056,3 +2070,170 @@ def test_outlook_relevance_is_pure(tmp_path):
     assert tuple(direct) == (True, "direct")
     assert tuple(engaged) == (True, "engagement")
     assert _store_snapshot(home) == before
+
+
+# --- ingestion outcome and policy drops (#670) ---
+
+# Every live adapter path: a real adapter (or its real parser) over live-shape input.
+_OUTCOME_CASES = {
+    **{name: (make_port, source) for name, (make_port, source, _) in _REGRESSION_CASES.items()},
+    "outlook_email": (lambda: _RawEmailPort([LIVE_SHAPE_INBOX_ITEM]), "outlook_mcp_email"),
+}
+_EXPECTED_OUTCOME = {
+    "calendar": "RETAIN_ONLY",
+    "slack_mcp": "RETAIN_AND_EXTRACT",
+    "slack_live": "RETAIN_AND_EXTRACT",
+    "imap": "RETAIN_AND_EXTRACT",
+    "outlook_email": "RETAIN_AND_EXTRACT",
+}
+
+# Anonymized rejected item: subject, body and sender that appear nowhere else.
+_DROP_SUBJECT = "The quick brown fox — offsite plan"
+_DROP_BODY = "Jumps over the lazy dog near Müller's café."
+_DROP_SENDER = "Placeholder, Taylor (Vendor)"
+_DROP_ITEMS = {
+    "bot_or_list": _inbox_item(
+        41,
+        topic=_DROP_SUBJECT,
+        preview=_DROP_BODY,
+        toRecipients=_OWNER_TO,
+        senders=["no-reply@fox.example"],
+    ),
+    "not_direct": _dl_only_item(
+        42, senders=[_DROP_SENDER], topic=_DROP_SUBJECT, preview=_DROP_BODY
+    ),
+    "missing_timestamp": _without(
+        _inbox_item(
+            43,
+            topic=_DROP_SUBJECT,
+            preview=_DROP_BODY,
+            toRecipients=_OWNER_TO,
+            senders=[_DROP_SENDER],
+        ),
+        "receivedDateTime",
+    ),
+}
+_KEPT_ITEM = _inbox_item(
+    40,
+    topic="Budget review",
+    preview="Numbers attached.",
+    toRecipients=_OWNER_TO,
+    senders=[_JORDAN],
+)
+
+
+def _outcomes(home) -> list[str]:
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(home))
+    try:
+        return [r["outcome"] for r in conn.execute("SELECT outcome FROM observations")]
+    finally:
+        conn.close()
+
+
+def _drop_rows(home) -> list[dict]:
+    from patina.store import connect, get_db_path
+
+    conn = connect(get_db_path(home))
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM drop_log ORDER BY id")]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("case", sorted(_OUTCOME_CASES))
+def test_every_adapter_path_writes_an_outcome(tmp_path, case):
+    """AC: each new row gets an outcome; RETAIN_ONLY for calendar rows only."""
+    make_port, source = _OUTCOME_CASES[case]
+    home = tmp_path / "patina_home"
+
+    result = ingest_live(port=make_port(), source=source, home=home, lookback_days=10000)
+
+    assert result["messages_inserted"] == 1
+    assert _outcomes(home) == [_EXPECTED_OUTCOME[case]]
+
+
+def test_slack_export_rows_get_retain_and_extract(export_zip, tmp_path):
+    home = tmp_path / "patina_home"
+    ingest_from_export(export_zip, home=home)
+
+    assert _outcomes(home) == ["RETAIN_AND_EXTRACT"] * 3
+
+
+def test_reingest_keeps_a_changed_outcome(tmp_path):
+    """A later ingest of the same item does not reset an outcome set in the store."""
+    from patina.store import connect, get_db_path
+
+    make_port, source = _OUTCOME_CASES["calendar"]
+    home = tmp_path / "patina_home"
+    ingest_live(port=make_port(), source=source, home=home, lookback_days=10000)
+    conn = connect(get_db_path(home))
+    conn.execute("UPDATE observations SET outcome = 'RETAIN_AND_EXTRACT'")
+    conn.commit()
+    conn.close()
+
+    result = ingest_live(port=make_port(), source=source, home=home, lookback_days=10000)
+
+    assert result["messages_skipped"] == 1
+    assert _outcomes(home) == ["RETAIN_AND_EXTRACT"]
+
+
+@pytest.mark.parametrize("reason", sorted(_DROP_ITEMS))
+def test_policy_rejected_item_logs_drop_without_content(tmp_path, reason):
+    """AC: one content-free drop_log row, no observation row, content stored nowhere."""
+    home = _filter_home(tmp_path)
+    _ingest_outlook(home, [_KEPT_ITEM])
+    obs_before = _table_rows(home, "observations")
+    assert len(obs_before) == 1
+    assert _drop_rows(home) == []
+
+    result = _ingest_outlook(home, [_DROP_ITEMS[reason]])
+
+    assert result["messages_inserted"] == 0
+    assert _table_rows(home, "observations") == obs_before
+    (drop,) = _drop_rows(home)
+    assert drop["source"] == "outlook_mcp_email"
+    assert drop["adapter"] == "outlook_mcp"
+    assert drop["reason_code"] == reason
+    assert drop["timestamp"]
+
+    stored = json.dumps(_store_snapshot(home), ensure_ascii=False, default=str)
+    for text in (_DROP_SUBJECT, _DROP_BODY, _DROP_SENDER, "Placeholder, Taylor", "no-reply@fox"):
+        assert text not in stored
+
+
+@pytest.mark.parametrize("case", sorted(_OUTCOME_CASES))
+def test_policy_drops_use_defined_reason_codes_and_kept_rows_unchanged(tmp_path, case):
+    """AC: drops carry a DROP_REASON_CODES code; non-dropped rows match pre-change values.
+
+    Only the Outlook email path rejects items at ingest (relevance filter,
+    missing received time); the other paths reject none, so they log no drops.
+    """
+    from patina.ingest import DROP_REASON_CODES
+    from tests.test_ingest_mcp import _snapshot
+
+    make_port, source = _OUTCOME_CASES[case]
+    baseline = tmp_path / "baseline"
+    ingest_live(port=make_port(), source=source, home=baseline, lookback_days=10000)
+
+    home = _filter_home(tmp_path)
+    if case == "outlook_email":
+        port = _RawEmailPort([LIVE_SHAPE_INBOX_ITEM, *_DROP_ITEMS.values()])
+    else:
+        port = make_port()
+    result = ingest_live(port=port, source=source, home=home, lookback_days=10000)
+
+    drops = _drop_rows(home)
+    assert {d["reason_code"] for d in drops} <= DROP_REASON_CODES
+    if case == "outlook_email":
+        assert sorted(d["reason_code"] for d in drops) == sorted(_DROP_ITEMS)
+    else:
+        assert drops == []
+    assert result["messages_inserted"] == 1
+    assert _snapshot(home) == _snapshot(baseline)
+    if case in _PRE_CHANGE:
+        (obs,) = _snapshot(home)["observations"]
+        expected = _PRE_CHANGE[case]
+        assert obs["id"] == expected["id"]
+        assert obs["metadata"] == expected["metadata"]

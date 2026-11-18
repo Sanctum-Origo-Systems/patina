@@ -1110,6 +1110,9 @@ def _extraction_runs(tmp_path):
 
 
 def _insert_obs(db_conn, obs_id, source, text, *, sender=None, ts=1.0, channel_id="C1"):
+    from patina.ingest import ingestion_outcome
+
+    # Same outcome ingest writes, so calendar rows are RETAIN_ONLY (#670).
     insert_observation(
         db_conn,
         Observation(
@@ -1120,6 +1123,7 @@ def _insert_obs(db_conn, obs_id, source, text, *, sender=None, ts=1.0, channel_i
             timestamp=ts,
             sender_entity_id=sender,
             text=text,
+            outcome=ingestion_outcome(channel_id),
         ),
     )
 
@@ -1395,7 +1399,12 @@ class TestCalendarObservationsExcluded:
         assert _calendar_rows(tmp_path) == before
 
     def test_preexisting_calendar_row_skipped(self, db_conn, db_path, tmp_path):
+        from patina.store import run_pending_migrations
+        from tests.conftest import _clear_migration_markers
+
         # Stored before the exclusion existed: raw row, no ingest-time flag.
+        # The add_ingestion_outcome_v1 backfill marks it RETAIN_ONLY (#669, #670).
+        _clear_migration_markers(db_conn)
         db_conn.execute(
             "INSERT INTO observations"
             " (id, source, channel_id, thread_id, timestamp, sender_entity_id,"
@@ -1405,6 +1414,7 @@ class TestCalendarObservationsExcluded:
             (_CALENDAR_TEXT,),
         )
         db_conn.commit()
+        run_pending_migrations(db_conn)
         db_conn.close()
 
         stats = extract_beliefs(home=tmp_path, dry_run=True, batch_size=5)

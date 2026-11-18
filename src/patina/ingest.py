@@ -10,6 +10,7 @@ from patina.adapters._source_facts import get_fact
 from patina.decisions import auto_resolve_draft_reply
 from patina.export_parser import parse_slack_export
 from patina.extraction import (
+    CALENDAR_CHANNEL_PREFIX,
     extract_entities_from_text,
     extract_sender_entity,
     is_non_person_sender,
@@ -20,7 +21,14 @@ from patina.graph import (
     insert_observation,
     upsert_entity,
 )
-from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation, SourceFactState
+from patina.models import (
+    CalendarEvent,
+    ChatMessage,
+    EmailMessage,
+    IngestionOutcome,
+    Observation,
+    SourceFactState,
+)
 from patina.owner import (
     get_owner_entity_id,
     get_owner_identifiers,
@@ -29,7 +37,7 @@ from patina.owner import (
     mark_entity_as_owner,
     owner_match_keys,
 )
-from patina.store import connect, get_db_path, init_db, kv_get, kv_set
+from patina.store import connect, get_db_path, init_db, kv_get, kv_set, record_drop
 
 if TYPE_CHECKING:
     from patina.priority.objectives import Objective
@@ -50,6 +58,17 @@ def _obs_id(source: str, channel_id: str, thread_id: str | None, ts: float) -> s
     else:
         key = f"{family}:{channel_id or ''}:{thread_id or ''}:{ts}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def ingestion_outcome(channel_id: str | None) -> IngestionOutcome:
+    """Outcome written on a new observation row (#670).
+
+    Calendar rows are schedule data: kept, never extracted (#619). Everything
+    else is kept and extracted.
+    """
+    if channel_id and channel_id.startswith(CALENDAR_CHANNEL_PREFIX):
+        return IngestionOutcome.RETAIN_ONLY
+    return IngestionOutcome.RETAIN_AND_EXTRACT
 
 
 def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
@@ -81,6 +100,7 @@ def ingest_from_export(zip_path: Path, *, home: Path | None = None) -> dict:
                     "channel_name": msg.channel_name,
                     "reactions": msg.reactions,
                 },
+                outcome=ingestion_outcome(msg.channel_id),
             )
 
             if not insert_observation(conn, obs):
@@ -188,6 +208,7 @@ def _ingest_messages(
             sender_entity_id=None,
             text=msg.text,
             metadata=meta,
+            outcome=ingestion_outcome(msg.channel_id),
         )
 
         if not insert_observation(conn, obs):
@@ -453,6 +474,28 @@ def relevance_stat_key(relevance: Relevance) -> str:
     return relevance.reason if relevance.keep else f"{DROPPED_PREFIX}{relevance.reason}"
 
 
+# Reason codes a ``drop_log`` entry can carry: every rejection ingest makes
+# before an item becomes an observation (#670).
+DROP_REASON_CODES = frozenset({MISSING_TIMESTAMP, *RELEVANCE_DROP_REASONS})
+
+
+def _record_policy_drops(
+    conn, *, source: str, adapter: str, skip_reasons: dict[str, int], relevance: dict[str, int]
+) -> None:
+    """Write one ``drop_log`` entry per rejected item: reason code only, no content."""
+    reasons = [
+        *skip_reasons.items(),
+        *(
+            (key.removeprefix(DROPPED_PREFIX), n)
+            for key, n in relevance.items()
+            if key.startswith(DROPPED_PREFIX)
+        ),
+    ]
+    for reason, n in reasons:
+        for _ in range(n):
+            record_drop(conn, source=source, adapter=adapter, reason_code=reason)
+
+
 def _outlook_filter_enabled(home: Path | None = None) -> bool:
     """True when ``ingest.outlook_relevance_filter`` is set in config.yaml (off by default)."""
     import yaml
@@ -659,6 +702,8 @@ def ingest_live(
     With ``ingest.outlook_relevance_filter`` enabled, Outlook emails go through
     ``outlook_relevance`` before they become observations; dropped emails create
     no observation or entity, and every decision is counted in ``relevance``.
+    Each rejected email (relevance drop or ``missing_timestamp``) gets a
+    content-free ``drop_log`` entry instead of an observation row.
     ``dry_run`` only runs and counts those decisions, writing nothing.
     """
     from datetime import UTC, datetime, timedelta
@@ -738,6 +783,13 @@ def ingest_live(
                     conn=conn,
                 )
             messages.extend(_emails_to_chat_messages(emails, skip_reasons))
+            _record_policy_drops(
+                conn,
+                source=source,
+                adapter=port.platform,
+                skip_reasons=skip_reasons,
+                relevance=relevance,
+            )
 
         if isinstance(port, CalendarPort):
             now = datetime.now(UTC)
