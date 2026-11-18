@@ -18,6 +18,7 @@ from patina.cleanup_meeting_obs import (
     SELECTED,
     UNDETERMINED,
     RemovalRefused,
+    UnknownProvenanceRefused,
     classify,
     remove_meeting_observations,
     select_meeting_observations,
@@ -906,3 +907,168 @@ class TestDryRunCounts:
         assert data["unknown_provenance_claims"] == len(LEGACY_SOURCE_IDS)
         assert data["unknown_provenance_relationships"] == 2
         assert data["unknown_provenance"] == len(LEGACY_SOURCE_IDS) + 2
+
+
+ACCEPT = "--accept-unknown-provenance"
+
+
+class TestUnknownProvenanceGate:
+    """#660: --confirm refuses while unknown-provenance claims exist, unless accepted."""
+
+    def _seed_repro(self, conn):
+        """Live trigger shape: a pre-#614 claim from an empty-bodied meeting acceptance."""
+        _add_obs(
+            conn,
+            "obs_a",
+            {"itemClasses": ["IPM.Schedule.Meeting.Resp.Pos"], "conversationId": "CONV_A"},
+            processed=1,
+        )
+        conn.execute(
+            "UPDATE observations SET text = ? WHERE id = 'obs_a'",
+            ("[Subject: Accepted: Weekly sync with Dana Brook] [Participants: Jordan Example]\n",),
+        )
+        _cite(conn, "claim_legacy", [])
+        conn.execute("UPDATE claims SET method = 'extraction' WHERE id = 'claim_legacy'")
+        conn.commit()
+
+    def _obs_ids(self, conn):
+        return {r["id"] for r in conn.execute("SELECT id FROM observations").fetchall()}
+
+    def test_dry_run_reports_known_and_unknown_on_one_line(self, store, db_path):
+        self._seed_repro(store)
+        store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = db_path.read_bytes()
+
+        result = _invoke(db_path)
+
+        assert result.exit_code == 0, result.output
+        assert "selected 1; 0 known citing; 1 unknown, cannot rule out" in result.stdout
+        assert f"re-run with --confirm {ACCEPT}" in result.stdout
+        assert self._obs_ids(store) == {"obs_a"}
+        assert db_path.read_bytes() == before
+        assert list(db_path.parent.glob("*.bak.*")) == []
+
+    def test_confirm_refuses_without_flag(self, store, db_path, monkeypatch):
+        self._seed_repro(store)
+        store.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = db_path.read_bytes()
+        backup_calls = []
+        monkeypatch.setattr(cleanup, "backup_store", lambda p: backup_calls.append(p))
+
+        result = _invoke(db_path, "--confirm")
+
+        assert result.exit_code != 0
+        assert "1 claim(s) and relationship(s) have unknown provenance" in result.stdout
+        assert "citing claims cannot be ruled out" in result.stdout
+        assert f"--confirm {ACCEPT}" in result.stdout
+        assert "No changes made." in result.stdout
+        assert self._obs_ids(store) == {"obs_a"}
+        assert backup_calls == []
+        assert db_path.read_bytes() == before
+
+    def test_confirm_refuses_in_json(self, store, db_path):
+        self._seed_repro(store)
+
+        result = _invoke(db_path, "--confirm", "--json")
+
+        assert result.exit_code != 0
+        data = json.loads(result.stdout)
+        assert data["refused"] == ["obs_a"]
+        assert data["refused_unknown_provenance"] == 1
+        assert "removal" not in data
+        assert self._obs_ids(store) == {"obs_a"}
+
+    def test_confirm_with_flag_backs_up_and_deletes(self, store, db_path, monkeypatch):
+        self._seed_repro(store)
+        real_backup = cleanup.backup_store
+        backup_calls = []
+
+        def _spy(path):
+            backup_calls.append(path)
+            return real_backup(path)
+
+        monkeypatch.setattr(cleanup, "backup_store", _spy)
+
+        result = _invoke(db_path, "--confirm", ACCEPT)
+
+        assert result.exit_code == 0, result.output
+        assert backup_calls == [db_path]
+        assert len(list(db_path.parent.glob("*.bak.*"))) == 1
+        assert self._obs_ids(store) == set()
+        assert "Deleted 1 observation(s)" in result.stdout
+        assert "Accepted unknown provenance: 1 claim(s)" in result.stdout
+
+    def test_confirm_with_flag_json_reports_unknown(self, store, db_path):
+        self._seed_repro(store)
+
+        result = _invoke(db_path, "--confirm", ACCEPT, "--json")
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        assert data["removal"]["deleted"] == 1
+        assert data["removal"]["unknown_provenance_accepted"] == 1
+
+    def test_fully_known_provenance_deletes_without_flag(self, store, db_path):
+        _add_obs(store, "obs_a", MEETING_META)
+        _add_obs(store, "obs_note", NOTE_META)
+        _cite(store, "claim_note", ["obs_note"])
+        _relate(store, "rel_note", ["obs_note"])
+        store.commit()
+
+        result = _invoke(db_path, "--confirm")
+
+        assert result.exit_code == 0, result.output
+        assert "selected 1; 0 known citing; 0 unknown" in result.stdout
+        assert "cannot rule out" not in result.stdout
+        assert "Accepted unknown provenance" not in result.stdout
+        assert self._obs_ids(store) == {"obs_note"}
+        assert len(list(db_path.parent.glob("*.bak.*"))) == 1
+
+    def test_known_citing_refuses_even_with_flag(self, store, db_path):
+        self._seed_repro(store)
+        _cite(store, "claim_fox", ["obs_a"])
+
+        result = _invoke(db_path, "--confirm", ACCEPT)
+
+        assert result.exit_code != 0
+        assert "Refusing to delete: 1 selected row(s) have citing claims" in result.stdout
+        assert self._obs_ids(store) == {"obs_a"}
+        assert list(db_path.parent.glob("*.bak.*")) == []
+
+    def test_unrelated_legacy_relationship_still_refuses(self, store, db_path):
+        _add_obs(store, "obs_a", MEETING_META)
+        _add_obs(store, "obs_note", NOTE_META)
+        _cite(store, "claim_note", ["obs_note"])
+        _relate(store, "rel_old", [])
+        store.commit()
+
+        result = _invoke(db_path, "--confirm")
+
+        assert result.exit_code != 0
+        assert "1 claim(s) and relationship(s) have unknown provenance" in result.stdout
+        assert self._obs_ids(store) == {"obs_a", "obs_note"}
+
+    def test_refuses_when_legacy_claim_added_after_selection(self, store, db_path, monkeypatch):
+        _add_obs(store, "obs_a", MEETING_META)
+        selection = select_meeting_observations(db_path)
+        assert selection.unknown_provenance == 0
+        _cite(store, "claim_late", [])
+        backup_calls = []
+        monkeypatch.setattr(cleanup, "backup_store", lambda p: backup_calls.append(p))
+
+        with pytest.raises(UnknownProvenanceRefused) as exc:
+            remove_meeting_observations(db_path, selection)
+
+        assert exc.value.unknown == 1
+        assert backup_calls == []
+        assert self._obs_ids(store) == {"obs_a"}
+
+    def test_empty_selection_is_noop_despite_unknown(self, store, db_path):
+        _add_obs(store, "obs_note", NOTE_META)
+        _cite(store, "claim_old", [])
+
+        result = _invoke(db_path, "--confirm")
+
+        assert result.exit_code == 0, result.output
+        assert "Deleted 0 observation(s)" in result.stdout
+        assert list(db_path.parent.glob("*.bak.*")) == []
