@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
+
 import pytest
 
 from patina.extraction import (
@@ -461,3 +465,234 @@ class TestCalendarObservationsQueryable:
         out = store_search("Quick Brown Fox Sync")
         assert "Quick Brown Fox Sync" in out
         assert "outlook_mcp_calendar" in out
+
+
+# --- outcome gate (#670) ---
+
+_SYNC_SUBJECT = "Accepted: Weekly sync with Dana Brook"
+_SYNC_TEXT = f"[Meeting: {_SYNC_SUBJECT}] Organizer: Dana Brook"
+_SYNC_TS = 1781600000.0
+_SYNC_INGESTED_AT = "2026-11-02T08:00:00+00:00"
+
+# A response that would create entities, a claim and a relationship if any
+# batch reached the model.
+_DANA_RESPONSE = json.dumps(
+    {
+        "entities": [
+            {"name": "Dana Brook", "aliases": [], "type": "person"},
+            {"name": "Jordan Example", "aliases": [], "type": "person"},
+        ],
+        "claims": [
+            {
+                "subject": "Dana Brook",
+                "predicate": "role",
+                "object": "sync organizer",
+                "confidence": 0.9,
+            }
+        ],
+        "relationships": [
+            {
+                "subject": "Dana Brook",
+                "predicate": "works_with",
+                "object": "Jordan Example",
+                "confidence": 0.8,
+            }
+        ],
+        "behavioral": [],
+    }
+)
+_EMPTY_RESPONSE = json.dumps({"entities": [], "claims": [], "relationships": [], "behavioral": []})
+
+
+def _insert(conn, obs_id, text, outcome, *, channel_id, ts=_SYNC_TS, metadata=None):
+    from patina.graph import insert_observation
+    from patina.models import Observation
+
+    is_calendar = channel_id.startswith(CALENDAR_CHANNEL_PREFIX)
+    insert_observation(
+        conn,
+        Observation(
+            id=obs_id,
+            source="outlook_mcp_calendar" if is_calendar else "slack_live",
+            channel_id=channel_id,
+            thread_id=None,
+            timestamp=ts,
+            sender_entity_id=None,
+            text=text,
+            metadata=metadata or {},
+            ingested_at=_SYNC_INGESTED_AT,
+            outcome=outcome,
+        ),
+    )
+
+
+def _insert_sync_row(conn):
+    _insert(
+        conn,
+        "obs-sync",
+        _SYNC_TEXT,
+        "RETAIN_ONLY",
+        channel_id="calendar:AAMkSYNC1",
+        metadata={"subject": _SYNC_SUBJECT, "body": ""},
+    )
+
+
+def _run_extraction(home, response=_DANA_RESPONSE):
+    from unittest.mock import patch
+
+    from patina.beliefs.extractor import extract_beliefs
+
+    with (
+        patch("patina.beliefs.extractor._call_claude", return_value=response) as stub,
+        patch("patina.beliefs.extractor.time.sleep"),
+    ):
+        stats = extract_beliefs(home=home, batch_size=5)
+    return stats, stub
+
+
+def _belief_counts(conn):
+    return tuple(
+        conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        for t in ("entities", "claims", "relationships")
+    )
+
+
+class TestOutcomeGate:
+    """#670: extraction itself skips RETAIN_ONLY rows; RETAIN_AND_EXTRACT rows run as before."""
+
+    def test_retain_only_row_yields_no_beliefs_and_stays_readable(self, db_conn, tmp_path):
+        _insert_sync_row(db_conn)
+
+        stats, stub = _run_extraction(tmp_path)
+
+        stub.assert_not_called()
+        assert stats["observations_processed"] == 0
+        assert _belief_counts(db_conn) == (0, 0, 0)
+
+        row = db_conn.execute("SELECT * FROM observations WHERE id = 'obs-sync'").fetchone()
+        assert row["source"] == "outlook_mcp_calendar"
+        assert row["channel_id"] == "calendar:AAMkSYNC1"
+        assert row["text"] == _SYNC_TEXT
+        assert json.loads(row["metadata"]) == {"subject": _SYNC_SUBJECT, "body": ""}
+        assert row["timestamp"] == _SYNC_TS
+        assert row["ingested_at"] == _SYNC_INGESTED_AT
+        assert row["outcome"] == "RETAIN_ONLY"
+        assert row["processed"] == 0
+
+    def test_empty_retain_only_row_is_not_marked_processed(self, db_conn):
+        from patina.extraction import mark_empty_observations_processed
+
+        _insert(db_conn, "obs-empty-ro", "", "RETAIN_ONLY", channel_id="calendar:AAMkSYNC2")
+        _insert(db_conn, "obs-empty-rae", "", "RETAIN_AND_EXTRACT", channel_id="D0EXAMPLE01")
+
+        assert mark_empty_observations_processed(db_conn) == 1
+
+        processed = dict(db_conn.execute("SELECT id, processed FROM observations").fetchall())
+        assert processed == {"obs-empty-ro": 0, "obs-empty-rae": 1}
+
+    def test_mixed_batch_only_retain_and_extract_rows_processed(self, db_conn, tmp_path):
+        from patina.extraction import extractable_observations
+
+        # The gate is the outcome, not the channel: a RETAIN_ONLY chat row is
+        # skipped and a RETAIN_AND_EXTRACT calendar row is read.
+        _insert(db_conn, "ro-cal", _SYNC_TEXT, "RETAIN_ONLY", channel_id="calendar:AAMkSYNC1")
+        _insert(db_conn, "ro-chat", "Jordan Example: très bien", "RETAIN_ONLY", channel_id="D0EX02")
+        _insert(
+            db_conn,
+            "rae-chat",
+            "The quick brown fox",
+            "RETAIN_AND_EXTRACT",
+            channel_id="D0EX01",
+            ts=_SYNC_TS + 1,
+        )
+        _insert(
+            db_conn,
+            "rae-cal",
+            "[Meeting: Lazy dog review] Organizer: Jordan Example",
+            "RETAIN_AND_EXTRACT",
+            channel_id="calendar:AAMkSYNC3",
+            ts=_SYNC_TS + 2,
+        )
+
+        rows = extractable_observations(db_conn, limit=10)
+        assert [r["id"] for r in rows] == ["rae-chat", "rae-cal"]
+
+        stats, stub = _run_extraction(tmp_path, response=_EMPTY_RESPONSE)
+
+        assert stub.call_count == 1
+        prompt = stub.call_args.args[0]
+        assert "The quick brown fox" in prompt
+        assert "Lazy dog review" in prompt
+        assert _SYNC_SUBJECT not in prompt
+        assert "très bien" not in prompt
+        assert stats["observations_processed"] == 2
+        processed = dict(db_conn.execute("SELECT id, processed FROM observations").fetchall())
+        assert processed == {"ro-cal": 0, "ro-chat": 0, "rae-chat": 1, "rae-cal": 1}
+
+    def test_promoted_row_is_extracted_with_its_observation_id(self, db_conn, tmp_path):
+        _insert_sync_row(db_conn)
+        _, stub = _run_extraction(tmp_path)
+        stub.assert_not_called()
+
+        db_conn.execute(
+            "UPDATE observations SET outcome = 'RETAIN_AND_EXTRACT' WHERE id = 'obs-sync'"
+        )
+        db_conn.commit()
+
+        stats, stub = _run_extraction(tmp_path)
+
+        assert stub.call_count == 1
+        assert _SYNC_SUBJECT in stub.call_args.args[0]
+        assert stats["observations_processed"] == 1
+        claims = db_conn.execute("SELECT predicate, source_ids FROM claims").fetchall()
+        assert [c["predicate"] for c in claims] == ["role"]
+        assert json.loads(claims[0]["source_ids"]) == ["obs-sync"]
+
+
+def _src_files():
+    import patina
+
+    return sorted(Path(patina.__file__).parent.rglob("*.py"))
+
+
+def test_only_extraction_module_filters_on_outcome():
+    """#670: no caller in src/ re-checks the outcome; extraction.py is the only gate.
+
+    store.py holds the column's CHECK constraint and the #669 backfill (a writer).
+    """
+    predicate = re.compile(
+        r"\boutcome\s*(?:=|!=|<>|IN)\s*[?(']|\.outcome\s*(?:==|!=|in\b)"
+        r"|(?:==|!=)\s*IngestionOutcome\.|IngestionOutcome\.\w+\s*(?:==|!=)"
+    )
+    filtering = {p.name for p in _src_files() if predicate.search(p.read_text())}
+    assert filtering == {"extraction.py", "store.py"}
+
+    from patina.beliefs import extractor
+
+    source = Path(extractor.__file__).read_text()
+    assert "extractable_observations(conn" in source
+    assert "FROM observations o" not in source
+    assert "CALENDAR_CHANNEL_PREFIX" not in source
+
+
+def test_no_deletion_ttl_or_redaction_touches_retain_only_rows():
+    """#670 adds no retention, expiry or privacy behaviour for RETAIN_ONLY rows."""
+    import ast
+
+    forbidden = re.compile(
+        r"\bDELETE\b|\bttl\b|expir|redact|purge|retention|SET\s+(?:text|metadata)\b", re.I
+    )
+    named = re.compile(r"delete|purge|expir|redact|ttl|retention|cleanup", re.I)
+    for path in _src_files():
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                for stmt in node.value.split(";"):
+                    if re.search(r"\boutcome\b|RETAIN_ONLY", stmt):
+                        assert not forbidden.search(stmt), f"{path.name}: {stmt.strip()[:80]}"
+            if isinstance(node, ast.FunctionDef) and named.search(node.name):
+                refs = {
+                    n.attr
+                    for n in ast.walk(node)
+                    if isinstance(n, ast.Attribute) and n.attr.startswith("RETAIN_")
+                }
+                assert not refs, f"{path.name}:{node.name} references {refs}"
