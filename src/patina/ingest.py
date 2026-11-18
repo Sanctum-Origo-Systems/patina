@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from patina.adapters._source_facts import get_fact
 from patina.decisions import auto_resolve_draft_reply
 from patina.export_parser import parse_slack_export
 from patina.extraction import (
@@ -19,7 +20,7 @@ from patina.graph import (
     insert_observation,
     upsert_entity,
 )
-from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation
+from patina.models import CalendarEvent, ChatMessage, EmailMessage, Observation, SourceFactState
 from patina.owner import (
     get_owner_entity_id,
     get_owner_identifiers,
@@ -604,15 +605,33 @@ def _outlook_relevance_dry_run(
     return {"relevance": relevance, "sender_unresolved": unresolved}
 
 
-def _events_to_chat_messages(events: list[CalendarEvent]) -> list[ChatMessage]:
+def _events_to_chat_messages(
+    events: list[CalendarEvent], skip_reasons: dict[str, int] | None = None
+) -> list[ChatMessage]:
+    """Convert calendar events to chat messages, dropping any without a start.
+
+    Undated events are never stored (no epoch or ingest-time rows); each one is
+    counted under ``skip_reasons["missing_timestamp"]`` when given.
+    """
     results = []
     for ev in events:
+        if not ev.start:
+            if skip_reasons is not None:
+                skip_reasons[MISSING_TIMESTAMP] = skip_reasons.get(MISSING_TIMESTAMP, 0) + 1
+            continue
         text = f"[Meeting: {ev.subject}] Organizer: {ev.organizer}"
-        # No attendees (live ``calendar_view`` sends none, #651) -> no
-        # ``Attendees:`` part, rather than claiming "none". Display names hold
-        # commas ("Example, Jordan"), so attendees are joined with "; ".
+        # No attendees key (live ``calendar_view`` sends none, #651) -> no
+        # ``Attendees:`` part, rather than claiming "none". Only an attendee
+        # list sent empty says "none"; one sent ``null`` says "unknown".
+        # Display names hold commas ("Example, Jordan"), so attendees are
+        # joined with "; ".
+        attendees_fact = get_fact(ev.source_facts, "attendees")
         if ev.attendees:
             text += f", Attendees: {'; '.join(ev.attendees)}"
+        elif attendees_fact is not None and attendees_fact.state is SourceFactState.EMPTY:
+            text += ", Attendees: none"
+        elif attendees_fact is not None and attendees_fact.state is SourceFactState.UNAVAILABLE:
+            text += ", Attendees: unknown"
         results.append(
             ChatMessage(
                 user_id=ev.organizer,
@@ -724,7 +743,7 @@ def ingest_live(
             now = datetime.now(UTC)
             start = now - timedelta(days=lookback_days)
             events = port.list_events(start, now)
-            messages.extend(_events_to_chat_messages(events))
+            messages.extend(_events_to_chat_messages(events, skip_reasons))
 
         messages = _drop_undated(messages, skip_reasons)
         messages.sort(key=lambda m: m.timestamp)

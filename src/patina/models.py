@@ -158,8 +158,8 @@ class EmailMessage:
 class CalendarEvent:
     id: str
     subject: str
-    start: float
-    end: float
+    start: float | None
+    end: float | None
     attendees: list[str] = field(default_factory=list)
     organizer: str = ""
     organizer_dn: str | None = None

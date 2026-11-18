@@ -1305,7 +1305,7 @@ def test_source_facts_leave_columns_dedupe_and_entities_unchanged(tmp_path, monk
     # Re-ingest with the adapter writing no source facts (the pre-change rows):
     # every column, dedupe key and entity must come out identical.
     module = importlib.import_module(module_name)
-    monkeypatch.setattr(module, "put_fact", lambda facts, key, value, **_: None)
+    monkeypatch.setattr(module, "put_fact", lambda facts, key, value, **kwargs: None)
     without_facts = tmp_path / "without_facts"
     ingest_live(port=make_port(), source=source, home=without_facts, lookback_days=10000)
     (row,) = _stored_email_rows(without_facts)
