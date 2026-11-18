@@ -80,4 +80,4 @@ Most of the identity and contradiction bugs fixed in October and November 2026 s
 | Relevance filter | **Off by default.** Fill in objectives first (`patina objectives update --participant … --customer-domain …`), check `patina ingest --dry-run`, then set `ingest.outlook_relevance_filter: true`. The customer-domain rule only works for senders whose entity has an email alias in the store; the dry run's `sender_unresolved` count shows how many dropped emails it couldn't check. |
 | Claim provenance | New claims only. Claims from before #614 are reported as unknown provenance and can't be backfilled reliably. |
 | Rows stored before #611 | Have no source facts, so the relevance rule can't be applied to them afterwards. |
-| Pre-fix meeting rows | `patina cleanup-meeting-obs` previews which rows it would remove. Removing them needs `--confirm` and the Owner's approval. |
+| Pre-fix meeting rows | `patina cleanup-meeting-obs` previews which rows it would remove. Removing them needs `--confirm` and the Owner's approval. While claims of unknown provenance exist, `--confirm` refuses unless the Owner also passes `--accept-unknown-provenance` (#660). |

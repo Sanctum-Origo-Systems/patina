@@ -9,7 +9,9 @@ A row with no re-fetch ID on a ``calendar:`` channel is a calendar event, out of
 scope for this email cleanup, and is counted apart from undetermined rows.
 A claim or relationship cites a row only when its ``source_ids`` hold that
 row's observation id; rows citing no existing observation are reported as
-unknown provenance, never matched by text or time.
+unknown provenance, never matched by text or time. Removal refuses while any
+unknown-provenance rows exist anywhere in the store, unless the caller accepts
+them explicitly, since none of them can be ruled out as built from a selected row.
 """
 
 from __future__ import annotations
@@ -99,6 +101,8 @@ class RemovalResult:
     deleted: int
     before_count: int
     after_count: int
+    # Unknown-provenance claims and relationships accepted for this removal.
+    unknown_provenance: int = 0
 
 
 class RemovalRefused(Exception):
@@ -108,6 +112,17 @@ class RemovalRefused(Exception):
         self.rows = rows
         ids = ", ".join(r.observation_id for r in rows)
         super().__init__(f"{len(rows)} selected observation(s) have citing claims: {ids}")
+
+
+class UnknownProvenanceRefused(Exception):
+    """Raised when unknown-provenance rows exist and were not accepted; nothing is changed."""
+
+    def __init__(self, unknown: int) -> None:
+        self.unknown = unknown
+        super().__init__(
+            f"{unknown} claim(s) and relationship(s) have unknown provenance;"
+            " citing claims cannot be ruled out"
+        )
 
 
 def _has_class_field(payload: dict) -> bool:
@@ -325,15 +340,22 @@ def select_meeting_observations(
     )
 
 
-def remove_meeting_observations(db_path: Path, selection: Selection) -> RemovalResult:
+def remove_meeting_observations(
+    db_path: Path, selection: Selection, *, accept_unknown_provenance: bool = False
+) -> RemovalResult:
     """Back up the store, then delete only the selected rows.
 
     Raises ``RemovalRefused`` without touching the store when any selected row is
-    cited by a claim, either in the selection or in the store as it is now.
+    cited by a claim, either in the selection or in the store as it is now. The
+    flag never overrides that. Raises ``UnknownProvenanceRefused`` likewise when
+    the store holds unknown-provenance claims or relationships and
+    ``accept_unknown_provenance`` is False.
     """
     cited = [s for s in selection.selected if s.citing_claims > 0]
     if cited:
         raise RemovalRefused(cited)
+    if selection.selected and selection.unknown_provenance and not accept_unknown_provenance:
+        raise UnknownProvenanceRefused(selection.unknown_provenance)
 
     ids = [s.observation_id for s in selection.selected]
     conn = connect(db_path)
@@ -344,10 +366,12 @@ def remove_meeting_observations(db_path: Path, selection: Selection) -> RemovalR
                 backup_path=None, deleted=0, before_count=before, after_count=before
             )
 
-        current, _ = _citation_counts(conn, set(ids))
+        current, unknown = _citation_counts(conn, set(ids))
         cited_now = [s for s in selection.selected if current[s.observation_id] > 0]
         if cited_now:
             raise RemovalRefused(cited_now)
+        if unknown and not accept_unknown_provenance:
+            raise UnknownProvenanceRefused(unknown)
 
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         backup_path = backup_store(db_path)
@@ -372,5 +396,9 @@ def remove_meeting_observations(db_path: Path, selection: Selection) -> RemovalR
         conn.close()
 
     return RemovalResult(
-        backup_path=backup_path, deleted=deleted, before_count=before, after_count=after
+        backup_path=backup_path,
+        deleted=deleted,
+        before_count=before,
+        after_count=after,
+        unknown_provenance=unknown,
     )
