@@ -32,10 +32,12 @@ from patina.maintenance import (
     find_dedup_candidates,
     find_id_named_entities,
     fix_junk_senders,
+    ingestion_outcome_counts,
     is_non_person,
     is_organization,
     is_plausible_person_name,
     merge_entities,
+    promote_observations,
     prune_non_person_entities,
     prune_slack_link_entities,
     rekey_credential_references,
@@ -47,7 +49,7 @@ from patina.maintenance import (
     split_dn_sink,
     store_snapshot_token,
 )
-from patina.models import Claim, Entity, Observation, Relationship
+from patina.models import Claim, Entity, IngestionOutcome, Observation, Relationship
 from patina.store import record_alias_provenance
 
 
@@ -2061,6 +2063,168 @@ def test_reprocess_dry_run(db_conn):
     assert row["processed"] == 1
 
 
+# ── promote_observations / ingestion_outcome_counts (#671) ──
+
+
+def _seed_outcomes(conn):
+    """Two RETAIN_ONLY calendar rows, one RETAIN_ONLY chat row, two RETAIN_AND_EXTRACT rows."""
+    rows = [
+        ("cal-1", "outlook_mcp_calendar", "RETAIN_ONLY", 1000.0),
+        ("cal-2", "outlook_mcp_calendar", "RETAIN_ONLY", 2000.0),
+        ("chat-ro", "slack_live", "RETAIN_ONLY", 3000.0),
+        ("chat-1", "slack_live", "RETAIN_AND_EXTRACT", 4000.0),
+        ("mail-1", "outlook_mcp_email", "RETAIN_AND_EXTRACT", 5000.0),
+    ]
+    for oid, source, outcome, ts in rows:
+        obs = _obs(oid, None, source=source, ts=ts)
+        obs.outcome = IngestionOutcome(outcome)
+        insert_observation(conn, obs)
+
+
+def _outcomes(conn):
+    return dict(conn.execute("SELECT id, outcome FROM observations").fetchall())
+
+
+def test_promote_dry_run_lists_retain_only_rows_and_changes_nothing(db_conn):
+    _seed_outcomes(db_conn)
+    before = _outcomes(db_conn)
+
+    result = promote_observations(db_conn, filter_expr="adapter=outlook_mcp_calendar")
+
+    assert [(r["id"], r["adapter"]) for r in result["candidates"]] == [
+        ("cal-1", "outlook_mcp_calendar"),
+        ("cal-2", "outlook_mcp_calendar"),
+    ]
+    assert result["promoted"] == 0
+    assert _outcomes(db_conn) == before
+
+
+def test_promote_dry_run_by_id(db_conn):
+    _seed_outcomes(db_conn)
+    before = _outcomes(db_conn)
+
+    result = promote_observations(db_conn, obs_id="chat-ro")
+
+    assert [r["id"] for r in result["candidates"]] == ["chat-ro"]
+    assert result["skipped"] == [] and result["not_found"] == []
+    assert _outcomes(db_conn) == before
+
+
+def test_promote_confirm_changes_only_selected_rows(db_conn):
+    _seed_outcomes(db_conn)
+
+    result = promote_observations(db_conn, filter_expr="adapter=slack_live", confirm=True)
+
+    assert result["promoted"] == 1
+    assert [r["id"] for r in result["candidates"]] == ["chat-ro"]
+    assert [r["id"] for r in result["skipped"]] == ["chat-1"]
+    assert _outcomes(db_conn) == {
+        "cal-1": "RETAIN_ONLY",
+        "cal-2": "RETAIN_ONLY",
+        "chat-ro": "RETAIN_AND_EXTRACT",
+        "chat-1": "RETAIN_AND_EXTRACT",
+        "mail-1": "RETAIN_AND_EXTRACT",
+    }
+
+
+def test_promote_already_extracted_id_is_skipped(db_conn):
+    _seed_outcomes(db_conn)
+    before = _outcomes(db_conn)
+
+    result = promote_observations(db_conn, obs_id="mail-1", confirm=True)
+
+    assert result["promoted"] == 0
+    assert result["candidates"] == []
+    assert result["skipped"] == [
+        {"id": "mail-1", "adapter": "outlook_mcp_email", "outcome": "RETAIN_AND_EXTRACT"}
+    ]
+    assert result["not_found"] == []
+    assert _outcomes(db_conn) == before
+
+
+def test_promote_missing_id_is_not_found(db_conn):
+    _seed_outcomes(db_conn)
+    before = _outcomes(db_conn)
+
+    result = promote_observations(db_conn, obs_id="no-such-row", confirm=True)
+
+    assert result["promoted"] == 0
+    assert result["candidates"] == [] and result["skipped"] == []
+    assert result["not_found"] == ["no-such-row"]
+    assert _outcomes(db_conn) == before
+
+
+def test_promote_second_confirm_promotes_nothing(db_conn):
+    _seed_outcomes(db_conn)
+
+    first = promote_observations(db_conn, filter_expr="adapter=outlook_mcp_calendar", confirm=True)
+    after_first = _outcomes(db_conn)
+    second = promote_observations(db_conn, filter_expr="adapter=outlook_mcp_calendar", confirm=True)
+
+    assert first["promoted"] == 2
+    assert second["promoted"] == 0
+    assert second["candidates"] == []
+    assert [r["id"] for r in second["skipped"]] == ["cal-1", "cal-2"]
+    assert _outcomes(db_conn) == after_first
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"obs_id": "cal-1", "filter_expr": "adapter=slack_live"},
+        {"filter_expr": "channel=C001"},
+        {"filter_expr": "adapter"},
+        {"filter_expr": "adapter="},
+    ],
+)
+def test_promote_rejects_bad_selection(db_conn, kwargs):
+    _seed_outcomes(db_conn)
+    before = _outcomes(db_conn)
+
+    with pytest.raises(ValueError):
+        promote_observations(db_conn, confirm=True, **kwargs)
+
+    assert _outcomes(db_conn) == before
+
+
+def test_ingestion_outcome_counts_exact(db_conn):
+    from patina.store import record_drop
+
+    _seed_outcomes(db_conn)
+    record_drop(db_conn, source="outlook_mcp", adapter="outlook", reason_code="not_direct")
+    record_drop(db_conn, source="outlook_mcp", adapter="outlook", reason_code="automated")
+    record_drop(db_conn, source="slack_live", adapter="slack_live", reason_code="no_timestamp")
+
+    counts = ingestion_outcome_counts(db_conn)
+
+    assert counts["total"] == {"DROP": 3, "RETAIN_ONLY": 3, "RETAIN_AND_EXTRACT": 2}
+    assert counts["by_adapter"] == {
+        "outlook": {"DROP": 2},
+        "outlook_mcp_calendar": {"RETAIN_ONLY": 2},
+        "outlook_mcp_email": {"RETAIN_AND_EXTRACT": 1},
+        "slack_live": {"RETAIN_ONLY": 1, "RETAIN_AND_EXTRACT": 1, "DROP": 1},
+    }
+
+
+def test_ingestion_outcome_counts_empty_store(db_conn):
+    counts = ingestion_outcome_counts(db_conn)
+
+    assert counts == {
+        "total": {"DROP": 0, "RETAIN_ONLY": 0, "RETAIN_AND_EXTRACT": 0},
+        "by_adapter": {},
+    }
+
+
+def test_ingestion_outcome_counts_without_drop_log_table(db_conn):
+    db_conn.execute("DROP TABLE drop_log")
+    _seed_outcomes(db_conn)
+
+    counts = ingestion_outcome_counts(db_conn)
+
+    assert counts["total"] == {"DROP": 0, "RETAIN_ONLY": 3, "RETAIN_AND_EXTRACT": 2}
+
+
 # ── CLI integration ─────────────────────────────────────────
 
 
@@ -2586,7 +2750,10 @@ def test_cli_doctor_clean(db_path):
     home = db_path.parent
     result = runner.invoke(app, ["doctor", "--home", str(home)])
     assert result.exit_code == 0
-    assert result.output.strip() == ""
+    # No WARN lines; a store with no rows reports zero for every outcome (#671).
+    assert result.output.strip() == (
+        "Ingestion outcomes: RETAIN_AND_EXTRACT=0, RETAIN_ONLY=0, DROP=0"
+    )
 
 
 def test_cli_doctor_warns_on_dangling(db_path):
