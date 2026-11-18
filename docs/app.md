@@ -461,6 +461,8 @@ Adapters record what the source system actually sent under the observation's `me
 
 **Omit-if-absent rule.** A key is written only when the source sent a value. A field the source left out is absent from `metadata["source"]`. It is never written as `""`, `0`, `null` or an empty list. When the source sent nothing at all, `metadata["source"]` itself is absent.
 
+**Fact states (#663).** A caller that passes `put_fact(facts, key, value, present=<key in payload>)` records one of three `SourceFactState` values (`patina.models`). Missing means `present=False` and nothing is stored. `unavailable` means the key was sent as `null`: no value is stored. `empty` means the key was sent as `""` or `[]`, and the value is kept as given. `present` means any other value, kept as given. Values stay at `facts[key]`. States other than `present` go in the reserved `facts["_state"]` dict, e.g. `{"cc": [], "_state": {"cc": "empty", "to": "unavailable"}}`. A key with no `_state` entry is `present`, which covers rows written before states existed. Read facts back with `get_fact(facts, key)`, which returns a `SourceFact(state, value)` or `None` when missing. Callers that do not pass `present` keep the omit-if-absent rule above.
+
 **Keys** (shared names; each adapter uses the subset it has):
 
 | Key | Meaning |
