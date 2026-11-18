@@ -4,7 +4,9 @@
 - #674: Feat: Source-fact state model in put_fact with presence-aware API ($0.80)
 - #673: Feat: Fixture-based relevance eval: recall, false-drops by reason, ($1.77)
 - #672: Feat: Add ingestion outcome column, drop-log table and idempotent ($1.33)
-Total: 5 PRs, $6.26
+- #684: Feat: Add labeled anonymized fixture, thresholds config and uncapp ($2.03)
+- #680: Feat: Outlook and calendar adapters emit states, with fixtures, in ($2.50)
+Total: 7 PRs, $10.79
 
 ## v0.39.0 (2026-11-11)
 - #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
