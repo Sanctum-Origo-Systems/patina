@@ -6,7 +6,8 @@
 - #672: Feat: Add ingestion outcome column, drop-log table and idempotent ($1.33)
 - #684: Feat: Add labeled anonymized fixture, thresholds config and uncapp ($2.03)
 - #680: Feat: Outlook and calendar adapters emit states, with fixtures, in ($2.50)
-Total: 7 PRs, $10.79
+- #683: Feat: Slack and IMAP adapters emit states for recipient and partic ($3.37)
+Total: 8 PRs, $14.16
 
 ## v0.39.0 (2026-11-11)
 - #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
