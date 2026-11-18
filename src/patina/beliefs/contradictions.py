@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections import Counter
+from datetime import date, datetime
 
 from patina.llm import LLMPort
 
@@ -50,10 +51,14 @@ _TITLE_DESCRIPTION = re.compile(
 # Architect" vs "Cloud Architect Leader") is usually a restatement but may be a
 # promotion, so it is kept and ranked after every real conflict. So is an
 # employer named next to the person's own email vs another org name, which is
-# usually one of its units.
+# usually one of its units. A conflict between two claims whose periods do not
+# overlap is most likely a change over time (a new employer or title).
 _CONFLICT = "conflict"
 _CONTAINED_TITLE = "possible_promotion"
 _CONTAINED_ORG = "contained_org"
+_TEMPORAL_CHANGE = "temporal_change"
+
+Period = tuple[str | None, str | None]
 
 
 def _normalize(text: str) -> str:
@@ -146,8 +151,37 @@ def _classify(predicate: str, obj: str) -> tuple[str, str | tuple[str, ...]]:
     return "", obj
 
 
-def _relation(predicate: str, object_1: str, object_2: str) -> str | None:
-    """Return _CONFLICT, a contained relation, or None when the two claims agree."""
+def _date(value: str | None) -> date | None:
+    try:
+        return datetime.fromisoformat(value).date() if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _disjoint(period_1: Period, period_2: Period) -> bool:
+    """True only when both periods are known and one ends on a day before the other begins."""
+    start_1, end_1 = (_date(v) for v in period_1)
+    start_2, end_2 = (_date(v) for v in period_2)
+    if None in (start_1, end_1, start_2, end_2):
+        return False
+    return end_1 < start_2 or end_2 < start_1
+
+
+def _relation(
+    predicate: str,
+    object_1: str,
+    object_2: str,
+    period_1: Period = (None, None),
+    period_2: Period = (None, None),
+) -> str | None:
+    """Return _CONFLICT, a tagged relation, or None when the two claims agree."""
+    relation = _claim_relation(predicate, object_1, object_2)
+    if relation == _CONFLICT and _disjoint(period_1, period_2):
+        return _TEMPORAL_CHANGE
+    return relation
+
+
+def _claim_relation(predicate: str, object_1: str, object_2: str) -> str | None:
     kind_1, value_1 = _classify(predicate, object_1)
     kind_2, value_2 = _classify(predicate, object_2)
     if kind_1 != kind_2 or kind_1 == "status" or value_1 == value_2:
@@ -197,6 +231,8 @@ def find_all_contradictions(conn: sqlite3.Connection) -> list[dict]:
                   c1.subject_id, c1.predicate,
                   c1.object AS object1, c2.object AS object2,
                   c1.confidence AS conf1, c2.confidence AS conf2,
+                  c1.first_asserted AS start1, c1.last_confirmed AS end1,
+                  c2.first_asserted AS start2, c2.last_confirmed AS end2,
                   e.name AS subject_name
            FROM claims c1
            JOIN claims c2 ON c1.subject_id = c2.subject_id
@@ -209,7 +245,13 @@ def find_all_contradictions(conn: sqlite3.Connection) -> list[dict]:
 
     ranked = []
     for row in rows:
-        relation = _relation(row["predicate"], row["object1"], row["object2"])
+        relation = _relation(
+            row["predicate"],
+            row["object1"],
+            row["object2"],
+            (row["start1"], row["end1"]),
+            (row["start2"], row["end2"]),
+        )
         if relation is None:
             continue
         result = {
