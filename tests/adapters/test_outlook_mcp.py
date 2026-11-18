@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from patina.adapters._source_facts import get_fact
 from patina.adapters.outlook_mcp import (
     OutlookMcpAdapter,
     _calendar_event_from_raw,
@@ -15,8 +16,11 @@ from patina.adapters.outlook_mcp import (
     _unwrap_email_list,
     normalize_sender,
 )
+from patina.ingest import _events_to_chat_messages, ingest_live
+from patina.models import SourceFactState
 from patina.ports.calendar import CalendarPort
 from patina.ports.email import EmailPort
+from patina.store import connect, get_db_path
 
 
 def _make_bridge(responses: dict[str, str] | None = None):
@@ -1019,3 +1023,240 @@ class TestSenderNormalizationInEmail:
         email = _email_from_raw(raw)
         assert email.sender == "Martinez, Elena"
         assert email.sender_name == "Martinez, Elena"
+
+
+# Anonymized live-shape payload (#658): same field layout as the live item,
+# with ``sentDateTime`` and no ``toRecipients`` key at all.
+LIVE_SHAPE_MESSAGE = {
+    "id": "msg-0001",
+    "subject": "The quick brown fox — café meeting",
+    "from": {"name": "Jordan Example", "email": "jordan@example.invalid"},
+    "sentDateTime": "2026-11-14T09:30:00Z",
+}
+
+# A message whose only recipient field would be ``toRecipients``.
+TO_RECIPIENTS_MESSAGE = {
+    "id": "msg-0002",
+    "subject": "Jumps over the lazy dog",
+    "from": {"name": "Casey Sample", "email": "casey@example.invalid"},
+    "receivedDateTime": "2026-11-14T10:00:00Z",
+    "bodyPreview": "How vexingly quick daft zebras jump.",
+}
+
+_FROZEN_NOW = 1_800_000_000.0
+_EPOCH_STRINGS = ("1970-01-01", "1970-01-01T00:00:00Z")
+
+
+def _without(raw: dict, *keys: str) -> dict:
+    return {k: v for k, v in raw.items() if k not in keys}
+
+
+def _ingest_inbox(items: list[dict], home) -> tuple[dict, list]:
+    """Ingest ``items`` as an Outlook inbox page; return the result and stored rows."""
+    bridge = _make_bridge({"email_inbox": json.dumps(items)})
+    result = ingest_live(
+        port=OutlookMcpAdapter(bridge),
+        source="outlook_mcp_email",
+        home=home,
+        lookback_days=10000,
+    )
+    conn = connect(get_db_path(home))
+    rows = conn.execute("SELECT text, timestamp, metadata FROM observations").fetchall()
+    conn.close()
+    return result, rows
+
+
+class TestRecipientStates:
+    def test_empty_to_recipients(self):
+        email = _email_from_raw({**TO_RECIPIENTS_MESSAGE, "toRecipients": []})
+        fact = get_fact(email.source_facts, "to")
+        assert fact.state is SourceFactState.EMPTY
+        assert fact.value == []
+        assert "Recipients: none" in email.text
+        assert "Recipients: unknown" not in email.text
+
+    def test_absent_to_recipients(self):
+        email = _email_from_raw(TO_RECIPIENTS_MESSAGE)
+        assert get_fact(email.source_facts, "to") is None
+        assert get_fact(email.source_facts, "recipients") is None
+        assert "Recipients: unknown" in email.text
+        assert "Recipients: none" not in email.text
+
+    def test_null_to_recipients(self):
+        email = _email_from_raw({**TO_RECIPIENTS_MESSAGE, "toRecipients": None})
+        fact = get_fact(email.source_facts, "to")
+        assert fact.state is SourceFactState.UNAVAILABLE
+        assert fact.value is None
+        assert "to" not in email.source_facts
+        assert email.recipients == []
+        assert "Recipients: unknown" in email.text
+        assert "Recipients: none" not in email.text
+
+    def test_present_to_recipients_text_unchanged(self):
+        to = [{"name": "Owner, Jane", "email": "owner@example.invalid"}]
+        email = _email_from_raw({**TO_RECIPIENTS_MESSAGE, "toRecipients": to})
+        assert get_fact(email.source_facts, "to").state is SourceFactState.PRESENT
+        assert email.source_facts["to"] == to
+        assert email.text == (
+            "[Subject: Jumps over the lazy dog] [Participants: casey@example.invalid]\n"
+            "How vexingly quick daft zebras jump."
+        )
+
+    def test_live_recipients_field_states(self):
+        raw = {
+            "conversationId": "CONV-0003",
+            "topic": "The quick brown fox",
+            "senders": ["Example, Jordan"],
+            "lastDeliveryTime": "2026-11-14T09:30:00Z",
+            "preview": "Jumps over.",
+        }
+        empty = _email_from_raw({**raw, "recipients": []})
+        assert get_fact(empty.source_facts, "recipients").state is SourceFactState.EMPTY
+        assert "Recipients: none" in empty.text
+
+        null = _email_from_raw({**raw, "recipients": None})
+        assert get_fact(null.source_facts, "recipients").state is SourceFactState.UNAVAILABLE
+        assert "Recipients: unknown" in null.text
+
+        present = _email_from_raw({**raw, "recipients": ["Taylor, Morgan"]})
+        assert present.source_facts["recipients"] == ["Taylor, Morgan"]
+        assert "Recipients:" not in present.text
+
+    def test_cc_recipients_states(self):
+        empty = _email_from_raw({**TO_RECIPIENTS_MESSAGE, "ccRecipients": []})
+        assert get_fact(empty.source_facts, "cc").state is SourceFactState.EMPTY
+        null = _email_from_raw({**TO_RECIPIENTS_MESSAGE, "ccRecipients": None})
+        assert get_fact(null.source_facts, "cc").state is SourceFactState.UNAVAILABLE
+        assert get_fact(_email_from_raw(TO_RECIPIENTS_MESSAGE).source_facts, "cc") is None
+
+
+class TestLiveShapeMessage:
+    def test_adapter_stores_no_recipients_fact(self):
+        bridge = _make_bridge({"email_inbox": json.dumps([LIVE_SHAPE_MESSAGE])})
+        (email,) = OutlookMcpAdapter(bridge).list_inbox(since=0.0)
+        assert get_fact(email.source_facts, "to") is None
+        assert get_fact(email.source_facts, "recipients") is None
+        assert "_state" not in email.source_facts
+        assert email.source_facts["message_id"] == "msg-0001"
+        assert email.source_facts["sent_raw"] == "2026-11-14T09:30:00Z"
+        assert email.timestamp == datetime(2026, 11, 14, 9, 30, tzinfo=UTC).timestamp()
+        assert "Recipients: unknown" in email.text
+        assert "Recipients: none" not in email.text
+        assert email.subject == "The quick brown fox — café meeting"
+
+    def test_ingest_round_trip(self, tmp_path):
+        result, rows = _ingest_inbox([LIVE_SHAPE_MESSAGE], tmp_path / "patina_home")
+        assert result["messages_inserted"] == 1
+        (row,) = rows
+        source = json.loads(row["metadata"])["source"]
+        assert "to" not in source
+        assert "recipients" not in source
+        assert "_state" not in source
+        assert source["sent_raw"] == "2026-11-14T09:30:00Z"
+        assert row["timestamp"] == datetime(2026, 11, 14, 9, 30, tzinfo=UTC).timestamp()
+        assert row["text"].startswith(
+            "[Subject: The quick brown fox — café meeting]"
+            " [Participants: jordan@example.invalid] [Recipients: unknown]"
+        )
+        assert "Recipients: none" not in row["text"]
+
+    def test_empty_to_recipients_variant(self, tmp_path):
+        raw = {**LIVE_SHAPE_MESSAGE, "toRecipients": []}
+        _, (row,) = _ingest_inbox([raw], tmp_path / "patina_home")
+        fact = get_fact(json.loads(row["metadata"])["source"], "to")
+        assert fact.state is SourceFactState.EMPTY
+        assert fact.value == []
+        assert "Recipients: none" in row["text"]
+
+    def test_null_to_recipients_variant(self, tmp_path):
+        raw = {**LIVE_SHAPE_MESSAGE, "toRecipients": None}
+        _, (row,) = _ingest_inbox([raw], tmp_path / "patina_home")
+        source = json.loads(row["metadata"])["source"]
+        fact = get_fact(source, "to")
+        assert fact.state is SourceFactState.UNAVAILABLE
+        assert fact.value is None
+        assert "to" not in source
+        assert "Recipients: unknown" in row["text"]
+        assert "Recipients: none" not in row["text"]
+
+
+def _calendar_text(raw: dict) -> str:
+    (msg,) = _events_to_chat_messages([_calendar_event_from_raw(raw)])
+    return msg.text
+
+
+class TestCalendarAttendeeStates:
+    def test_empty_attendees(self):
+        raw = {**LIVE_CALENDAR_VIEW_ITEM, "attendees": []}
+        fact = get_fact(_calendar_event_from_raw(raw).source_facts, "attendees")
+        assert fact.state is SourceFactState.EMPTY
+        assert fact.value == []
+        assert _calendar_text(raw).endswith(", Attendees: none")
+
+    def test_absent_attendees(self):
+        event = _calendar_event_from_raw(LIVE_CALENDAR_VIEW_ITEM)
+        assert get_fact(event.source_facts, "attendees") is None
+        assert "Attendees" not in _calendar_text(LIVE_CALENDAR_VIEW_ITEM)
+
+    def test_null_attendees(self):
+        raw = {**LIVE_CALENDAR_VIEW_ITEM, "attendees": None}
+        event = _calendar_event_from_raw(raw)
+        fact = get_fact(event.source_facts, "attendees")
+        assert fact.state is SourceFactState.UNAVAILABLE
+        assert fact.value is None
+        assert "attendees" not in event.source_facts
+        text = _calendar_text(raw)
+        assert "Attendees: unknown" in text
+        assert "Attendees: none" not in text
+
+    def test_present_attendees_listed(self):
+        raw = {**LIVE_CALENDAR_VIEW_ITEM, "attendees": ["Example, Jordan"]}
+        fact = get_fact(_calendar_event_from_raw(raw).source_facts, "attendees")
+        assert fact.state is SourceFactState.PRESENT
+        assert _calendar_text(raw).endswith(", Attendees: Example, Jordan")
+
+
+class TestMissingTimestamps:
+    def test_message_without_sent_time(self, monkeypatch):
+        monkeypatch.setattr("time.time", lambda: _FROZEN_NOW)
+        email = _email_from_raw(_without(LIVE_SHAPE_MESSAGE, "sentDateTime"))
+        assert email.timestamp is None
+        assert get_fact(email.source_facts, "sent_raw") is None
+        assert get_fact(email.source_facts, "received_raw") is None
+        assert "[Sent: unknown]" in email.text
+        for value in email.source_facts.values():
+            assert value not in (_FROZEN_NOW, 0.0, *_EPOCH_STRINGS)
+        assert "1970" not in email.text
+
+    def test_message_without_sent_time_never_stored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("time.time", lambda: _FROZEN_NOW)
+        raw = _without(LIVE_SHAPE_MESSAGE, "sentDateTime")
+        result, rows = _ingest_inbox([raw], tmp_path / "patina_home")
+        assert result["messages_inserted"] == 0
+        assert result["skip_reasons"] == {"missing_timestamp": 1}
+        assert rows == []
+
+    def test_null_sent_time_is_unavailable(self):
+        email = _email_from_raw({**LIVE_SHAPE_MESSAGE, "sentDateTime": None})
+        assert email.timestamp is None
+        assert get_fact(email.source_facts, "sent_raw").state is SourceFactState.UNAVAILABLE
+        assert "sent_raw" not in email.source_facts
+        assert "[Sent: unknown]" in email.text
+
+    def test_sent_time_present_renders_no_unknown(self):
+        assert "Sent: unknown" not in _email_from_raw(LIVE_SHAPE_MESSAGE).text
+
+    def test_calendar_event_without_start(self, monkeypatch):
+        monkeypatch.setattr("time.time", lambda: _FROZEN_NOW)
+        event = _calendar_event_from_raw(_without(LIVE_CALENDAR_VIEW_ITEM, "start"))
+        assert event.start is None
+        for value in event.source_facts.values():
+            assert value not in (_FROZEN_NOW, 0.0, *_EPOCH_STRINGS)
+
+        skip_reasons: dict[str, int] = {}
+        assert _events_to_chat_messages([event], skip_reasons) == []
+        assert skip_reasons == {"missing_timestamp": 1}
+
+    def test_calendar_event_with_unparseable_start(self):
+        event = _calendar_event_from_raw({**LIVE_CALENDAR_VIEW_ITEM, "start": "not-a-date"})
+        assert event.start is None
