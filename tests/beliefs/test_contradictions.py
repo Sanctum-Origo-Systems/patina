@@ -86,7 +86,7 @@ def test_tier3_adds_explanation(db_conn):
     assert isinstance(results[0]["explanation"], str)
 
 
-def _claim(db_conn, cid, predicate, obj, subject="e1", confidence=0.5):
+def _claim(db_conn, cid, predicate, obj, subject="e1", confidence=0.5, period=("", "")):
     insert_claim(
         db_conn,
         Claim(
@@ -95,6 +95,8 @@ def _claim(db_conn, cid, predicate, obj, subject="e1", confidence=0.5):
             predicate=predicate,
             object=obj,
             confidence=confidence,
+            first_asserted=period[0],
+            last_confirmed=period[1],
         ),
     )
 
@@ -518,6 +520,111 @@ def test_count_by_predicate_is_uncapped(db_conn):
     all_results = find_all_contradictions(db_conn)
     assert len(find_contradictions_tier1(db_conn)) == 100
     assert len(all_results) == 107
+    totals = count_by_predicate(all_results)
+    assert totals == {"expertise": 1, "location": 105, "org": 1}
+    assert list(totals) == ["expertise", "location", "org"]
+
+
+_2023 = ("2023-01-15T09:00:00+00:00", "2023-11-30T17:00:00+00:00")
+_2025 = ("2025-02-03T09:00:00+00:00", "2025-10-20T17:00:00+00:00")
+_2026 = ("2026-01-12T09:00:00+00:00", "2026-09-01T17:00:00+00:00")
+
+
+def _relations(results):
+    return {frozenset((r["object_1"], r["object_2"])): r["relation"] for r in results}
+
+
+def test_title_change_across_years_not_conflict(db_conn):
+    _setup_entity(db_conn, "e1", "Dana Brook")
+    _claim(db_conn, "c1", "org", "Contoso Example", period=(_2025[0], _2026[1]))
+    _claim(db_conn, "c2", "title", "Analyst", period=_2025)
+    _claim(db_conn, "c3", "title", "Manager", period=_2026)
+
+    relations = _relations(find_all_contradictions(db_conn))
+    relation = relations[frozenset(("Analyst", "Manager"))]
+    assert relation in {"possible_promotion", "temporal_change"}
+    assert relation != "conflict"
+
+
+def test_employers_non_overlapping_dates_is_temporal_change(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Corp", period=_2025)
+    _claim(db_conn, "c2", "org", "Globex", period=_2023)
+
+    results = find_all_contradictions(db_conn)
+    assert _relations(results) == {frozenset(("Example Corp", "Globex")): "temporal_change"}
+
+
+def test_employers_overlapping_dates_is_conflict(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Corp", period=(_2023[0], _2025[1]))
+    _claim(db_conn, "c2", "org", "Globex", period=_2025)
+    _setup_entity(db_conn, "e2", "Riley")
+    # Ends the same day the other begins: still overlapping.
+    _claim(db_conn, "d1", "org", "Initech", subject="e2", period=(_2023[0], _2025[0]))
+    _claim(db_conn, "d2", "org", "Umbrella", subject="e2", period=_2025)
+
+    relations = _relations(find_all_contradictions(db_conn))
+    assert relations == {
+        frozenset(("Example Corp", "Globex")): "conflict",
+        frozenset(("Initech", "Umbrella")): "conflict",
+    }
+
+
+def test_missing_or_unparseable_dates_keep_existing_relation(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "c1", "org", "Example Corp", period=_2023)
+    _claim(db_conn, "c2", "org", "Globex", period=_2025)
+    _setup_entity(db_conn, "e2", "Riley")
+    _claim(db_conn, "d1", "title", "Cloud Architect", subject="e2", period=_2023)
+    _claim(db_conn, "d2", "title", "Cloud Architect Leader", subject="e2", period=_2025)
+    _claim(db_conn, "d3", "title", "Engineer", subject="e2", period=_2025)
+    db_conn.execute("UPDATE claims SET first_asserted = '' WHERE id = 'c2'")
+    db_conn.execute("UPDATE claims SET last_confirmed = 'sometime in 2023' WHERE id = 'd1'")
+
+    relations = _relations(find_all_contradictions(db_conn))
+    assert relations == {
+        frozenset(("Example Corp", "Globex")): "conflict",
+        frozenset(("Cloud Architect", "Cloud Architect Leader")): "possible_promotion",
+        frozenset(("Cloud Architect", "Engineer")): "conflict",
+        frozenset(("Cloud Architect Leader", "Engineer")): "conflict",
+    }
+
+
+def test_temporal_change_kept_and_ranked_after_conflicts(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    _claim(db_conn, "a1", "title", "Engineer", confidence=0.99, period=_2023)
+    _claim(db_conn, "a2", "title", "Engineering Manager", confidence=0.99, period=_2025)
+    _setup_entity(db_conn, "e2", "Riley")
+    _claim(db_conn, "b1", "title", "Cloud Architect", subject="e2", confidence=0.99)
+    _claim(db_conn, "b2", "title", "Cloud Architect Leader", subject="e2", confidence=0.99)
+    _setup_entity(db_conn, "e3", "Taylor")
+    _claim(db_conn, "d1", "location", "Springfield", subject="e3", confidence=0.1)
+    _claim(db_conn, "d2", "location", "Shelbyville", subject="e3", confidence=0.1)
+    _claim(db_conn, "f1", "org", "Example Corp", subject="e3", confidence=0.1)
+    _claim(db_conn, "f2", "org", "Globex", subject="e3", confidence=0.1)
+
+    results = find_all_contradictions(db_conn)
+    relations = [r["relation"] for r in results]
+    assert relations[:2] == ["conflict", "conflict"]
+    assert sorted(relations[2:]) == ["possible_promotion", "temporal_change"]
+    assert find_contradictions_tier1(db_conn) == results
+
+
+def test_count_by_predicate_unchanged_with_temporal_change(db_conn):
+    _setup_entity(db_conn, "e1", "Jordan")
+    # 15 distinct home locations -> 105 location pairs.
+    for i in range(15):
+        _claim(db_conn, f"a{i:02d}", "location", f"Town {i}")
+    _claim(db_conn, "b1", "org", "Example Corp", period=_2023)
+    _claim(db_conn, "b2", "org", "Sample Industries", period=_2025)
+    _claim(db_conn, "d1", "expertise", "Rust")
+    _claim(db_conn, "d2", "expertise", "Go")
+
+    all_results = find_all_contradictions(db_conn)
+    assert len(find_contradictions_tier1(db_conn)) == 100
+    assert len(all_results) == 107
+    assert all_results[-1]["relation"] == "temporal_change"
     totals = count_by_predicate(all_results)
     assert totals == {"expertise": 1, "location": 105, "org": 1}
     assert list(totals) == ["expertise", "location", "org"]
