@@ -1874,6 +1874,11 @@ def cleanup_meeting_obs_cmd(
     confirm: bool = typer.Option(
         False, "--confirm", help="Delete selected rows (read-only dry run without this flag)"
     ),
+    accept_unknown_provenance: bool = typer.Option(
+        False,
+        "--accept-unknown-provenance",
+        help="With --confirm, delete even though unknown-provenance claims exist",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print one machine-readable JSON object"),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
@@ -1883,6 +1888,7 @@ def cleanup_meeting_obs_cmd(
     from patina.cleanup_meeting_obs import (
         SOURCE,
         RemovalRefused,
+        UnknownProvenanceRefused,
         remove_meeting_observations,
         select_meeting_observations,
     )
@@ -1933,16 +1939,24 @@ def cleanup_meeting_obs_cmd(
         typer.echo("Unknown provenance (cite no existing observation):")
         typer.echo(f"  claims: {report['unknown_provenance_claims']}")
         typer.echo(f"  relationships: {report['unknown_provenance_relationships']}")
+        unknown = report["unknown_provenance"]
+        typer.echo(
+            f"selected {report['selected_count']}; {report['total_citations']} known citing;"
+            f" {unknown} unknown{', cannot rule out' if unknown else ''}"
+        )
 
     if not confirm:
         if as_json:
             typer.echo(json.dumps(report))
         elif report["selected_count"]:
-            typer.echo("Dry run — re-run with --confirm to delete the selected rows")
+            flag = " --accept-unknown-provenance" if report["unknown_provenance"] else ""
+            typer.echo(f"Dry run — re-run with --confirm{flag} to delete the selected rows")
         return
 
     try:
-        result = remove_meeting_observations(db_path, selection)
+        result = remove_meeting_observations(
+            db_path, selection, accept_unknown_provenance=accept_unknown_provenance
+        )
     except RemovalRefused as exc:
         if as_json:
             report["refused"] = [r.observation_id for r in exc.rows]
@@ -1953,6 +1967,19 @@ def cleanup_meeting_obs_cmd(
                 typer.echo(f"  {row.observation_id}  citing claims: {row.citing_claims}")
             typer.echo("No changes made.")
         raise typer.Exit(1) from None
+    except UnknownProvenanceRefused as exc:
+        if as_json:
+            report["refused"] = [r.observation_id for r in selection.selected]
+            report["refused_unknown_provenance"] = exc.unknown
+            typer.echo(json.dumps(report))
+        else:
+            typer.echo(
+                f"Refusing to delete: {exc.unknown} claim(s) and relationship(s) have unknown"
+                " provenance, so citing claims cannot be ruled out."
+            )
+            typer.echo("Re-run with --confirm --accept-unknown-provenance to delete anyway.")
+            typer.echo("No changes made.")
+        raise typer.Exit(1) from None
 
     backup = str(result.backup_path) if result.backup_path else None
     if as_json:
@@ -1961,11 +1988,17 @@ def cleanup_meeting_obs_cmd(
             "deleted": result.deleted,
             "before_count": result.before_count,
             "after_count": result.after_count,
+            "unknown_provenance_accepted": result.unknown_provenance,
         }
         typer.echo(json.dumps(report))
         return
     if backup:
         typer.echo(f"Backup: {backup}")
+    if result.unknown_provenance:
+        typer.echo(
+            f"Accepted unknown provenance: {result.unknown_provenance} claim(s) and"
+            " relationship(s) cannot be ruled out"
+        )
     typer.echo(f"Deleted {result.deleted} observation(s)")
     typer.echo(f"outlook_mcp_email observations: {result.before_count} -> {result.after_count}")
 
