@@ -277,6 +277,19 @@ def _emails_to_chat_messages(
     return results
 
 
+def _drop_undated(messages: list[ChatMessage], skip_reasons: dict[str, int]) -> list[ChatMessage]:
+    """Drop chat messages with no sent time (e.g. a Slack item with no ``ts``).
+
+    They are never stored at the epoch or the ingest time; each one is counted
+    under ``skip_reasons["missing_timestamp"]``, as for undated emails.
+    """
+    kept = [m for m in messages if m.timestamp is not None]
+    if len(kept) < len(messages):
+        dropped = len(messages) - len(kept)
+        skip_reasons[MISSING_TIMESTAMP] = skip_reasons.get(MISSING_TIMESTAMP, 0) + dropped
+    return kept
+
+
 RELEVANCE_DIRECT = "direct"
 RELEVANCE_ENGAGEMENT = "engagement"
 RELEVANCE_BOT_OR_LIST = "bot_or_list"
@@ -713,6 +726,7 @@ def ingest_live(
             events = port.list_events(start, now)
             messages.extend(_events_to_chat_messages(events))
 
+        messages = _drop_undated(messages, skip_reasons)
         messages.sort(key=lambda m: m.timestamp)
         inserted, skipped, non_person_skipped, entity_ids = _ingest_messages(
             conn, messages, source, home=home

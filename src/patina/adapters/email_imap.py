@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import email
 import imaplib
-import time
 from datetime import UTC, datetime
 from email.header import decode_header
 
@@ -11,9 +10,14 @@ from patina.models import EmailMessage
 
 
 def _raw_header(msg: email.message.Message, name: str) -> str | None:
-    """Return header ``name`` undecoded, as the source sent it, or None if absent."""
+    """Return header ``name`` undecoded, as the source sent it, or None if absent or null."""
     value = msg.get(name)
     return None if value is None else str(value)
+
+
+def _put_header(facts: dict, key: str, msg: email.message.Message, name: str) -> None:
+    """Record header ``name`` under ``key`` with its state: missing, null or ``""`` stay apart."""
+    put_fact(facts, key, _raw_header(msg, name), present=name in msg)
 
 
 class ImapEmailAdapter:
@@ -54,20 +58,23 @@ class ImapEmailAdapter:
         return " ".join(result)
 
     def _parse_message(self, raw_bytes: bytes) -> EmailMessage | None:
-        msg = email.message_from_bytes(raw_bytes)
+        return self._parse_email(email.message_from_bytes(raw_bytes))
 
+    def _parse_email(self, msg: email.message.Message) -> EmailMessage | None:
         sender = self._decode_header_value(msg.get("From", ""))
         subject = self._decode_header_value(msg.get("Subject", ""))
         msg_id = msg.get("Message-ID", "")
         in_reply_to = msg.get("In-Reply-To")
 
+        # No usable Date -> None, never the ingest time; ingest skips these
+        # under the ``missing_timestamp`` reason.
         date_str = msg.get("Date", "")
         try:
             ts = email.utils.parsedate_to_datetime(date_str).timestamp()
         except Exception:
-            ts = time.time()
+            ts = None
 
-        to_raw = msg.get("To", "")
+        to_raw = str(msg.get("To") or "")
         recipients = [r.strip() for r in to_raw.split(",") if r.strip()]
 
         body = ""
@@ -86,8 +93,8 @@ class ImapEmailAdapter:
         source_facts: dict = {}
         put_fact(source_facts, "message_id", _raw_header(msg, "Message-ID"))
         put_fact(source_facts, "sender_key", _raw_header(msg, "From"))
-        put_fact(source_facts, "to", _raw_header(msg, "To"))
-        put_fact(source_facts, "cc", _raw_header(msg, "Cc"))
+        _put_header(source_facts, "to", msg, "To")
+        _put_header(source_facts, "cc", msg, "Cc")
         put_fact(source_facts, "received_raw", _raw_header(msg, "Date"))
 
         return EmailMessage(
@@ -114,7 +121,7 @@ class ImapEmailAdapter:
                 _, msg_data = conn.fetch(mid, "(RFC822)")
                 if msg_data and msg_data[0] and isinstance(msg_data[0], tuple):
                     parsed = self._parse_message(msg_data[0][1])
-                    if parsed and parsed.timestamp >= since:
+                    if parsed and (parsed.timestamp is None or parsed.timestamp >= since):
                         results.append(parsed)
             return results
         finally:

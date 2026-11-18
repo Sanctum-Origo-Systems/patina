@@ -4,7 +4,14 @@ import json
 
 import pytest
 
-from patina.adapters._source_facts import STATE_KEY, get_fact, put_fact
+from patina.adapters._source_facts import (
+    PARTICIPANT_KEYS,
+    RECIPIENT_KEYS,
+    STATE_KEY,
+    get_fact,
+    put_fact,
+    render_facts,
+)
 from patina.graph import insert_observation
 from patina.models import Observation, SourceFact, SourceFactState
 from patina.store import connect
@@ -96,6 +103,36 @@ def test_legacy_call_still_omits_absent_values():
     for key, value in [("a", None), ("b", ""), ("c", []), ("d", "The quick brown fox")]:
         put_fact(facts, key, value)
     assert facts == {"d": "The quick brown fox"}
+
+
+@pytest.mark.parametrize(
+    ("sent", "rendered"),
+    [
+        ({}, "unknown"),  # nothing sent
+        ({"to": None}, "unknown"),
+        ({"cc": []}, "none"),  # empty Cc with To missing: an empty value was sent
+        ({"to": None, "cc": []}, "unknown"),  # an unavailable To outweighs an empty Cc
+        ({"to": [], "cc": ""}, "none"),
+        ({"to": ["jordan@example.invalid"], "cc": None}, "jordan@example.invalid"),
+    ],
+)
+def test_render_recipients_combines_states(sent, rendered):
+    facts: dict = {}
+    for key, value in sent.items():
+        put_fact(facts, key, value, present=True)
+    assert render_facts(facts, RECIPIENT_KEYS) == rendered
+
+
+def test_render_facts_without_facts_is_unknown():
+    assert render_facts(None, RECIPIENT_KEYS) == "unknown"
+    assert render_facts({}, PARTICIPANT_KEYS) == "unknown"
+
+
+def test_render_facts_shows_dict_entries_by_email_then_name():
+    facts: dict = {}
+    value = [{"email": "jordan@example.invalid", "name": "Jordan Example"}, {"name": "Café Team"}]
+    put_fact(facts, "to", value, present=True)
+    assert render_facts(facts, RECIPIENT_KEYS) == "jordan@example.invalid, Café Team"
 
 
 def test_state_enum_has_exactly_three_values():

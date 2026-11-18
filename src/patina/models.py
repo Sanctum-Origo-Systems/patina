@@ -118,7 +118,8 @@ class Observation:
 class ChatMessage:
     user_id: str
     text: str
-    timestamp: float
+    # None when the source sent no usable time; ingest skips these.
+    timestamp: float | None
     channel_id: str
     thread_id: str | None = None
     user_name: str | None = None
