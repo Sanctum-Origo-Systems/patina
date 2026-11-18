@@ -7,7 +7,8 @@
 - #684: Feat: Add labeled anonymized fixture, thresholds config and uncapp ($2.03)
 - #680: Feat: Outlook and calendar adapters emit states, with fixtures, in ($2.50)
 - #683: Feat: Slack and IMAP adapters emit states for recipient and partic ($3.37)
-Total: 8 PRs, $14.16
+- #682: Feat: Store-copy dry-run: downstream before/after in the same repo ($2.58)
+Total: 9 PRs, $16.74
 
 ## v0.39.0 (2026-11-11)
 - #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
