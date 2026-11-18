@@ -2,7 +2,9 @@
 - #676: Feat: [patina] cleanup-meeting-obs --confirm treats "no citing cla ($1.43)
 - #675: Feat: Add temporal_change relation tag to contradiction detection ($0.93)
 - #674: Feat: Source-fact state model in put_fact with presence-aware API ($0.80)
-Total: 3 PRs, $3.16
+- #673: Feat: Fixture-based relevance eval: recall, false-drops by reason, ($1.77)
+- #672: Feat: Add ingestion outcome column, drop-log table and idempotent ($1.33)
+Total: 5 PRs, $6.26
 
 ## v0.39.0 (2026-11-11)
 - #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
