@@ -138,6 +138,23 @@ def _sanitize_fts_query(query: str, join: str = "AND") -> str:
     return f" {join} ".join(safe_terms)
 
 
+def _source_fact_line(source: str, facts) -> str | None:
+    """``Participants:`` (Slack) or ``Recipients:`` (email) from ``metadata["source"]``.
+
+    Only empty facts show ``none``; missing or unavailable ones show ``unknown``.
+    Rows with no ``metadata["source"]`` (legacy) get no line.
+    """
+    from patina.adapters._source_facts import PARTICIPANT_KEYS, RECIPIENT_KEYS, render_facts
+
+    if not isinstance(facts, dict):
+        return None
+    if "slack" in source:
+        return f"Participants: {render_facts(facts, PARTICIPANT_KEYS)}"
+    if source == "imap" or source.endswith("_email"):
+        return f"Recipients: {render_facts(facts, RECIPIENT_KEYS)}"
+    return None
+
+
 def store_search(query: str, limit: int = 20) -> str:
     """Full-text search across all ingested messages (Slack, email, calendar)."""
     import json
@@ -205,8 +222,10 @@ def store_search(query: str, limit: int = 20) -> str:
             try:
                 meta = json.loads(row["metadata"] or "{}")
                 channel = meta.get("channel_name", "")
+                facts = meta.get("source")
             except Exception:
                 channel = ""
+                facts = None
 
             sender = row["sender_name"] or "unknown"
             source = row["source"] or ""
@@ -217,6 +236,9 @@ def store_search(query: str, limit: int = 20) -> str:
                 context_parts.append(f"in #{channel}")
 
             lines.append(" ".join(context_parts))
+            fact_line = _source_fact_line(source, facts)
+            if fact_line:
+                lines.append(fact_line)
             lines.append(f"> {text}")
             lines.append("")
 

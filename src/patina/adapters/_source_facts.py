@@ -62,3 +62,36 @@ def get_fact(facts: dict, key: str) -> SourceFact | None:
     if key in facts:
         return SourceFact(state=SourceFactState.PRESENT, value=facts[key])
     return None
+
+
+# Keys rendered together as one "Recipients" or "Participants" line.
+RECIPIENT_KEYS = ("to", "cc", "recipients")
+PARTICIPANT_KEYS = ("participants",)
+
+
+def _display(value) -> str:
+    if isinstance(value, dict):
+        return str(value.get("email") or value.get("name") or value)
+    return str(value)
+
+
+def render_facts(facts: dict | None, keys: tuple[str, ...]) -> str:
+    """Display text for the facts at ``keys`` taken together.
+
+    Present values are joined with ``", "``. With none present, any
+    ``unavailable`` key gives ``"unknown"``, else any ``empty`` key gives
+    ``"none"``. Missing keys (or no ``facts`` at all) give ``"unknown"``, so
+    ``"none"`` is shown only when the source sent an empty value.
+    """
+    found = [f for f in (get_fact(facts or {}, k) for k in keys) if f is not None]
+    values: list[str] = []
+    for fact in found:
+        if fact.state is SourceFactState.PRESENT:
+            items = fact.value if isinstance(fact.value, list) else [fact.value]
+            values.extend(_display(v) for v in items)
+    if values:
+        return ", ".join(values)
+    states = {f.state for f in found}
+    if SourceFactState.EMPTY in states and SourceFactState.UNAVAILABLE not in states:
+        return "none"
+    return "unknown"

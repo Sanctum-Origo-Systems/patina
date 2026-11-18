@@ -13,14 +13,28 @@ class SlackAPIError(Exception):
     pass
 
 
-def _source_facts(ts, channel_id: str | None, user_id: str | None) -> dict:
-    """Raw Slack facts for ``metadata["source"]``: ts, channel id and user id as sent."""
+def _source_facts(ts, channel_id: str | None, user_id: str | None, channel: dict | None) -> dict:
+    """Raw Slack facts for ``metadata["source"]``: ts, channel id and user id as sent.
+
+    ``channel`` is the channel object the message came with, if any; its
+    ``members`` become ``participants`` with their state (missing, null, ``[]``).
+    """
     facts: dict = {}
     put_fact(facts, "message_id", ts)
     put_fact(facts, "channel_id", channel_id)
     put_fact(facts, "sender_key", user_id)
     put_fact(facts, "received_raw", ts)
+    channel = channel if isinstance(channel, dict) else {}
+    put_fact(facts, "participants", channel.get("members"), present="members" in channel)
     return facts
+
+
+def _parse_ts(ts) -> float | None:
+    """Slack ``ts`` as epoch seconds; None (never 0.0) when missing or unparseable."""
+    try:
+        return float(ts) if ts else None
+    except (TypeError, ValueError):
+        return None
 
 
 class SlackLiveAdapter:
@@ -58,7 +72,11 @@ class SlackLiveAdapter:
         raise SlackAPIError("Max retries exceeded")
 
     def _parse_messages(
-        self, messages: list[dict], channel_id: str, channel_name: str = ""
+        self,
+        messages: list[dict],
+        channel_id: str,
+        channel_name: str = "",
+        channel: dict | None = None,
     ) -> list[ChatMessage]:
         result = []
         for msg in messages:
@@ -69,7 +87,7 @@ class SlackLiveAdapter:
             if not user_id or not text:
                 continue
 
-            ts_str = msg.get("ts", "0")
+            ts_str = msg.get("ts")
             thread_ts = msg.get("thread_ts")
             thread_id = thread_ts if thread_ts and thread_ts != ts_str else None
 
@@ -77,13 +95,13 @@ class SlackLiveAdapter:
                 ChatMessage(
                     user_id=user_id,
                     text=text,
-                    timestamp=float(ts_str),
+                    timestamp=_parse_ts(ts_str),
                     channel_id=channel_id,
                     thread_id=thread_id,
                     channel_name=channel_name,
                     reactions=msg.get("reactions", []),
                     sender_slack_id=user_id if user_id else None,
-                    source_facts=_source_facts(msg.get("ts"), channel_id, user_id),
+                    source_facts=_source_facts(msg.get("ts"), channel_id, user_id, channel),
                 )
             )
         return result
@@ -96,7 +114,7 @@ class SlackLiveAdapter:
                 "conversations.history",
                 {"channel": ch["id"], "oldest": str(since), "limit": "200"},
             )
-            all_msgs.extend(self._parse_messages(history.get("messages", []), ch["id"]))
+            all_msgs.extend(self._parse_messages(history.get("messages", []), ch["id"], channel=ch))
         return all_msgs
 
     def list_mentions(self, since: float) -> list[ChatMessage]:
@@ -107,8 +125,8 @@ class SlackLiveAdapter:
         messages = data.get("messages", {}).get("matches", [])
         result = []
         for msg in messages:
-            ts = float(msg.get("ts", "0"))
-            if ts < since:
+            ts = _parse_ts(msg.get("ts"))
+            if ts is not None and ts < since:
                 continue
             channel = msg.get("channel", {})
             sender_id = msg.get("user", msg.get("username", ""))
@@ -120,7 +138,9 @@ class SlackLiveAdapter:
                     channel_id=channel.get("id", ""),
                     channel_name=channel.get("name", ""),
                     sender_slack_id=sender_id if sender_id else None,
-                    source_facts=_source_facts(msg.get("ts"), channel.get("id"), sender_id),
+                    source_facts=_source_facts(
+                        msg.get("ts"), channel.get("id"), sender_id, channel
+                    ),
                 )
             )
         return result
