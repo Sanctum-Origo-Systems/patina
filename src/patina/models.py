@@ -2,10 +2,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+class SourceFactState(StrEnum):
+    """State of one key in a ``source_facts`` dict (see docs/app.md).
+
+    A key the source left out has no state: it is missing, with no entry.
+    """
+
+    PRESENT = "present"
+    UNAVAILABLE = "unavailable"
+    EMPTY = "empty"
+
+
+@dataclass
+class SourceFact:
+    """One source fact as read back from a ``source_facts`` dict."""
+
+    state: SourceFactState
+    value: Any = None
+
+    def __post_init__(self) -> None:
+        self.state = SourceFactState(self.state)
 
 
 @dataclass
