@@ -8,7 +8,8 @@
 - #680: Feat: Outlook and calendar adapters emit states, with fixtures, in ($2.50)
 - #683: Feat: Slack and IMAP adapters emit states for recipient and partic ($3.37)
 - #682: Feat: Store-copy dry-run: downstream before/after in the same repo ($2.58)
-Total: 9 PRs, $16.74
+- #681: Feat: Gate extraction on outcome and record policy drops without c ($3.50)
+Total: 10 PRs, $20.24
 
 ## v0.39.0 (2026-11-11)
 - #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
