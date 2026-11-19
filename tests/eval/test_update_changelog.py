@@ -17,6 +17,7 @@ from eval.cognitive.update_changelog import (
     has_open_changelog_pr,
     lookback_days,
     main,
+    set_readme_pin,
     top_block,
     trim_changelog,
 )
@@ -465,6 +466,7 @@ class TestUvLockSync:
             patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
             patch("eval.cognitive.update_changelog.ARCHIVE_PATH", archive),
             patch("eval.cognitive.update_changelog.PYPROJECT_PATH", pyproject),
+            patch("eval.cognitive.update_changelog.README_PATH", tmp_path / "README.md"),
             patch("eval.cognitive.update_changelog.subprocess.run", side_effect=track_subprocess),
         ):
             daily("owner/repo")
@@ -503,6 +505,7 @@ class TestUvLockSync:
             patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
             patch("eval.cognitive.update_changelog.ARCHIVE_PATH", archive),
             patch("eval.cognitive.update_changelog.PYPROJECT_PATH", pyproject),
+            patch("eval.cognitive.update_changelog.README_PATH", tmp_path / "README.md"),
             patch("eval.cognitive.update_changelog.subprocess.run", side_effect=track_subprocess),
         ):
             daily("owner/repo")
@@ -550,6 +553,86 @@ def _pyproject(version: str) -> str:
     return f'[project]\nname = "patina"\nversion = "{version}"\n'
 
 
+def _readme(version: str) -> str:
+    return (
+        "# Patina\n\n"
+        "## Quick Start\n\n"
+        "```bash\n"
+        '# Install (from GitHub; the "patina" package on PyPI is an unrelated project)\n'
+        f"uv tool install git+https://github.com/Example-Org/patina.git@v{version}\n"
+        "```\n\n"
+        "The quick brown fox — résumé v2 ships with “smart quotes”, see v1.2.3 notes.\n"
+        "git clone https://github.com/Example-Org/patina.git\n"
+    )
+
+
+README_NO_PIN = (
+    "# Patina\n\n"
+    "Install with `uv tool install git+https://github.com/Example-Org/patina.git`.\n"
+    "The quick brown fox — v2 notes, see v1.2.3.\n"
+)
+README_NO_INSTALL = "# Patina\n\nThe quick brown fox jumps over the lazy dog.\n"
+
+
+class TestSetReadmePin:
+    def test_rewrites_pin_to_new_version(self, tmp_path: Path) -> None:
+        readme = tmp_path / "README.md"
+        readme.write_text(_readme("0.39.0"))
+
+        assert set_readme_pin("0.40.0", readme_path=readme) is True
+        assert readme.read_text() == _readme("0.40.0")
+        assert "patina.git@v0.39.0" not in readme.read_text()
+
+    def test_readme_without_pin_unchanged(self, tmp_path: Path) -> None:
+        readme = tmp_path / "README.md"
+        readme.write_bytes(README_NO_PIN.encode())
+
+        assert set_readme_pin("0.40.0", readme_path=readme) is False
+        assert readme.read_bytes() == README_NO_PIN.encode()
+
+    def test_readme_without_install_line_unchanged(self, tmp_path: Path) -> None:
+        readme = tmp_path / "README.md"
+        readme.write_bytes(README_NO_INSTALL.encode())
+
+        assert set_readme_pin("0.40.0", readme_path=readme) is False
+        assert readme.read_bytes() == README_NO_INSTALL.encode()
+
+    def test_already_at_target_unchanged(self, tmp_path: Path) -> None:
+        readme = tmp_path / "README.md"
+        readme.write_text(_readme("0.40.0"))
+        mtime = readme.stat().st_mtime_ns
+
+        assert set_readme_pin("0.40.0", readme_path=readme) is False
+        assert readme.read_text() == _readme("0.40.0")
+        assert readme.stat().st_mtime_ns == mtime
+
+    def test_only_pin_substring_changes(self, tmp_path: Path) -> None:
+        readme = tmp_path / "README.md"
+        before = _readme("0.39.0")
+        readme.write_text(before)
+
+        set_readme_pin("0.40.0", readme_path=readme)
+
+        after = readme.read_text()
+        assert after == before.replace("patina.git@v0.39.0", "patina.git@v0.40.0")
+        assert "résumé v2 ships" in after
+        assert "see v1.2.3 notes" in after
+        assert "git clone https://github.com/Example-Org/patina.git\n" in after
+
+    def test_preserves_crlf_line_endings(self, tmp_path: Path) -> None:
+        readme = tmp_path / "README.md"
+        readme.write_bytes(_readme("0.39.0").replace("\n", "\r\n").encode())
+
+        assert set_readme_pin("0.40.0", readme_path=readme) is True
+        assert readme.read_bytes() == _readme("0.40.0").replace("\n", "\r\n").encode()
+
+    def test_missing_readme_returns_false(self, tmp_path: Path) -> None:
+        readme = tmp_path / "README.md"
+
+        assert set_readme_pin("0.40.0", readme_path=readme) is False
+        assert not readme.exists()
+
+
 def _merged(number: int, title: str, cost: float) -> dict:
     return {
         "number": number,
@@ -573,12 +656,14 @@ class TestDailyUpdatesOpenPr:
         main_version: str = "0.34.0",
         open_prs: list[dict] | None = None,
         fail_on: list[str] | None = None,
+        readme: str = README_NO_PIN,
     ) -> tuple[list[list[str]], Path, Path]:
         changelog = tmp_path / "CHANGELOG.md"
         archive = tmp_path / "changelog-archive.md"
         pyproject = tmp_path / "pyproject.toml"
         changelog.write_text(main_changelog)
         pyproject.write_text(_pyproject(main_version))
+        (tmp_path / "README.md").write_text(readme)
         if open_prs is None:
             open_prs = [{"number": 591, "headRefName": BRANCH}]
 
@@ -604,6 +689,7 @@ class TestDailyUpdatesOpenPr:
             patch("eval.cognitive.update_changelog.CHANGELOG_PATH", changelog),
             patch("eval.cognitive.update_changelog.ARCHIVE_PATH", archive),
             patch("eval.cognitive.update_changelog.PYPROJECT_PATH", pyproject),
+            patch("eval.cognitive.update_changelog.README_PATH", tmp_path / "README.md"),
             patch("eval.cognitive.update_changelog.subprocess.run", side_effect=fake_run),
         ):
             daily("owner/repo")
@@ -834,3 +920,142 @@ class TestDailyUpdatesOpenPr:
         assert not any(c[:2] == ["git", "fetch"] for c in calls)
         assert f"## v0.35.0 ({stamp})" in changelog.read_text()
         assert 'version = "0.35.0"' in pyproject.read_text()
+
+
+class TestReadmePinInDaily:
+    """The README install pin follows the version the changelog job sets."""
+
+    _run = TestDailyUpdatesOpenPr._run
+
+    PATCH_BLOCK = (
+        f"## v0.34.1 ({TODAY.isoformat()})\n"
+        "- #590: Docs: fix the quick brown fox example ($0.50)\n"
+        "Total: 1 PRs, $0.50\n"
+    )
+    MINOR_BLOCK = (
+        f"## v0.35.0 ({TODAY.isoformat()})\n"
+        "- #580: Feat: add sample gadget ($1.00)\n"
+        "Total: 1 PRs, $1.00\n"
+    )
+
+    def test_new_pr_rewrites_pin_and_stages_readme(self, tmp_path: Path) -> None:
+        merged = [_merged(592, "feat: add sample gadget", 1.00)]
+
+        calls, _, _ = self._run(
+            tmp_path,
+            branch_block="",
+            branch_version="0.34.0",
+            merged=merged,
+            open_prs=[],
+            readme=_readme("0.34.0"),
+        )
+
+        assert (tmp_path / "README.md").read_text() == _readme("0.35.0")
+        adds = [c for c in calls if c[:2] == ["git", "add"]]
+        assert ["git", "add", "pyproject.toml"] in adds
+        assert ["git", "add", "uv.lock"] in adds
+        assert ["git", "add", "README.md"] in adds
+        title = "chore: update changelog and version (v0.35.0)"
+        assert ["git", "commit", "-m", title] in calls
+        create = next(c for c in calls if c[:3] == ["gh", "pr", "create"])
+        assert create[create.index("--title") + 1] == title
+        assert create[create.index("--body") + 1] == (
+            f"Daily changelog update ({TODAY.isoformat()}). 1 PR(s) added."
+        )
+
+    def test_new_pr_without_pin_does_not_stage_readme(self, tmp_path: Path) -> None:
+        merged = [_merged(592, "feat: add sample gadget", 1.00)]
+
+        calls, _, _ = self._run(
+            tmp_path,
+            branch_block="",
+            branch_version="0.34.0",
+            merged=merged,
+            open_prs=[],
+            readme=README_NO_PIN,
+        )
+
+        assert (tmp_path / "README.md").read_bytes() == README_NO_PIN.encode()
+        assert ["git", "add", "pyproject.toml"] in calls
+        assert ["git", "add", "README.md"] not in calls
+        assert any(c[:2] == ["git", "commit"] for c in calls)
+
+    def test_new_pr_without_bump_leaves_pin(self, tmp_path: Path) -> None:
+        merged = [_merged(592, "perf: speed up the lazy dog", 0.10)]
+
+        calls, _, _ = self._run(
+            tmp_path,
+            branch_block="",
+            branch_version="0.34.0",
+            merged=merged,
+            open_prs=[],
+            readme=_readme("0.33.0"),
+        )
+
+        assert (tmp_path / "README.md").read_text() == _readme("0.33.0")
+        assert ["git", "add", "README.md"] not in calls
+
+    def test_open_pr_version_change_rewrites_pin(self, tmp_path: Path) -> None:
+        merged = [_merged(592, "feat: add sample gadget", 1.00)]
+
+        calls, _, _ = self._run(
+            tmp_path,
+            branch_block=self.PATCH_BLOCK,
+            branch_version="0.34.1",
+            merged=merged,
+            readme=_readme("0.34.1"),
+        )
+
+        assert (tmp_path / "README.md").read_text() == _readme("0.35.0")
+        assert ["git", "add", "pyproject.toml"] in calls
+        assert ["git", "add", "README.md"] in calls
+        assert ["git", "commit", "-m", "chore: add #592 to v0.35.0 changelog"] in calls
+
+    def test_open_pr_corrects_drifted_pin_without_version_change(self, tmp_path: Path) -> None:
+        merged = [_merged(581, "fix: lazy dog edge case", 0.20)]
+
+        calls, _, pyproject = self._run(
+            tmp_path,
+            branch_block=self.MINOR_BLOCK,
+            branch_version="0.35.0",
+            merged=merged,
+            readme=_readme("0.34.0"),
+        )
+
+        assert 'version = "0.35.0"' in pyproject.read_text()
+        assert ["git", "add", "pyproject.toml"] not in calls
+        assert ["uv", "lock"] not in calls
+        assert (tmp_path / "README.md").read_text() == _readme("0.35.0")
+        assert ["git", "add", "README.md"] in calls
+        assert ["git", "commit", "-m", "chore: add #581 to v0.35.0 changelog"] in calls
+
+    def test_open_pr_pin_already_current_not_staged(self, tmp_path: Path) -> None:
+        merged = [_merged(581, "fix: lazy dog edge case", 0.20)]
+
+        calls, _, _ = self._run(
+            tmp_path,
+            branch_block=self.MINOR_BLOCK,
+            branch_version="0.35.0",
+            merged=merged,
+            readme=_readme("0.35.0"),
+        )
+
+        assert (tmp_path / "README.md").read_text() == _readme("0.35.0")
+        assert ["git", "add", "README.md"] not in calls
+        assert ["git", "commit", "-m", "chore: add #581 to v0.35.0 changelog"] in calls
+
+    def test_open_pr_without_install_line_unchanged(self, tmp_path: Path) -> None:
+        merged = [_merged(592, "feat: add sample gadget", 1.00)]
+
+        calls, _, _ = self._run(
+            tmp_path,
+            branch_block=self.PATCH_BLOCK,
+            branch_version="0.34.1",
+            merged=merged,
+            readme=README_NO_INSTALL,
+        )
+
+        assert (tmp_path / "README.md").read_bytes() == README_NO_INSTALL.encode()
+        assert ["git", "add", "README.md"] not in calls
+        assert ["git", "add", "pyproject.toml"] in calls
+        assert ["git", "commit", "-m", "chore: add #592 to v0.35.0 changelog"] in calls
