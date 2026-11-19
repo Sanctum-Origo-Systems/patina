@@ -12,21 +12,35 @@ def _get_conn(home=None):
     return connect(db_path)
 
 
+def _render_value(value) -> str:
+    """Display text for a sender or provenance value.
+
+    Missing or ``None`` gives ``"unknown"``; only an explicitly empty value
+    (``""`` or ``[]``) gives ``"none"``.
+    """
+    if value is None:
+        return "unknown"
+    if value == "" or value == []:
+        return "none"
+    return str(value)
+
+
 def _format_item(item: dict) -> str:
     age_d = item["staleness_days"]
     age = f"{age_d * 24:.0f}h" if age_d < 1 else f"{age_d:.1f}d"
     text = item["text"][:80] if item["text"] else ""
-    source = item.get("source", "")
-    permalink = item.get("permalink", "")
+    permalink = item.get("permalink")
 
-    sender = item["sender_name"]
+    sender = _render_value(item.get("sender_name"))
     if permalink:
         sender = f"[{sender}]({permalink})"
 
-    parts = [f"- **{sender}**: {text} ({age} ago, {item['quadrant']})"]
-    if source and not permalink:
-        parts[0] += f" via {source.replace('_', ' ')}"
-    return parts[0]
+    line = f"- **{sender}**: {text} ({age} ago, {item['quadrant']})"
+    # The permalink is the provenance when there is one; otherwise the source
+    # is shown, as "unknown" when missing rather than left out.
+    if not permalink:
+        line += f" via {_render_value(item.get('source')).replace('_', ' ')}"
+    return line
 
 
 def catch_up(days: int = 3) -> str:
@@ -213,11 +227,15 @@ def store_search(query: str, limit: int = 20) -> str:
 
         lines = [f"**{len(all_rows)} results for '{query}':**\n"]
         for row in all_rows:
-            try:
-                dt = datetime.fromtimestamp(row["timestamp"], tz=UTC)
-                date_str = dt.strftime("%Y-%m-%d")
-            except Exception:
-                date_str = "unknown date"
+            # A missing timestamp (``None``, or the old ``0.0`` epoch default)
+            # is never shown as a date.
+            date_str = "unknown date"
+            if row["timestamp"]:
+                try:
+                    dt = datetime.fromtimestamp(row["timestamp"], tz=UTC)
+                    date_str = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
 
             try:
                 meta = json.loads(row["metadata"] or "{}")
@@ -226,12 +244,17 @@ def store_search(query: str, limit: int = 20) -> str:
             except Exception:
                 channel = ""
                 facts = None
+            # No ``metadata["source"]`` (legacy row) means the facts are
+            # unknown, not that the source sent none.
+            if not isinstance(facts, dict):
+                facts = {}
 
-            sender = row["sender_name"] or "unknown"
+            sender = _render_value(row["sender_name"])
             source = row["source"] or ""
             text = (row["text"] or "")[:200]
 
-            context_parts = [f"[{date_str}]", f"**{sender}**", f"via {source}"]
+            provenance = _render_value(row["source"])
+            context_parts = [f"[{date_str}]", f"**{sender}**", f"via {provenance}"]
             if channel:
                 context_parts.append(f"in #{channel}")
 

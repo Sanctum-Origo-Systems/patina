@@ -27,6 +27,7 @@ from patina.models import (
     EmailMessage,
     IngestionOutcome,
     Observation,
+    SourceFact,
     SourceFactState,
 )
 from patina.owner import (
@@ -348,10 +349,25 @@ def _identity_keys(value) -> set[str]:
     return keys
 
 
-def _as_list(value) -> list:
-    if isinstance(value, list):
-        return value
-    return [value] if value else []
+def _as_list(facts: dict, key: str) -> SourceFact | None:
+    """Read ``facts[key]`` with its state, the value as a list.
+
+    ``None`` when the source left the key out. A key sent ``null``
+    (``unavailable``) or ``[]``/``""`` (``empty``) keeps its state, with ``[]``
+    as the value, so missing, unavailable and empty stay apart. Rows stored
+    before states existed have no state and read as ``present``.
+    """
+    fact = get_fact(facts, key)
+    if fact is None:
+        return None
+    value = fact.value
+    if fact.state is not SourceFactState.PRESENT or value is None or value == "":
+        items = []
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = [value]
+    return SourceFact(state=fact.state, value=items)
 
 
 def _is_bot_or_list_sender(sender: str) -> bool:
@@ -378,7 +394,8 @@ def outlook_sender_address(source_facts: dict) -> str:
     sender_keys = _identity_keys(sender)
     if not sender_keys:
         return ""
-    for r in [*_as_list(source_facts.get("to")), *_as_list(source_facts.get("cc"))]:
+    to, cc = (_as_list(source_facts, key) for key in ("to", "cc"))
+    for r in [*(to.value if to else []), *(cc.value if cc else [])]:
         if not isinstance(r, dict):
             continue
         email = r.get("email")
@@ -436,9 +453,12 @@ def outlook_relevance(
         owner_identifiers = get_owner_identifiers(home)
     owner_keys = owner_match_keys(owner_identifiers)
 
-    to = _as_list(source_facts.get("to"))
-    cc = _as_list(source_facts.get("cc"))
-    recipients = _as_list(source_facts.get("recipients"))
+    # Missing, ``unavailable`` and ``empty`` recipient facts all name no one,
+    # so none of them can match the Owner or a participant.
+    to, cc, recipients = (
+        fact.value if fact else []
+        for fact in (_as_list(source_facts, key) for key in ("to", "cc", "recipients"))
+    )
     named = [
         r for r in [*to, *recipients] if not (isinstance(r, dict) and r.get("isDistributionList"))
     ]
