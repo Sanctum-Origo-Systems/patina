@@ -9,7 +9,10 @@
 - #683: Feat: Slack and IMAP adapters emit states for recipient and partic ($3.37)
 - #682: Feat: Store-copy dry-run: downstream before/after in the same repo ($2.58)
 - #681: Feat: Gate extraction on outcome and record policy drops without c ($3.50)
-Total: 10 PRs, $20.24
+- #690: Feat: Key-set extractor, recorded key-set files and live-shape dri ($1.33)
+- #687: Feat: Readers, renderers and MCP tools show unknown vs none distin ($2.62)
+- #686: Feat: Add promotion command (dry run by default, --confirm) and pe ($2.01)
+Total: 13 PRs, $26.20
 
 ## v0.39.0 (2026-11-11)
 - #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
@@ -44,10 +47,4 @@ Total: 2 PRs, $0.00
 - #629: Feat: Apply the filter at Outlook ingest, count drops by reason, a ($2.28)
 - #632: Docs: README tool count, owner.emails and Outlook relevance filter ($0.00)
 Total: 15 PRs, $21.23
-
-## v0.36.0 (2026-11-04)
-- #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
-- #595: Feat: [patina] test: identity gate CI pytest and release-rule docs ($2.45)
-- #593: Feat: [patina] feat: changelog job updates the open changelog PR i ($1.75)
-Total: 3 PRs, $6.88
 

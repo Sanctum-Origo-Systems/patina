@@ -365,3 +365,9 @@ Total: 2 PRs, $2.13
 - #516: Fix: DN sink keeps bare handle alias, so handle resolves as ambig ($0.88)
 Total: 12 PRs, $22.02
 
+## v0.36.0 (2026-11-04)
+- #594: Feat: [patina] feat: identity gate replay, invariant checks and re ($2.68)
+- #595: Feat: [patina] test: identity gate CI pytest and release-rule docs ($2.45)
+- #593: Feat: [patina] feat: changelog job updates the open changelog PR i ($1.75)
+Total: 3 PRs, $6.88
+
