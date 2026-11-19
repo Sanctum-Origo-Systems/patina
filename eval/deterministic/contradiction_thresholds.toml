@@ -1,0 +1,9 @@
+# Pass/fail gates for eval/deterministic/contradiction_eval.py on
+# contradiction_fixture.json. Edit these to move a gate; no test code changes.
+
+# Labeled contradictions among pairs tagged "conflict".
+min_precision = 0.5
+# Labeled contradictions tagged "conflict".
+min_recall = 1.0
+# Labeled contradictions among the top k ranked pairs, k = labeled contradictions.
+min_precision_at_k = 0.6

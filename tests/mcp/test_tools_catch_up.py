@@ -3,7 +3,13 @@ from __future__ import annotations
 import time
 
 from patina.graph import insert_observation
-from patina.mcp.tools_catch_up import _sanitize_fts_query, catch_up, dismiss, store_search
+from patina.mcp.tools_catch_up import (
+    _format_item,
+    _sanitize_fts_query,
+    catch_up,
+    dismiss,
+    store_search,
+)
 from patina.models import Observation
 from patina.store import init_db
 
@@ -26,6 +32,45 @@ def test_catch_up_returns_formatted(db_path, db_conn, tmp_path):
     result = catch_up(days=3)
     assert isinstance(result, str)
     assert "Needs Action" in result or "New" in result or "Waiting" in result
+
+
+def _item(**overrides) -> dict:
+    item = {
+        "staleness_days": 0.5,
+        "text": "The quick brown fox — café update",
+        "quadrant": "Q1",
+        "sender_name": "Jordan Example",
+        "source": "outlook_mcp_email",
+        "permalink": "",
+    }
+    item.update(overrides)
+    return item
+
+
+def test_format_item_missing_sender_is_unknown():
+    """#666: a missing or ``None`` sender shows 'unknown'; only ``""`` shows 'none'."""
+    assert "**unknown**" in _format_item(_item(sender_name=None))
+    assert "**unknown**" in _format_item(_without_key(_item(), "sender_name"))
+    assert "**none**" in _format_item(_item(sender_name=""))
+    assert "**Jordan Example**" in _format_item(_item())
+
+
+def test_format_item_missing_source_is_unknown_not_omitted():
+    """#666: no permalink and no source -> 'via unknown', never left out."""
+    assert _format_item(_item()).endswith(" via outlook mcp email")
+    assert _format_item(_item(source=None)).endswith(" via unknown")
+    assert _format_item(_without_key(_item(), "source")).endswith(" via unknown")
+    assert _format_item(_item(source="")).endswith(" via none")
+
+
+def test_format_item_permalink_is_the_provenance():
+    line = _format_item(_item(source=None, permalink="https://example.com/p/1"))
+    assert "[Jordan Example](https://example.com/p/1)" in line
+    assert " via " not in line
+
+
+def _without_key(item: dict, key: str) -> dict:
+    return {k: v for k, v in item.items() if k != key}
 
 
 def test_dismiss_records_decision(db_path, db_conn, tmp_path):

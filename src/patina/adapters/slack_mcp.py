@@ -72,7 +72,9 @@ class SlackMcpAdapter:
                 if isinstance(val, list):
                     messages_raw.extend(val)
         msgs = [_msg_from_raw(m) for m in messages_raw if isinstance(m, dict)]
-        return self._resolve_message_names([m for m in msgs if m.timestamp >= since and _is_dm(m)])
+        return self._resolve_message_names(
+            [m for m in msgs if (m.timestamp is None or m.timestamp >= since) and _is_dm(m)]
+        )
 
     def list_mentions(self, since: float) -> list[ChatMessage]:
         since_dt = datetime.fromtimestamp(since, tz=UTC)
@@ -148,7 +150,9 @@ class SlackMcpAdapter:
 
             all_messages.extend(page_msgs)
 
-            if page_msgs and all(m.timestamp < since for m in page_msgs):
+            if page_msgs and all(
+                m.timestamp is not None and m.timestamp < since for m in page_msgs
+            ):
                 break
 
             if not isinstance(raw, dict) or not raw.get("hasMore"):
@@ -222,12 +226,22 @@ def _parse_activity_ts(value) -> float:
     return 0.0
 
 
+def _parse_ts(ts: str) -> float | None:
+    """Slack ``ts`` as epoch seconds; None (never 0.0) when missing or unparseable."""
+    try:
+        return float(ts) if ts else None
+    except ValueError:
+        return None
+
+
 def _is_dm(msg: ChatMessage) -> bool:
     return msg.channel_id.startswith("D") or getattr(msg, "_is_dm", False)
 
 
 def _msg_from_raw(raw: dict) -> ChatMessage:
     channel_raw = raw.get("channel", "")
+    # Channel fields (``members`` here) sit on the channel dict, or flat on the item.
+    channel_src = channel_raw if isinstance(channel_raw, dict) else raw
     if isinstance(channel_raw, dict):
         channel_id = channel_raw.get("id", "")
         channel_name = channel_raw.get("name", channel_id)
@@ -259,7 +273,7 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
         if isinstance(up, dict):
             user_name = up.get("real_name") or up.get("display_name") or up.get("name")
 
-    ts = str(raw.get("ts", ""))
+    ts = str(raw.get("ts") or "")
     text = raw.get("text", "")
     if not ts and "<slack-user-content" in text:
         ts_match = re.search(r'ts="([^"]+)"', text)
@@ -279,11 +293,17 @@ def _msg_from_raw(raw: dict) -> ChatMessage:
     put_fact(source_facts, "channel_id", channel_id)
     put_fact(source_facts, "sender_key", user_id)
     put_fact(source_facts, "received_raw", ts)
+    put_fact(
+        source_facts,
+        "participants",
+        channel_src.get("members"),
+        present="members" in channel_src,
+    )
 
     msg = ChatMessage(
         user_id=user_id,
         text=text,
-        timestamp=float(ts) if ts else 0.0,
+        timestamp=_parse_ts(ts),
         channel_id=channel_id,
         thread_id=thread_id,
         channel_name=channel_name,

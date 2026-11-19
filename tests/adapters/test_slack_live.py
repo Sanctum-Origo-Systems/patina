@@ -3,8 +3,15 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from patina.adapters._source_facts import PARTICIPANT_KEYS, STATE_KEY, get_fact, render_facts
 from patina.adapters.slack_live import SlackAPIError, SlackLiveAdapter
+from patina.ingest import ingest_live
+from patina.mcp.tools_catch_up import store_search
+from patina.models import SourceFact, SourceFactState
 from patina.ports.chat import ChatPort
+from patina.store import connect, get_db_path
 
 
 def test_satisfies_chat_port():
@@ -48,6 +55,110 @@ def test_parse_messages_source_facts():
         "sender_key": "U0EXAMPLE09",
         "received_raw": "1700000500.000100",
     }
+
+
+# Anonymized live shape: a DM history message with non-ASCII text (em dash,
+# accented letter); ``members`` comes on the channel object it was listed with.
+LIVE_SHAPE_MESSAGE = {
+    "user": "U0EXAMPLE65",
+    "text": "The quick brown fox — café meeting",
+    "ts": "1781900000.665001",
+}
+
+_PARTICIPANT_CASES = [
+    pytest.param({}, None, "unknown", id="missing"),
+    pytest.param({"members": None}, SourceFactState.UNAVAILABLE, "unknown", id="unavailable"),
+    pytest.param({"members": []}, SourceFactState.EMPTY, "none", id="empty-list"),
+    pytest.param({"members": ""}, SourceFactState.EMPTY, "none", id="empty-string"),
+]
+
+
+def _port(channel: dict, messages: list[dict], mentions: list[dict] | None = None):
+    """Real adapter whose ``_api`` lists ``channel`` as the one DM, holding ``messages``."""
+    adapter = SlackLiveAdapter("xoxb-example")
+
+    def api(method: str, params: dict | None = None) -> dict:
+        if method == "conversations.list":
+            return {"ok": True, "channels": [channel]}
+        if method == "conversations.history" and params["channel"] == channel["id"]:
+            return {"ok": True, "messages": messages}
+        if method == "search.messages":
+            return {"ok": True, "messages": {"matches": mentions or []}}
+        return {"ok": True, "messages": []}
+
+    adapter._api = api  # type: ignore[method-assign]
+    return adapter
+
+
+@pytest.mark.parametrize(("channel", "state", "rendered"), _PARTICIPANT_CASES)
+def test_parse_messages_participant_state(channel, state, rendered):
+    adapter = SlackLiveAdapter("xoxb-test")
+    ch = {"id": "D0EXAMPLE65", **channel}
+    (msg,) = adapter._parse_messages([LIVE_SHAPE_MESSAGE], "D0EXAMPLE65", channel=ch)
+    facts = msg.source_facts
+    fact = get_fact(facts, "participants")
+    if state is None:
+        assert fact is None
+        assert "participants" not in facts.get(STATE_KEY, {})
+    else:
+        assert fact.state is state
+    if state is SourceFactState.UNAVAILABLE:
+        assert "participants" not in facts
+    if state is SourceFactState.EMPTY:
+        assert facts["participants"] == channel["members"]
+    assert render_facts(facts, PARTICIPANT_KEYS) == rendered
+
+
+@pytest.mark.parametrize(("channel", "state", "rendered"), _PARTICIPANT_CASES)
+def test_list_mentions_participant_state(channel, state, rendered):
+    mention = {**LIVE_SHAPE_MESSAGE, "channel": {"id": "C0EXAMPLE65", "name": "fox", **channel}}
+    (msg,) = _port({"id": "D0EXAMPLE65"}, [], [mention]).list_mentions(0.0)
+    fact = get_fact(msg.source_facts, "participants")
+    assert (fact.state if fact else None) == state
+    assert render_facts(msg.source_facts, PARTICIPANT_KEYS) == rendered
+
+
+def test_present_members_kept_as_given():
+    members = ["U0EXAMPLE65", "U0EXAMPLE66"]
+    adapter = SlackLiveAdapter("xoxb-test")
+    ch = {"id": "D0EXAMPLE65", "members": members}
+    (msg,) = adapter._parse_messages([LIVE_SHAPE_MESSAGE], "D0EXAMPLE65", channel=ch)
+    assert get_fact(msg.source_facts, "participants") == SourceFact(
+        SourceFactState.PRESENT, members
+    )
+
+
+@pytest.mark.parametrize(("channel", "state", "rendered"), _PARTICIPANT_CASES)
+def test_store_search_shows_participant_state(tmp_path, channel, state, rendered):
+    port = _port({"id": "D0EXAMPLE65", **channel}, [LIVE_SHAPE_MESSAGE])
+    ingest_live(port=port, source="slack_live", home=tmp_path, lookback_days=100000)
+
+    conn = connect(get_db_path(tmp_path))
+    (row,) = conn.execute("SELECT metadata FROM observations").fetchall()
+    conn.close()
+    fact = get_fact(json.loads(row["metadata"])["source"], "participants")
+    assert (fact.state if fact else None) == state
+
+    out = store_search("quick brown fox")
+    assert f"Participants: {rendered}" in out
+    if rendered == "unknown":
+        assert "Participants: none" not in out
+
+
+def test_missing_ts_is_neither_ingest_time_nor_epoch(tmp_path):
+    message = {k: v for k, v in LIVE_SHAPE_MESSAGE.items() if k != "ts"}
+    adapter = SlackLiveAdapter("xoxb-test")
+    (msg,) = adapter._parse_messages([message], "D0EXAMPLE65")
+
+    assert get_fact(msg.source_facts, "received_raw") is None
+    assert render_facts(msg.source_facts, ("received_raw",)) == "unknown"
+    # Was float("0") (the epoch); must not become the ingest time either.
+    assert msg.timestamp is None
+
+    port = _port({"id": "D0EXAMPLE65"}, [message])
+    result = ingest_live(port=port, source="slack_live", home=tmp_path, lookback_days=100000)
+    assert result["messages_inserted"] == 0
+    assert result["skip_reasons"] == {"missing_timestamp": 1}
 
 
 def test_parse_messages_sender_slack_id_guard_consistency():

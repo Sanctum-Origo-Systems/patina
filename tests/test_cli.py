@@ -15,7 +15,7 @@ import patina.cleanup_meeting_obs as cleanup_meeting_obs
 from patina.adapters.outlook_mcp import _email_from_raw
 from patina.cli import _bootstrap_home, app
 from patina.graph import insert_claim, insert_observation, upsert_entity
-from patina.models import Claim, Entity, Observation
+from patina.models import Claim, Entity, IngestionOutcome, Observation
 from patina.store import connect, get_db_path, init_db, run_pending_migrations
 
 runner = CliRunner()
@@ -1685,3 +1685,223 @@ def test_contradictions_prints_uncapped_totals_before_capped_listing(tmp_path):
     lines = result.output.splitlines()
     assert lines[0] == "Uncapped totals: location=105, org=1, title=1"
     assert lines[1] == "Found 100 contradiction(s):"
+
+
+# ── patina ingest promote / doctor outcome counts (#671) ──
+
+_SYNC_SUBJECT = "Accepted: Weekly sync with Dana Brook"
+
+
+def _promote_home(tmp_path):
+    """A store with a RETAIN_ONLY calendar row (empty body) beside chat rows."""
+    db_path = get_db_path(tmp_path)
+    init_db(db_path)
+    conn = connect(db_path)
+    rows = [
+        (
+            "obs-sync",
+            "outlook_mcp_calendar",
+            "calendar:AAMkSYNC1",
+            f"[Meeting: {_SYNC_SUBJECT}] Organizer: Dana Brook",
+            {"subject": _SYNC_SUBJECT, "body": ""},
+            "RETAIN_ONLY",
+        ),
+        (
+            "obs-chat-ro",
+            "slack_live",
+            "D0EX02",
+            "Jordan Example: très bien",
+            {},
+            "RETAIN_ONLY",
+        ),
+        ("obs-chat", "slack_live", "D0EX01", "The quick brown fox", {}, "RETAIN_AND_EXTRACT"),
+    ]
+    for i, (oid, source, channel, text, metadata, outcome) in enumerate(rows):
+        insert_observation(
+            conn,
+            Observation(
+                id=oid,
+                source=source,
+                channel_id=channel,
+                thread_id=None,
+                timestamp=1781600000.0 + i,
+                sender_entity_id=None,
+                text=text,
+                metadata=metadata,
+                outcome=IngestionOutcome(outcome),
+            ),
+        )
+    conn.close()
+    return db_path
+
+
+def _row_outcomes(db_path):
+    conn = connect(db_path)
+    try:
+        return dict(conn.execute("SELECT id, outcome FROM observations").fetchall())
+    finally:
+        conn.close()
+
+
+def test_ingest_promote_dry_run_lists_row_and_changes_nothing(tmp_path):
+    db_path = _promote_home(tmp_path)
+    before = _sqlite_dump(db_path)
+
+    result = runner.invoke(app, ["ingest", "promote", "--id", "obs-sync", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Dry run: 1 RETAIN_ONLY row(s) would be promoted." in result.output
+    assert "  obs-sync  outlook_mcp_calendar" in result.output
+    assert _row_outcomes(db_path)["obs-sync"] == "RETAIN_ONLY"
+    assert _sqlite_dump(db_path) == before
+
+
+def test_ingest_promote_confirm_sets_retain_and_extract(tmp_path):
+    db_path = _promote_home(tmp_path)
+
+    result = runner.invoke(
+        app, ["ingest", "promote", "--id", "obs-sync", "--confirm", "--home", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Promoted 1 row(s) to RETAIN_AND_EXTRACT." in result.output
+    assert _row_outcomes(db_path) == {
+        "obs-sync": "RETAIN_AND_EXTRACT",
+        "obs-chat-ro": "RETAIN_ONLY",
+        "obs-chat": "RETAIN_AND_EXTRACT",
+    }
+
+    again = runner.invoke(
+        app, ["ingest", "promote", "--id", "obs-sync", "--confirm", "--home", str(tmp_path)]
+    )
+    assert again.exit_code == 0, again.output
+    assert "Promoted 0 row(s) to RETAIN_AND_EXTRACT." in again.output
+    assert "Skipped obs-sync: already RETAIN_AND_EXTRACT" in again.output
+
+
+def test_ingest_promote_missing_id_reports_not_found(tmp_path):
+    db_path = _promote_home(tmp_path)
+    before = _row_outcomes(db_path)
+
+    result = runner.invoke(
+        app, ["ingest", "promote", "--id", "no-such-row", "--confirm", "--home", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Not found: no-such-row" in result.output
+    assert _row_outcomes(db_path) == before
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["--confirm"],
+        ["--id", "obs-sync", "--filter", "adapter=slack_live", "--confirm"],
+        ["--filter", "channel=D0EX02", "--confirm"],
+    ],
+)
+def test_ingest_promote_usage_error_changes_nothing(tmp_path, args):
+    db_path = _promote_home(tmp_path)
+    before = _row_outcomes(db_path)
+
+    result = runner.invoke(app, ["ingest", "promote", *args, "--home", str(tmp_path)])
+
+    assert result.exit_code == 2, result.output
+    assert _row_outcomes(db_path) == before
+
+
+def test_ingest_promote_filter_by_adapter(tmp_path):
+    db_path = _promote_home(tmp_path)
+    args = ["ingest", "promote", "--filter", "adapter=slack_live", "--home", str(tmp_path)]
+
+    dry = runner.invoke(app, args)
+
+    assert dry.exit_code == 0, dry.output
+    listed = [line.split()[0] for line in dry.output.splitlines() if line.startswith("  ")]
+    assert listed == ["obs-chat-ro"]
+    assert "Skipped 1 matching row(s) not RETAIN_ONLY." in dry.output
+    assert _row_outcomes(db_path)["obs-chat-ro"] == "RETAIN_ONLY"
+
+    result = runner.invoke(app, [*args, "--confirm"])
+
+    assert result.exit_code == 0, result.output
+    assert "Promoted 1 row(s) to RETAIN_AND_EXTRACT." in result.output
+    assert _row_outcomes(db_path) == {
+        "obs-sync": "RETAIN_ONLY",
+        "obs-chat-ro": "RETAIN_AND_EXTRACT",
+        "obs-chat": "RETAIN_AND_EXTRACT",
+    }
+
+
+def test_promoted_row_is_extracted_with_its_observation_id(tmp_path):
+    from unittest.mock import patch
+
+    from patina.beliefs.extractor import extract_beliefs
+
+    db_path = _promote_home(tmp_path)
+    conn = connect(db_path)
+    conn.execute("UPDATE observations SET processed = 1 WHERE id != 'obs-sync'")
+    conn.commit()
+    conn.close()
+    response = json.dumps(
+        {
+            "entities": [{"name": "Dana Brook", "aliases": [], "type": "person"}],
+            "claims": [
+                {
+                    "subject": "Dana Brook",
+                    "predicate": "role",
+                    "object": "sync organizer",
+                    "confidence": 0.9,
+                }
+            ],
+            "relationships": [],
+            "behavioral": [],
+        }
+    )
+
+    def _extract():
+        with (
+            patch("patina.beliefs.extractor._call_claude", return_value=response) as stub,
+            patch("patina.beliefs.extractor.time.sleep"),
+        ):
+            extract_beliefs(home=tmp_path, batch_size=5)
+        return stub
+
+    _extract().assert_not_called()  # RETAIN_ONLY: extraction skips the row
+
+    result = runner.invoke(
+        app, ["ingest", "promote", "--id", "obs-sync", "--confirm", "--home", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+
+    stub = _extract()
+
+    assert stub.call_count == 1
+    assert _SYNC_SUBJECT in stub.call_args.args[0]
+    conn = connect(db_path)
+    try:
+        claims = conn.execute("SELECT predicate, source_ids FROM claims").fetchall()
+    finally:
+        conn.close()
+    assert [c["predicate"] for c in claims] == ["role"]
+    assert json.loads(claims[0]["source_ids"]) == ["obs-sync"]
+
+
+def test_doctor_prints_outcome_counts(tmp_path):
+    from patina.store import record_drop
+
+    db_path = _promote_home(tmp_path)
+    conn = connect(db_path)
+    record_drop(conn, source="outlook_mcp", adapter="outlook", reason_code="not_direct")
+    conn.close()
+
+    result = runner.invoke(app, ["doctor", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        "Ingestion outcomes: RETAIN_AND_EXTRACT=1, RETAIN_ONLY=2, DROP=1",
+        "  outlook: RETAIN_AND_EXTRACT=0, RETAIN_ONLY=0, DROP=1",
+        "  outlook_mcp_calendar: RETAIN_AND_EXTRACT=0, RETAIN_ONLY=1, DROP=0",
+        "  slack_live: RETAIN_AND_EXTRACT=1, RETAIN_ONLY=1, DROP=0",
+    ]

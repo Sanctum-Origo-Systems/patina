@@ -8,6 +8,7 @@ from patina.conversations import (
     get_recent_observations,
     resolve_channel_id,
 )
+from patina.mcp.tools_catch_up import _render_value
 from patina.store import connect, get_db_path, init_db
 
 
@@ -30,7 +31,9 @@ def recent_messages(channel: str, limit: int = 5) -> str:
             return f"No recent messages on channel '{channel}'."
         lines = []
         for msg in messages:
-            lines.append(f"- [{msg['sender']}]: {msg['text']}")
+            sender = _render_value(msg.get("sender"))
+            source = _render_value(msg.get("source"))
+            lines.append(f"- [{sender}] via {source}: {msg['text']}")
         return "\n".join(lines)
     finally:
         conn.close()
