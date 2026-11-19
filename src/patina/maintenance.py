@@ -21,8 +21,13 @@ from patina.graph import (
 )
 from patina.graph import _name_type_rank as _graph_name_type_rank
 from patina.graph import normalize_name as _graph_normalize
+from patina.models import IngestionOutcome
 from patina.owner import normalize_alias
-from patina.store import ensure_entity_alias_provenance_table, record_alias_provenance
+from patina.store import (
+    ensure_entity_alias_provenance_table,
+    promote_retain_only,
+    record_alias_provenance,
+)
 
 _PROVENANCE_ADAPTER = "maintenance"
 
@@ -2182,6 +2187,100 @@ def reprocess_observations(
     )
     conn.commit()
     return result
+
+
+# Keys a promote --filter expression may use, and the observation column each matches.
+PROMOTE_FILTER_KEYS = {"adapter": "source"}
+
+
+def _parse_promote_filter(expr: str) -> tuple[str, list[str]]:
+    """Parse ``key=value[,key=value...]`` into an AND-ed WHERE clause and its params."""
+    conditions: list[str] = []
+    params: list[str] = []
+    for part in expr.split(","):
+        key, sep, value = part.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not value or key not in PROMOTE_FILTER_KEYS:
+            keys = ", ".join(sorted(PROMOTE_FILTER_KEYS))
+            raise ValueError(
+                f"Invalid filter {part.strip()!r}: expected key=value with key in {keys}"
+            )
+        conditions.append(f"{PROMOTE_FILTER_KEYS[key]} = ?")
+        params.append(value)
+    return " AND ".join(conditions), params
+
+
+def promote_observations(
+    conn: sqlite3.Connection,
+    *,
+    obs_id: str | None = None,
+    filter_expr: str | None = None,
+    confirm: bool = False,
+) -> dict:
+    """Select RETAIN_ONLY observations by id or filter and, with ``confirm``, promote them.
+
+    Promoted rows become RETAIN_AND_EXTRACT, so the next extraction run reads them (#671).
+    Without ``confirm`` nothing is written. Selected rows with any other outcome are
+    reported in ``skipped``; an ``obs_id`` with no row is reported in ``not_found``.
+    Exactly one of ``obs_id`` and ``filter_expr`` must be given.
+    """
+    if (obs_id is None) == (filter_expr is None):
+        raise ValueError("Give exactly one of an observation id or a filter.")
+
+    if obs_id is not None:
+        where, params = "id = ?", [obs_id]
+    else:
+        where, params = _parse_promote_filter(filter_expr)
+
+    rows = conn.execute(
+        f"SELECT id, source, outcome FROM observations WHERE {where} ORDER BY timestamp, id",
+        params,
+    ).fetchall()
+
+    by_outcome: dict[str, list[dict]] = {}
+    for row in rows:
+        by_outcome.setdefault(row["outcome"], []).append(
+            {"id": row["id"], "adapter": row["source"], "outcome": row["outcome"]}
+        )
+    candidates = by_outcome.pop(IngestionOutcome.RETAIN_ONLY, [])
+    skipped = [r for group in by_outcome.values() for r in group]
+
+    promoted = promote_retain_only(conn, [r["id"] for r in candidates]) if confirm else 0
+    return {
+        "candidates": candidates,
+        "promoted": promoted,
+        "skipped": skipped,
+        "not_found": [obs_id] if obs_id is not None and not rows else [],
+    }
+
+
+def ingestion_outcome_counts(conn: sqlite3.Connection) -> dict:
+    """Observation rows per ingestion outcome, plus ``drop_log`` entries as DROP (#671).
+
+    ``by_adapter`` keys observation rows by source and drop entries by adapter.
+    Every outcome appears in ``total``, zero when there are none.
+    """
+    total = {o.value: 0 for o in IngestionOutcome}
+    by_adapter: dict[str, dict[str, int]] = {}
+
+    def _add(adapter: str, outcome: str, n: int) -> None:
+        total[outcome] += n
+        counts = by_adapter.setdefault(adapter, {})
+        counts[outcome] = counts.get(outcome, 0) + n
+
+    for row in conn.execute(
+        "SELECT source, outcome, COUNT(*) AS c FROM observations GROUP BY source, outcome"
+    ):
+        _add(row["source"], row["outcome"], row["c"])
+
+    has_drop_log = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'drop_log'"
+    ).fetchone()
+    if has_drop_log:
+        for row in conn.execute("SELECT adapter, COUNT(*) AS c FROM drop_log GROUP BY adapter"):
+            _add(row["adapter"], IngestionOutcome.DROP, row["c"])
+
+    return {"total": total, "by_adapter": dict(sorted(by_adapter.items()))}
 
 
 def clean_bogus_slack_aliases(
