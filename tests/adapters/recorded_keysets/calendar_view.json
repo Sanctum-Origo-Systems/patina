@@ -1,0 +1,9 @@
+{
+  "end": "string",
+  "meetingId": "string",
+  "organizer": "object",
+  "organizer.email": "string",
+  "organizer.name": "string",
+  "start": "string",
+  "subject": "string"
+}

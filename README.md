@@ -77,9 +77,10 @@ patina entity fix-senders          # merge or retype junk senders: legacy DNs, r
 patina entity clean-slack-aliases  # drop slack: aliases that are not valid Slack IDs (--confirm)
 patina entity repair-multi-identity  # repair multi-identity sinks holding a member's name or handle (--confirm)
 patina entity repair-sink-handles  # strip member handles left on multi-identity sinks (--confirm)
-patina cleanup-meeting-obs         # remove uncited Outlook meeting-message observations, read-only preview (--json, --confirm)
+patina cleanup-meeting-obs         # remove uncited Outlook meeting-message observations, read-only preview (--json, --confirm, --accept-unknown-provenance)
 patina owner merge                 # fold duplicate self-entities (--dry-run available)
-patina doctor                      # includes dangling reference integrity check
+patina doctor                      # dangling reference check + rows per ingestion outcome, per adapter
+patina ingest promote --id <obs_id> # dry run: RETAIN_ONLY rows that would be extracted (--filter adapter=<source>, --confirm)
 
 # Live adapters
 patina connect slack --token "xoxb-..."
@@ -202,7 +203,7 @@ ingest:
   outlook_relevance_filter: false    # off by default; check `patina ingest --dry-run` first
 ```
 
-**Outlook email relevance.** With `ingest.outlook_relevance_filter: true`, Patina keeps an Outlook email only if it is direct (you are a named To recipient, not only through a distribution list, or you are in the thread, and a person sent it) or it belongs to an active objective (one of its participants is on the thread, or the sender is from one of its customer domains; set them with `patina objectives update`). Keywords alone never keep an email. Everything else is dropped at ingest: no observation, no extraction, no entity. Each drop is counted by reason. `patina ingest --dry-run` prints those counts and writes nothing, so you can check the rule before turning it on. Meetings come from the calendar only.
+**Outlook email relevance.** With `ingest.outlook_relevance_filter: true`, Patina keeps an Outlook email only if it is direct (you are a named To recipient, not only through a distribution list, or you are in the thread, and a person sent it) or it belongs to an active objective (one of its participants is on the thread, or the sender is from one of its customer domains; set them with `patina objectives update`). Keywords alone never keep an email. Everything else is dropped at ingest: no observation, no extraction, no entity. Each drop is counted by reason. `patina ingest --dry-run` prints those counts and writes nothing, so you can check the rule before turning it on. `uv run python scripts/relevance_dry_run.py` goes further: it replays the filter on a temp copy of your store and prints the fixture recall and false drops next to hidden_allies, catch_up and relationships before and after; your store and config are left untouched. Meetings come from the calendar only.
 
 ## Development
 

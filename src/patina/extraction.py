@@ -5,7 +5,7 @@ import re
 import sqlite3
 from urllib.parse import unquote_plus
 
-from patina.models import Entity
+from patina.models import Entity, IngestionOutcome
 
 _MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)>")
 _CHANNEL_RE = re.compile(r"<#(C[A-Z0-9]+)\|([^>]+)>")
@@ -29,8 +29,44 @@ _CREDENTIAL_PARAMS = frozenset(
 _CREDENTIAL_PARAM_PREFIX = "x-amz-"
 
 # Channel prefix for calendar observations (see ingest._events_to_chat_messages).
-# Schedule data, not messages: kept queryable but excluded from belief extraction.
+# Schedule data, not messages: ingest stores these RETAIN_ONLY (see ingestion_outcome),
+# so they stay queryable but are excluded from belief extraction.
 CALENDAR_CHANNEL_PREFIX = "calendar:"
+
+
+def mark_empty_observations_processed(conn: sqlite3.Connection, *, dry_run: bool = False) -> int:
+    """Mark unprocessed RETAIN_AND_EXTRACT rows with no text processed; return the count.
+
+    RETAIN_ONLY rows are never read or marked (#670). ``dry_run`` only counts.
+    """
+    where = "processed = 0 AND outcome = ? AND (text IS NULL OR text = '')"
+    params = (IngestionOutcome.RETAIN_AND_EXTRACT,)
+    count = conn.execute(f"SELECT COUNT(*) FROM observations WHERE {where}", params).fetchone()[0]
+    if count and not dry_run:
+        conn.execute(f"UPDATE observations SET processed = 1 WHERE {where}", params)
+        conn.commit()
+    return count
+
+
+def extractable_observations(conn: sqlite3.Connection, *, limit: int) -> list[sqlite3.Row]:
+    """Unprocessed observations belief extraction may read, oldest first.
+
+    Only RETAIN_AND_EXTRACT rows with text are returned (#670): RETAIN_ONLY rows
+    (calendar/schedule data) stay readable in the store but are skipped here,
+    unprocessed and untouched, so callers do not check the outcome themselves.
+    A row whose outcome is later set to RETAIN_AND_EXTRACT is picked up.
+    """
+    return conn.execute(
+        """SELECT o.id, o.text, o.sender_entity_id, o.source, o.timestamp,
+                  e.name AS sender_name
+           FROM observations o
+           LEFT JOIN entities e ON o.sender_entity_id = e.id
+           WHERE o.processed = 0 AND o.outcome = ?
+             AND o.text IS NOT NULL AND o.text != ''
+           ORDER BY o.timestamp ASC
+           LIMIT ?""",
+        (IngestionOutcome.RETAIN_AND_EXTRACT, limit),
+    ).fetchall()
 
 
 def _make_id(entity_type: str, key: str) -> str:
