@@ -1,0 +1,8 @@
+{
+  "channel_id": "string",
+  "channel_name": "string",
+  "reactions": "array",
+  "text": "string",
+  "ts": "string",
+  "user": "string"
+}
