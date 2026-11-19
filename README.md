@@ -79,7 +79,8 @@ patina entity repair-multi-identity  # repair multi-identity sinks holding a mem
 patina entity repair-sink-handles  # strip member handles left on multi-identity sinks (--confirm)
 patina cleanup-meeting-obs         # remove uncited Outlook meeting-message observations, read-only preview (--json, --confirm, --accept-unknown-provenance)
 patina owner merge                 # fold duplicate self-entities (--dry-run available)
-patina doctor                      # includes dangling reference integrity check
+patina doctor                      # dangling reference check + rows per ingestion outcome, per adapter
+patina ingest promote --id <obs_id> # dry run: RETAIN_ONLY rows that would be extracted (--filter adapter=<source>, --confirm)
 
 # Live adapters
 patina connect slack --token "xoxb-..."

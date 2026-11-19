@@ -1162,6 +1162,22 @@ def record_drop(
     return cur.lastrowid
 
 
+def promote_retain_only(conn: sqlite3.Connection, obs_ids: list[str]) -> int:
+    """Set the given RETAIN_ONLY rows RETAIN_AND_EXTRACT; return the count changed (#671).
+
+    Rows with any other outcome are left as they are, so a repeat run changes nothing.
+    """
+    if not obs_ids:
+        return 0
+    marks = ", ".join("?" for _ in obs_ids)
+    cur = conn.execute(
+        f"UPDATE observations SET outcome = ? WHERE outcome = ? AND id IN ({marks})",
+        (IngestionOutcome.RETAIN_AND_EXTRACT, IngestionOutcome.RETAIN_ONLY, *obs_ids),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def get_recent_extraction_runs(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
     ensure_extraction_runs_table(conn)
     return conn.execute(
