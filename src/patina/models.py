@@ -10,6 +10,14 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class IngestionOutcome(StrEnum):
+    """What ingestion keeps of an item, stored per observation (#669)."""
+
+    DROP = "DROP"
+    RETAIN_ONLY = "RETAIN_ONLY"
+    RETAIN_AND_EXTRACT = "RETAIN_AND_EXTRACT"
+
+
 class SourceFactState(StrEnum):
     """State of one key in a ``source_facts`` dict (see docs/app.md).
 
@@ -99,6 +107,7 @@ class Observation:
     metadata: dict = field(default_factory=dict)
     ingested_at: str = ""
     processed: int = 0
+    outcome: IngestionOutcome = IngestionOutcome.RETAIN_AND_EXTRACT
 
     def __post_init__(self) -> None:
         if not self.ingested_at:
@@ -109,7 +118,8 @@ class Observation:
 class ChatMessage:
     user_id: str
     text: str
-    timestamp: float
+    # None when the source sent no usable time; ingest skips these.
+    timestamp: float | None
     channel_id: str
     thread_id: str | None = None
     user_name: str | None = None
@@ -148,8 +158,8 @@ class EmailMessage:
 class CalendarEvent:
     id: str
     subject: str
-    start: float
-    end: float
+    start: float | None
+    end: float | None
     attendees: list[str] = field(default_factory=list)
     organizer: str = ""
     organizer_dn: str | None = None

@@ -4,6 +4,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
+from patina.adapters._source_facts import PARTICIPANT_KEYS, STATE_KEY, get_fact, render_facts
 from patina.adapters.slack_mcp import (
     DmChannel,
     SlackMcpAdapter,
@@ -11,7 +14,11 @@ from patina.adapters.slack_mcp import (
     _msg_from_raw,
     _parse_activity_ts,
 )
+from patina.ingest import ingest_live
+from patina.mcp.tools_catch_up import store_search
+from patina.models import SourceFact, SourceFactState
 from patina.ports.chat import ChatPort
+from patina.store import connect, get_db_path
 
 
 def _make_bridge(responses: dict[str, str] | None = None):
@@ -1153,6 +1160,91 @@ class TestSourceFacts:
     def test_absent_channel_and_ts_omitted(self):
         raw = {"user": "U0EXAMPLE07", "text": "The quick brown fox"}
         assert _msg_from_raw(raw).source_facts == {"sender_key": "U0EXAMPLE07"}
+
+
+# Anonymized live shape: a DM item whose channel object carries ``members``,
+# with non-ASCII text (em dash, accented letter).
+def _live_shape(**channel) -> dict:
+    return {
+        "user": {"id": "U0EXAMPLE65", "real_name": "Jordan Example"},
+        "text": "The quick brown fox — café meeting",
+        "ts": "1781900000.665001",
+        "channel": {"id": "D0EXAMPLE65", "name": "jordan-example", "is_im": True, **channel},
+    }
+
+
+_PARTICIPANT_CASES = [
+    pytest.param({}, None, "unknown", id="missing"),
+    pytest.param({"members": None}, SourceFactState.UNAVAILABLE, "unknown", id="unavailable"),
+    pytest.param({"members": []}, SourceFactState.EMPTY, "none", id="empty-list"),
+    pytest.param({"members": ""}, SourceFactState.EMPTY, "none", id="empty-string"),
+]
+
+
+class TestParticipantStates:
+    @pytest.mark.parametrize(("channel", "state", "rendered"), _PARTICIPANT_CASES)
+    def test_members_state_and_render(self, channel, state, rendered):
+        facts = _msg_from_raw(_live_shape(**channel)).source_facts
+        fact = get_fact(facts, "participants")
+        if state is None:
+            assert fact is None
+            assert "participants" not in facts.get(STATE_KEY, {})
+        else:
+            assert fact.state is state
+        if state is SourceFactState.UNAVAILABLE:
+            assert "participants" not in facts
+        if state is SourceFactState.EMPTY:
+            assert facts["participants"] == channel["members"]
+        assert render_facts(facts, PARTICIPANT_KEYS) == rendered
+
+    def test_present_members_kept_as_given(self):
+        members = ["U0EXAMPLE65", "U0EXAMPLE66"]
+        facts = _msg_from_raw(_live_shape(members=members)).source_facts
+        assert get_fact(facts, "participants") == SourceFact(SourceFactState.PRESENT, members)
+        assert render_facts(facts, PARTICIPANT_KEYS) == "U0EXAMPLE65, U0EXAMPLE66"
+
+    def test_flat_item_members(self):
+        raw = {
+            "user": "U0EXAMPLE65",
+            "text": "The quick brown fox — café meeting",
+            "ts": "1781900000.665001",
+            "channel": "D0EXAMPLE65",
+            "members": None,
+        }
+        facts = _msg_from_raw(raw).source_facts
+        assert get_fact(facts, "participants") == SourceFact(SourceFactState.UNAVAILABLE)
+
+    @pytest.mark.parametrize(("channel", "state", "rendered"), _PARTICIPANT_CASES)
+    def test_store_search_shows_participant_state(self, tmp_path, channel, state, rendered):
+        item = _live_shape(**channel)
+        port = SlackMcpAdapter(_make_bridge({"get_unreads": json.dumps([item])}))
+        ingest_live(port=port, source="slack_mcp", home=tmp_path, lookback_days=100000)
+
+        conn = connect(get_db_path(tmp_path))
+        (row,) = conn.execute("SELECT metadata FROM observations").fetchall()
+        conn.close()
+        fact = get_fact(json.loads(row["metadata"])["source"], "participants")
+        assert (fact.state if fact else None) == state
+
+        out = store_search("quick brown fox")
+        assert f"Participants: {rendered}" in out
+        if rendered == "unknown":
+            assert "Participants: none" not in out
+
+    def test_missing_ts_is_neither_ingest_time_nor_epoch(self, tmp_path):
+        item = _live_shape(members=[])
+        del item["ts"]
+        msg = _msg_from_raw(item)
+
+        assert get_fact(msg.source_facts, "received_raw") is None
+        assert render_facts(msg.source_facts, ("received_raw",)) == "unknown"
+        # Was 0.0 (the epoch); must not become the ingest time either.
+        assert msg.timestamp is None
+
+        port = SlackMcpAdapter(_make_bridge({"get_unreads": json.dumps([item])}))
+        result = ingest_live(port=port, source="slack_mcp", home=tmp_path, lookback_days=100000)
+        assert result["messages_inserted"] == 0
+        assert result["skip_reasons"] == {"missing_timestamp": 1}
 
 
 class TestParseActivityTs:

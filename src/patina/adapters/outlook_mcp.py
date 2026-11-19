@@ -8,8 +8,8 @@ from patina.adapters._mcp_client import (
     McpSyncBridge,
     parse_outlook_content,
 )
-from patina.adapters._source_facts import put_fact
-from patina.models import CalendarEvent, EmailMessage
+from patina.adapters._source_facts import get_fact, put_fact
+from patina.models import CalendarEvent, EmailMessage, SourceFactState
 
 
 class OutlookMcpAdapter:
@@ -127,6 +127,34 @@ def _parse_outlook_datetime(dt_str: str) -> float:
         return 0.0
 
 
+def _parse_optional_datetime(dt_str) -> float | None:
+    """Parse a source time string; ``None`` when absent or unparseable, never 0.0 or now."""
+    if not isinstance(dt_str, str) or not dt_str.strip():
+        return None
+    return _parse_outlook_datetime(dt_str) or None
+
+
+def _put_payload_fact(facts: dict, raw: dict, payload_key: str, fact_key: str) -> None:
+    """Record ``raw[payload_key]`` under ``fact_key`` with its fact state.
+
+    ``[]``/``""`` is ``empty``, ``null`` is ``unavailable`` and a missing key
+    stores nothing.
+    """
+    put_fact(facts, fact_key, raw.get(payload_key), present=payload_key in raw)
+
+
+def _unknown_or_none(facts: dict, key: str | None) -> str | None:
+    """``"none"`` for a fact sent empty, ``"unknown"`` for one sent ``null`` or
+    left out, ``None`` when the source sent a value.
+    """
+    fact = get_fact(facts, key) if key else None
+    if fact is None or fact.state is SourceFactState.UNAVAILABLE:
+        return "unknown"
+    if fact.state is SourceFactState.EMPTY:
+        return "none"
+    return None
+
+
 def _unwrap_email_list(raw) -> list:
     if isinstance(raw, dict):
         content = raw.get("content", raw)
@@ -202,35 +230,54 @@ def _email_from_raw(raw: dict) -> EmailMessage:
             sender = str(from_raw)
         sender_key = sender or next((s for s in senders if s), None)
 
+    # Live ``email_inbox`` items send ``recipients``; others send ``toRecipients``.
+    if "recipients" in raw:
+        recipients_key = "recipients"
+    elif "toRecipients" in raw:
+        recipients_key = "to"
+    else:
+        recipients_key = None
+    raw_recipients = raw.get("recipients", raw.get("toRecipients"))
     recipients = []
-    for r in raw.get("recipients", raw.get("toRecipients", [])):
+    for r in raw_recipients if isinstance(raw_recipients, list) else []:
         if isinstance(r, dict):
             recipients.append(r.get("email", r.get("name", "")))
         elif isinstance(r, str):
             recipients.append(r)
 
     received = raw.get("lastDeliveryTime", raw.get("receivedDateTime", ""))
-    # No usable received time -> None, never 0.0; ingest skips these
-    # under the ``missing_timestamp`` reason.
-    timestamp = (_parse_outlook_datetime(received) if received else 0.0) or None
+    # No usable received (else sent) time -> None, never 0.0 or the ingest
+    # time; ingest skips these under the ``missing_timestamp`` reason.
+    timestamp = _parse_optional_datetime(received) or _parse_optional_datetime(
+        raw.get("sentDateTime")
+    )
 
     item_class = raw.get("itemClasses", raw.get("messageClass", raw.get("message_class")))
     source_facts: dict = {}
     put_fact(source_facts, "message_id", _message_id(raw))
     put_fact(source_facts, "item_class", item_class)
     put_fact(source_facts, "sender_key", sender_key)
-    put_fact(source_facts, "to", raw.get("toRecipients"))
-    put_fact(source_facts, "cc", raw.get("ccRecipients"))
+    _put_payload_fact(source_facts, raw, "toRecipients", "to")
+    _put_payload_fact(source_facts, raw, "ccRecipients", "cc")
     # Live ``email_inbox`` items send only ``recipients``: display-name strings
     # with no To/Cc split and no distribution-list flag. Kept as given.
-    put_fact(source_facts, "recipients", raw.get("recipients"))
+    _put_payload_fact(source_facts, raw, "recipients", "recipients")
     put_fact(source_facts, "received_raw", received)
+    _put_payload_fact(source_facts, raw, "sentDateTime", "sent_raw")
 
     subject = raw.get("topic", raw.get("subject", ""))
     preview = raw.get("preview", raw.get("bodyPreview", raw.get("body", "")))
     preview = _strip_caution_banner(preview)
     participants_text = ", ".join(clean_senders) if clean_senders else sender
-    text = f"[Subject: {subject}] [Participants: {participants_text}]\n{preview}"
+    header = f"[Subject: {subject}] [Participants: {participants_text}]"
+    # Recipients the source sent are not repeated here; only "none" (sent
+    # empty) or "unknown" (sent null or left out) is spelled out.
+    recipients_text = _unknown_or_none(source_facts, recipients_key)
+    if recipients_text:
+        header += f" [Recipients: {recipients_text}]"
+    if timestamp is None:
+        header += " [Sent: unknown]"
+    text = f"{header}\n{preview}"
 
     return EmailMessage(
         id=raw.get("conversationId", raw.get("id", "")),
@@ -255,7 +302,10 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
     to date (#651) was stored with no ``attendees`` source fact, so attendees
     are unavailable from this tool and ``attendees`` stays empty. When an item
     does carry ``attendees``, each entry is read as a dict (``email``, else
-    ``name``) or a display-name string such as ``"Example, Jordan"``.
+    ``name``) or a display-name string such as ``"Example, Jordan"``. An
+    ``attendees`` sent as ``[]`` is stored ``empty`` and one sent ``null``
+    ``unavailable``. A missing or unparseable ``start``/``end`` is ``None``,
+    never the epoch.
     """
     organizer_raw = raw.get("organizer", {})
     if isinstance(organizer_raw, dict):
@@ -263,8 +313,8 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
     else:
         organizer = str(organizer_raw)
 
-    start = _parse_outlook_datetime(raw.get("start", ""))
-    end = _parse_outlook_datetime(raw.get("end", ""))
+    start = _parse_optional_datetime(raw.get("start"))
+    end = _parse_optional_datetime(raw.get("end"))
 
     attendees = []
     raw_attendees = raw.get("attendees")
@@ -277,7 +327,7 @@ def _calendar_event_from_raw(raw: dict) -> CalendarEvent:
     source_facts: dict = {}
     put_fact(source_facts, "message_id", raw.get("meetingId", raw.get("id")))
     put_fact(source_facts, "sender_key", organizer)
-    put_fact(source_facts, "attendees", raw.get("attendees"))
+    _put_payload_fact(source_facts, raw, "attendees", "attendees")
 
     return CalendarEvent(
         id=raw.get("meetingId", ""),

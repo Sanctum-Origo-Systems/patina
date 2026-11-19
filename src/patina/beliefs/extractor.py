@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from patina.extraction import CALENDAR_CHANNEL_PREFIX
+from patina.extraction import extractable_observations, mark_empty_observations_processed
 from patina.maintenance import is_plausible_person_name as _is_plausible_person_name
 from patina.store import connect, get_db_path, init_db, record_extraction_run
 
@@ -583,30 +583,12 @@ def extract_beliefs(
                         owner_match_names.add(normalized)
             owner_match_names.discard("")
 
-        empty_skipped = conn.execute(
-            "SELECT COUNT(*) FROM observations WHERE processed = 0 AND (text IS NULL OR text = '')"
-        ).fetchone()[0]
+        empty_skipped = mark_empty_observations_processed(conn, dry_run=dry_run)
         if empty_skipped:
             stats["empty_skipped"] = empty_skipped
-            if not dry_run:
-                conn.execute(
-                    "UPDATE observations SET processed = 1"
-                    " WHERE processed = 0 AND (text IS NULL OR text = '')"
-                )
-                conn.commit()
 
-        # Calendar rows are skipped and left unprocessed so they stay untouched.
-        rows = conn.execute(
-            """SELECT o.id, o.text, o.sender_entity_id, o.source, o.timestamp,
-                      e.name AS sender_name
-               FROM observations o
-               LEFT JOIN entities e ON o.sender_entity_id = e.id
-               WHERE o.processed = 0 AND o.text IS NOT NULL AND o.text != ''
-                 AND (o.channel_id IS NULL OR substr(o.channel_id, 1, ?) != ?)
-               ORDER BY o.timestamp ASC
-               LIMIT ?""",
-            (len(CALENDAR_CHANNEL_PREFIX), CALENDAR_CHANNEL_PREFIX, limit),
-        ).fetchall()
+        # RETAIN_ONLY (e.g. calendar) rows are skipped and left unprocessed.
+        rows = extractable_observations(conn, limit=limit)
 
         if not rows:
             print("No unprocessed observations found.")

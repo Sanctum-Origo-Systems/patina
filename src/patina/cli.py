@@ -367,8 +367,13 @@ def _ingest_dry_run(from_export: Path | None, lookback_days: int, home: Path | N
     _echo_relevance(result["relevance"], result.get("sender_unresolved", 0))
 
 
-@app.command()
+ingest_app = typer.Typer(help="Ingest messages and manage ingested observations.")
+app.add_typer(ingest_app, name="ingest")
+
+
+@ingest_app.callback(invoke_without_command=True)
 def ingest(
+    ctx: typer.Context,
     from_export: Path | None = typer.Option(None, "--from-export", help="Path to Slack export zip"),
     lookback_days: int = typer.Option(3, "--lookback-days", help="Days to look back for messages"),
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
@@ -377,6 +382,9 @@ def ingest(
     ),
 ) -> None:
     """Ingest messages from export file or configured live adapters."""
+    if ctx.invoked_subcommand is not None:
+        return
+
     if dry_run:
         _ingest_dry_run(from_export, lookback_days, home)
         return
@@ -427,6 +435,60 @@ def ingest(
         _write_journal_warning(home, warning)
 
 
+@ingest_app.command("promote")
+def ingest_promote(
+    obs_id: str | None = typer.Option(None, "--id", help="Observation ID to promote"),
+    filter_expr: str | None = typer.Option(
+        None, "--filter", help="Select rows by key=value, e.g. adapter=outlook_mcp_calendar"
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Promote the rows (default is a dry run)"
+    ),
+    home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
+) -> None:
+    """Promote RETAIN_ONLY observations to RETAIN_AND_EXTRACT so extraction reads them."""
+    from patina.maintenance import promote_observations
+
+    if (obs_id is None) == (filter_expr is None):
+        typer.echo("Give exactly one of --id or --filter.", err=True)
+        raise typer.Exit(2)
+
+    db_path = get_db_path(home)
+    if not db_path.exists():
+        typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
+        raise typer.Exit(1)
+
+    conn = connect(db_path)
+    try:
+        try:
+            result = promote_observations(
+                conn, obs_id=obs_id, filter_expr=filter_expr, confirm=confirm
+            )
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(2) from None
+    finally:
+        conn.close()
+
+    candidates = result["candidates"]
+    if confirm:
+        typer.echo(f"Promoted {result['promoted']} row(s) to RETAIN_AND_EXTRACT.")
+    else:
+        typer.echo(f"Dry run: {len(candidates)} RETAIN_ONLY row(s) would be promoted.")
+    for row in candidates:
+        typer.echo(f"  {row['id']}  {row['adapter']}")
+    skipped = result["skipped"]
+    if obs_id is not None:
+        for row in skipped:
+            typer.echo(f"Skipped {row['id']}: already {row['outcome']}")
+    elif skipped:
+        typer.echo(f"Skipped {len(skipped)} matching row(s) not RETAIN_ONLY.")
+    for missing in result["not_found"]:
+        typer.echo(f"Not found: {missing}")
+    if not confirm and candidates:
+        typer.echo("Re-run with --confirm to promote.")
+
+
 @app.command()
 def status(
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
@@ -460,6 +522,8 @@ def doctor_cmd(
     home: Path | None = typer.Option(None, "--home", help="Custom home directory"),
 ) -> None:
     """Check database integrity."""
+    from patina.maintenance import ingestion_outcome_counts
+
     db_path = get_db_path(home)
     if not db_path.exists():
         typer.echo("Patina not initialized. Run 'patina init' first.", err=True)
@@ -487,8 +551,21 @@ def doctor_cmd(
                 f"WARN dangling style exemplars: {dangling['style_exemplars']} "
                 f"style exemplar(s) reference missing entities"
             )
+        _echo_outcome_counts(ingestion_outcome_counts(conn))
     finally:
         conn.close()
+
+
+def _echo_outcome_counts(counts: dict) -> None:
+    """Print rows per ingestion outcome, overall then per adapter (#671)."""
+    order = ("RETAIN_AND_EXTRACT", "RETAIN_ONLY", "DROP")
+
+    def _fmt(by_outcome: dict[str, int]) -> str:
+        return ", ".join(f"{o}={by_outcome.get(o, 0)}" for o in order)
+
+    typer.echo(f"Ingestion outcomes: {_fmt(counts['total'])}")
+    for adapter, by_outcome in counts["by_adapter"].items():
+        typer.echo(f"  {adapter}: {_fmt(by_outcome)}")
 
 
 def _format_age(staleness_days: float) -> str:
