@@ -90,6 +90,46 @@ def test_recent_messages_alias_resolves_to_channel_id(db_path, db_conn):
     assert "sprint planning" in by_alias
 
 
+def _stub_recent(monkeypatch, messages):
+    import patina.mcp.tools_session as tools_session
+
+    monkeypatch.setattr(tools_session, "get_recent_observations", lambda *_a, **_k: messages)
+
+
+def test_recent_messages_missing_sender_and_source_are_unknown(db_path, monkeypatch):
+    """#666: missing or ``None`` sender/provenance -> 'unknown', never left out."""
+    init_db(db_path)
+    _stub_recent(
+        monkeypatch,
+        [
+            {"text": "The quick brown fox — café"},
+            {"sender": None, "source": None, "text": "jumps over"},
+        ],
+    )
+
+    lines = recent_messages("C1").splitlines()
+    assert lines == [
+        "- [unknown] via unknown: The quick brown fox — café",
+        "- [unknown] via unknown: jumps over",
+    ]
+
+
+def test_recent_messages_empty_sender_and_source_are_none(db_path, monkeypatch):
+    init_db(db_path)
+    _stub_recent(monkeypatch, [{"sender": "", "source": "", "text": "the lazy dog"}])
+
+    assert recent_messages("C1") == "- [none] via none: the lazy dog"
+
+
+def test_recent_messages_present_sender_and_source(db_path, monkeypatch):
+    init_db(db_path)
+    _stub_recent(
+        monkeypatch, [{"sender": "Jordan Example", "source": "slack_live", "text": "hello"}]
+    )
+
+    assert recent_messages("C1") == "- [Jordan Example] via slack_live: hello"
+
+
 def test_checkpoint_writes_journal(db_path):
     init_db(db_path)
     result = session_checkpoint(decisions=["decided to ship v2"])
