@@ -12,7 +12,8 @@
 - #690: Feat: Key-set extractor, recorded key-set files and live-shape dri ($1.33)
 - #687: Feat: Readers, renderers and MCP tools show unknown vs none distin ($2.62)
 - #686: Feat: Add promotion command (dry run by default, --confirm) and pe ($2.01)
-Total: 13 PRs, $26.20
+- #691: Feat: scripts/refresh_keyset.py with a no-values test ($1.18)
+Total: 14 PRs, $27.38
 
 ## v0.39.0 (2026-11-11)
 - #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
