@@ -15,6 +15,7 @@ CHANGELOG_PATH = CHANGELOG_DIR / "CHANGELOG.md"
 ARCHIVE_PATH = CHANGELOG_DIR / "changelog-archive.md"
 PYPROJECT_PATH = CHANGELOG_DIR.parent.parent / "pyproject.toml"
 REPO_DIR = CHANGELOG_DIR.parent.parent
+README_PATH = REPO_DIR / "README.md"
 
 MINOR_PREFIXES = ("feat:",)
 PATCH_PREFIXES = ("fix:", "refactor:", "test:", "docs:")
@@ -25,6 +26,7 @@ DEFAULT_LOOKBACK_DAYS = 7
 
 _ENTRY_RE = re.compile(r"^- #(\d+): (.*)$")
 _HEADER_RE = re.compile(r"^## v(\d+\.\d+\.\d+)\b")
+_README_PIN_RE = re.compile(r"(patina\.git@v)\d+\.\d+\.\d+")
 
 _BOT_NAME = "github-actions[bot]"
 _BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
@@ -232,6 +234,19 @@ def set_version(new: str, *, pyproject_path: Path | None = None) -> None:
     )
 
 
+def set_readme_pin(version: str, *, readme_path: Path | None = None) -> bool:
+    """Rewrite README `patina.git@vX.Y.Z` install pins to version. Returns whether it changed."""
+    path = readme_path or README_PATH
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8", newline="")
+    new_text = _README_PIN_RE.sub(rf"\g<1>{version}", text)
+    if new_text == text:
+        return False
+    path.write_text(new_text, encoding="utf-8", newline="")
+    return True
+
+
 def top_block(changelog_path: Path | None = None) -> tuple[str | None, list[tuple[int, str]]]:
     """Return the top version block's version and its (number, title) entries."""
     path = changelog_path or CHANGELOG_PATH
@@ -428,6 +443,11 @@ def update_open_pr(repo: str, open_pr: dict, prs: list[dict]) -> None:
         subprocess.run(["uv", "lock"], cwd=REPO_DIR, check=True)
         print(f"  Set version to {version}")
 
+    # Independent of version_changed, so a drifted pin is corrected too.
+    readme_changed = set_readme_pin(version)
+    if readme_changed:
+        print(f"  Set README install pin to v{version}")
+
     for pr in new_prs:
         cost = extract_cost(pr.get("body", ""))
         append_entry(pr["number"], pr["title"], cost, version=version)
@@ -444,6 +464,8 @@ def update_open_pr(repo: str, open_pr: dict, prs: list[dict]) -> None:
     if version_changed:
         subprocess.run(["git", "add", "pyproject.toml"], cwd=REPO_DIR)
         subprocess.run(["git", "add", "uv.lock"], cwd=REPO_DIR)
+    if readme_changed:
+        subprocess.run(["git", "add", "README.md"], cwd=REPO_DIR)
 
     diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_DIR, capture_output=True)
     if diff.returncode == 0:
@@ -505,11 +527,15 @@ def daily(repo: str, since_days: int = 1) -> None:
     titles = [pr["title"] for pr in new_prs]
     kind = highest_bump_type(titles)
     new_version = None
+    readme_changed = False
     if kind:
         new_version = bump_version(kind)
         if new_version:
             subprocess.run(["uv", "lock"], cwd=REPO_DIR, check=True)
             print(f"  Bumped version to {new_version}")
+            readme_changed = set_readme_pin(new_version)
+            if readme_changed:
+                print(f"  Set README install pin to v{new_version}")
 
     version = new_version or current_version()
 
@@ -532,6 +558,8 @@ def daily(repo: str, since_days: int = 1) -> None:
     if new_version:
         subprocess.run(["git", "add", "pyproject.toml"], cwd=REPO_DIR)
         subprocess.run(["git", "add", "uv.lock"], cwd=REPO_DIR)
+    if readme_changed:
+        subprocess.run(["git", "add", "README.md"], cwd=REPO_DIR)
 
     diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_DIR, capture_output=True)
     if diff.returncode == 0:
