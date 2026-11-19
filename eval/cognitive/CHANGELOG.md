@@ -1,3 +1,7 @@
+## v0.41.0 (2026-11-19)
+- #696: Feat: changelog job bumps the README install pin with the version ($1.07)
+Total: 1 PRs, $1.07
+
 ## v0.40.0 (2026-11-18)
 - #676: Feat: [patina] cleanup-meeting-obs --confirm treats "no citing cla ($1.43)
 - #675: Feat: Add temporal_change relation tag to contradiction detection ($0.93)
