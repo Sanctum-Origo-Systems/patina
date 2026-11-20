@@ -1659,7 +1659,10 @@ LIVE_INBOX_ITEM_641 = {
     "hasAttachments": False,
     "messageCount": 2,
     "itemClasses": ["IPM.Note", "IPM.Note"],
-    "itemIds": ["AAMkADExampleItem641a=", "AAMkADExampleItem641b="],
+    "itemIds": [
+        {"id": "AAMkADExampleItem641a=", "changeKey": "CQAAAA=="},
+        {"id": "AAMkADExampleItem641b=", "changeKey": "CQAAAB=="},
+    ],
 }
 
 _LIVE_641_KEYS = {
@@ -1680,7 +1683,7 @@ _LIVE_641_KEYS = {
 def _live_641_item(n: int, **overrides) -> dict:
     item = dict(LIVE_INBOX_ITEM_641)
     item["conversationId"] = f"AAQkADExampleConv641{n:02d}="
-    item["itemIds"] = [f"AAMkADExampleItem641{n:02d}="]
+    item["itemIds"] = [{"id": f"AAMkADExampleItem641{n:02d}=", "changeKey": "CQAAAA=="}]
     item["lastDeliveryTime"] = f"2026-11-07T16:{n:02d}:05Z"
     item.update(overrides)
     return item
@@ -1726,7 +1729,66 @@ def test_live_inbox_source_facts_carry_item_id_and_recipients(tmp_path):
     assert row["thread_id"] == LIVE_INBOX_ITEM_641["conversationId"]
 
 
-@pytest.mark.parametrize("item_ids", [None, [], [""]])
+# --- #698: live itemIds entries are {"id", "changeKey"} objects ---
+
+LIVE_INBOX_ITEM_698 = {
+    "conversationId": "AAQkExampleConv1=",
+    "topic": "The quick brown fox",
+    "senders": ["Example, Jordan"],
+    "recipients": ["Brook, Dana", "Example, Jordan"],
+    "lastDeliveryTime": "2026-11-19T11:40:14-06:00",
+    "preview": "The quick brown fox jumps.",
+    "unreadCount": 1,
+    "hasAttachments": False,
+    "messageCount": 1,
+    "itemClasses": ["IPM.Note"],
+    "itemIds": [{"id": "AAkALgExampleItem1=", "changeKey": "CQAAAA=="}],
+}
+
+
+def test_live_inbox_message_id_reads_item_id_object():
+    """AC: the live object-shaped ``itemIds`` entry gives the message_id."""
+    from patina.adapters.outlook_mcp import _email_from_raw
+
+    em = _email_from_raw(LIVE_INBOX_ITEM_698)
+    assert em.source_facts["message_id"] == "AAkALgExampleItem1="
+    assert em.source_facts["message_id"] != LIVE_INBOX_ITEM_698["conversationId"]
+
+
+def test_live_inbox_message_id_reads_item_id_string():
+    """AC: plain string ``itemIds`` entries still work."""
+    from patina.adapters.outlook_mcp import _email_from_raw
+
+    raw = {**LIVE_INBOX_ITEM_698, "itemIds": ["AAkALgExampleItem1="]}
+    em = _email_from_raw(raw)
+    assert em.source_facts["message_id"] == "AAkALgExampleItem1="
+
+
+def test_live_inbox_message_id_skips_unusable_entries():
+    """The first usable entry wins, whatever the shape of the ones before it."""
+    from patina.adapters.outlook_mcp import _email_from_raw
+
+    raw = {
+        **LIVE_INBOX_ITEM_698,
+        "itemIds": [{"changeKey": "CQAAAA=="}, "", {"id": "AAkALgExampleItem2="}],
+    }
+    em = _email_from_raw(raw)
+    assert em.source_facts["message_id"] == "AAkALgExampleItem2="
+
+
+@pytest.mark.parametrize(
+    "item_ids",
+    [
+        None,
+        [],
+        [""],
+        [{"id": ""}],
+        [{"changeKey": "CQAAAA=="}],
+        [{"id": None, "changeKey": "CQAAAA=="}],
+        [{"id": 7}],
+        [None, 7],
+    ],
+)
 def test_live_inbox_message_id_falls_back_to_conversation_id(item_ids):
     """AC: with no usable itemIds the conversation id is the message_id."""
     from patina.adapters.outlook_mcp import _email_from_raw
