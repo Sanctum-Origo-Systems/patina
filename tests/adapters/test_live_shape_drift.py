@@ -50,6 +50,8 @@ ADAPTER_READS = {
         "lastDeliveryTime",
         "preview",
         "bodyPreview",
+        "itemIds[].id",
+        "itemClasses",
     ],
     "calendar_view": [
         "meetingId",
@@ -66,6 +68,7 @@ ADAPTER_READS = {
         "channel_id",
         "channel_name",
         "reactions",
+        "members",
     ],
 }
 
@@ -74,6 +77,14 @@ RECORDED_FILES = {
     "calendar_view": "calendar_view",
     "get_messages": "slack_get_messages",
 }
+
+# Red until OBS-2026-11-19-1 moves the fixtures to the live shape and the Owner
+# commits ``refresh_keyset.py --live`` key sets (#699). Strict, so the marker
+# must come off once both land.
+_AWAITING_LIVE_REFRESH = pytest.mark.xfail(
+    strict=True,
+    reason="#699: recorded key set predates the live refresh (OBS-2026-11-19-1)",
+)
 
 _PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[\])*(\.[A-Za-z_][A-Za-z0-9_]*(\[\])*)*$")
 
@@ -241,7 +252,14 @@ class TestAdapterReads:
 
 
 class TestDriftCheck:
-    @pytest.mark.parametrize("tool", sorted(ADAPTER_READS))
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            pytest.param("calendar_view"),
+            pytest.param("email_inbox", marks=_AWAITING_LIVE_REFRESH),
+            pytest.param("get_messages", marks=_AWAITING_LIVE_REFRESH),
+        ],
+    )
     def test_committed_shapes_have_no_drift(self, tool):
         assert_no_drift(
             tool,
@@ -249,6 +267,27 @@ class TestDriftCheck:
             recorded=load_recorded(RECORDED_FILES[tool]),
             fixture=_fixture_keyset(tool),
         )
+
+    @pytest.mark.parametrize(
+        ("tool", "missing"),
+        [
+            ("email_inbox", ["itemClasses", "itemIds[].id"]),
+            ("get_messages", ["members"]),
+        ],
+    )
+    def test_committed_shapes_drift_only_on_undeclared_reads(self, tool, missing):
+        # Flip together with the xfail above once the live refresh lands.
+        with pytest.raises(AssertionError) as excinfo:
+            assert_no_drift(
+                tool,
+                reads=ADAPTER_READS[tool],
+                recorded=load_recorded(RECORDED_FILES[tool]),
+                fixture=_fixture_keyset(tool),
+            )
+        assert _drift_lines(excinfo) == [
+            f"{tool}: live-shape drift",
+            *(f"read missing from recorded: {p}" for p in missing),
+        ]
 
     @pytest.mark.parametrize("tool", sorted(ADAPTER_READS))
     def test_case_a_read_missing_from_recorded(self, tool):
@@ -292,7 +331,7 @@ REPRO_FIXTURE_ITEM = {
 }
 
 REPRO_RECORDED_ITEM = {
-    "itemIds": ["AAMkADExampleItem688="],
+    "itemIds": [{"id": "AAMkADExampleItem688=", "changeKey": "CQAAAA=="}],
     "recipients": ["Example, Jordan"],
     "itemClasses": ["IPM.Note"],
     "topic": "The quick brown fox — café",
@@ -327,3 +366,69 @@ class TestEmailInboxRepro:
             assert f"fixture key missing from recorded: {path}" in lines
         for path in ("recipients", "topic", "senders", "preview"):
             assert f"extra recorded key absent from fixture: {path}" in lines
+
+
+# Fictitious repros of the #699 live trigger shapes: ``email_inbox`` items list
+# ``itemIds`` as objects and carry ``itemClasses`` and ``hasAttachments``;
+# ``get_messages`` items carry ``members``.
+LIVE_INBOX_ITEM_699 = {
+    "conversationId": "AAQkADExampleConv699=",
+    "itemIds": [{"id": "AAMkADExampleItem699="}],
+    "itemClasses": ["IPM.Note"],
+    "hasAttachments": False,
+    "topic": "The quick brown fox — café",
+    "senders": ["Example, Jordan"],
+    "recipients": ["Müller, Avery"],
+    "lastDeliveryTime": "2026-11-19T09:30:00-06:00",
+    "preview": "Jumps over the lazy dog.",
+}
+
+LIVE_MESSAGE_ITEM_699 = {
+    "user": "U0EXAMPLE99",
+    "text": "The quick brown fox — café",
+    "ts": "1781900000.699001",
+    "channel_id": "D0EXAMPLE99",
+    "channel_name": "jordan-example",
+    "reactions": [],
+    "members": ["U0EXAMPLE99", "U0EXAMPLE98"],
+}
+
+
+class TestUndeclaredReadsRepro:
+    @pytest.mark.parametrize(
+        ("tool", "item", "paths"),
+        [
+            ("email_inbox", LIVE_INBOX_ITEM_699, ["itemIds[].id", "itemClasses"]),
+            ("get_messages", LIVE_MESSAGE_ITEM_699, ["members"]),
+        ],
+    )
+    def test_reads_declared(self, tool, item, paths):
+        recorded = extract_keyset(item)
+        for path in paths:
+            assert path in ADAPTER_READS[tool]
+            assert path in recorded
+
+    def _missing_reads(self, tool: str, item: dict) -> list[str]:
+        keyset = extract_keyset(item)
+        try:
+            assert_no_drift(tool, reads=ADAPTER_READS[tool], recorded=keyset, fixture=keyset)
+        except AssertionError as exc:
+            return [line for line in str(exc).splitlines() if line.startswith("read missing")]
+        return []
+
+    def test_string_item_ids_flag_item_id_read(self):
+        item = {**LIVE_INBOX_ITEM_699, "itemIds": ["AAMkADExampleItem699="]}
+        del item["itemClasses"]
+        missing = self._missing_reads("email_inbox", item)
+        assert "read missing from recorded: itemIds[].id" in missing
+        assert "read missing from recorded: itemClasses" in missing
+
+    def test_object_item_ids_cover_item_id_read(self):
+        missing = self._missing_reads("email_inbox", LIVE_INBOX_ITEM_699)
+        assert "read missing from recorded: itemIds[].id" not in missing
+        assert "read missing from recorded: itemClasses" not in missing
+
+    def test_members_read_flagged_until_recorded(self):
+        item = {k: v for k, v in LIVE_MESSAGE_ITEM_699.items() if k != "members"}
+        assert "read missing from recorded: members" in self._missing_reads("get_messages", item)
+        assert self._missing_reads("get_messages", LIVE_MESSAGE_ITEM_699) == []

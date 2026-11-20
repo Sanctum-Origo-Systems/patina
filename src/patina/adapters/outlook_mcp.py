@@ -193,14 +193,17 @@ def normalize_sender(sender: str) -> str:
 def _message_id(raw: dict) -> str | None:
     """The item's source id: ``id``, else the first ``itemIds`` entry, else ``conversationId``.
 
-    Live ``email_inbox`` conversations send no ``id``, only an ``itemIds`` list,
-    so stored source facts would otherwise never carry an id.
+    Live ``email_inbox`` conversations send no ``id``, only an ``itemIds`` list
+    of ``{"id", "changeKey"}`` objects (#698); plain string entries are also
+    accepted. Stored source facts would otherwise never carry an item id.
     """
     if raw.get("id"):
         return raw["id"]
     item_ids = raw.get("itemIds")
     if isinstance(item_ids, list):
         for item_id in item_ids:
+            if isinstance(item_id, dict):
+                item_id = item_id.get("id")
             if isinstance(item_id, str) and item_id:
                 return item_id
     return raw.get("conversationId") or None
