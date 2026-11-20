@@ -331,7 +331,7 @@ REPRO_FIXTURE_ITEM = {
 }
 
 REPRO_RECORDED_ITEM = {
-    "itemIds": ["AAMkADExampleItem688="],
+    "itemIds": [{"id": "AAMkADExampleItem688=", "changeKey": "CQAAAA=="}],
     "recipients": ["Example, Jordan"],
     "itemClasses": ["IPM.Note"],
     "topic": "The quick brown fox — café",
