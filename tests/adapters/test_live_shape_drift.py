@@ -78,6 +78,14 @@ RECORDED_FILES = {
     "get_messages": "slack_get_messages",
 }
 
+# Red until OBS-2026-11-19-1 moves the fixtures to the live shape and the Owner
+# commits ``refresh_keyset.py --live`` key sets (#699). Strict, so the marker
+# must come off once both land.
+_AWAITING_LIVE_REFRESH = pytest.mark.xfail(
+    strict=True,
+    reason="#699: recorded key set predates the live refresh (OBS-2026-11-19-1)",
+)
+
 _PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[\])*(\.[A-Za-z_][A-Za-z0-9_]*(\[\])*)*$")
 
 
@@ -244,7 +252,14 @@ class TestAdapterReads:
 
 
 class TestDriftCheck:
-    @pytest.mark.parametrize("tool", sorted(ADAPTER_READS))
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            pytest.param("calendar_view"),
+            pytest.param("email_inbox", marks=_AWAITING_LIVE_REFRESH),
+            pytest.param("get_messages", marks=_AWAITING_LIVE_REFRESH),
+        ],
+    )
     def test_committed_shapes_have_no_drift(self, tool):
         assert_no_drift(
             tool,
@@ -252,6 +267,27 @@ class TestDriftCheck:
             recorded=load_recorded(RECORDED_FILES[tool]),
             fixture=_fixture_keyset(tool),
         )
+
+    @pytest.mark.parametrize(
+        ("tool", "missing"),
+        [
+            ("email_inbox", ["itemClasses", "itemIds[].id"]),
+            ("get_messages", ["members"]),
+        ],
+    )
+    def test_committed_shapes_drift_only_on_undeclared_reads(self, tool, missing):
+        # Flip together with the xfail above once the live refresh lands.
+        with pytest.raises(AssertionError) as excinfo:
+            assert_no_drift(
+                tool,
+                reads=ADAPTER_READS[tool],
+                recorded=load_recorded(RECORDED_FILES[tool]),
+                fixture=_fixture_keyset(tool),
+            )
+        assert _drift_lines(excinfo) == [
+            f"{tool}: live-shape drift",
+            *(f"read missing from recorded: {p}" for p in missing),
+        ]
 
     @pytest.mark.parametrize("tool", sorted(ADAPTER_READS))
     def test_case_a_read_missing_from_recorded(self, tool):
