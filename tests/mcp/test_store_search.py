@@ -185,6 +185,52 @@ class TestStoreSearch:
         assert "Recipients: unknown" in result
         assert "Recipients: none" not in result
 
+    def _insert_calendar(self, db_conn, db_path, *, facts=None):
+        init_db(db_path)
+        obs = Observation(
+            id="o_fox_meeting",
+            source="outlook_mcp_email",
+            channel_id="calendar:AAMkExampleMeeting1=",
+            thread_id=None,
+            timestamp=time.time(),
+            sender_entity_id=None,
+            text="[Meeting: The quick brown fox] Organizer: /O=EXAMPLEORG/OU=EXCHANGE/CN=JEXAMPLE",
+            metadata={} if facts is None else {"source": facts},
+        )
+        insert_observation(db_conn, obs)
+        db_conn.close()
+
+    def test_calendar_row_missing_attendees_shows_unknown(self, db_conn, db_path, tmp_path):
+        """#700: a ``calendar:`` row under ``outlook_mcp_email`` gets an Attendees line."""
+        self._insert_calendar(db_conn, db_path, facts={})
+        result = store_search("quick brown fox")
+        assert "Attendees: unknown" in result
+        assert "Recipients:" not in result
+
+    def test_legacy_calendar_row_shows_attendees_unknown(self, db_conn, db_path, tmp_path):
+        self._insert_calendar(db_conn, db_path)
+        result = store_search("quick brown fox")
+        assert "Attendees: unknown" in result
+        assert "Recipients:" not in result
+
+    def test_calendar_row_empty_attendees_shows_none(self, db_conn, db_path, tmp_path):
+        self._insert_calendar(
+            db_conn, db_path, facts={"attendees": [], "_state": {"attendees": "empty"}}
+        )
+        result = store_search("quick brown fox")
+        assert "Attendees: none" in result
+        assert "Recipients:" not in result
+
+    def test_calendar_row_lists_attendees(self, db_conn, db_path, tmp_path):
+        self._insert_calendar(
+            db_conn,
+            db_path,
+            facts={"attendees": ["jordan@example.com", "riley@example.com"]},
+        )
+        result = store_search("quick brown fox")
+        assert "Attendees: jordan@example.com, riley@example.com" in result
+        assert "Recipients:" not in result
+
     def test_missing_sender_and_empty_source(self, db_conn, db_path, tmp_path):
         """#666: missing sender is 'unknown'; an explicitly empty source is 'none'."""
         self._insert_email(db_conn, db_path, source="")

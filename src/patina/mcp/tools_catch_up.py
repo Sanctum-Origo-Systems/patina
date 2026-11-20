@@ -152,16 +152,26 @@ def _sanitize_fts_query(query: str, join: str = "AND") -> str:
     return f" {join} ".join(safe_terms)
 
 
-def _source_fact_line(source: str, facts) -> str | None:
-    """``Participants:`` (Slack) or ``Recipients:`` (email) from ``metadata["source"]``.
+def _source_fact_line(source: str, facts, channel_id: str = "") -> str | None:
+    """``Attendees:`` (calendar), ``Participants:`` (Slack) or ``Recipients:`` (email).
 
-    Only empty facts show ``none``; missing or unavailable ones show ``unknown``.
-    Rows with no ``metadata["source"]`` (legacy) get no line.
+    Read from ``metadata["source"]``. Only empty facts show ``none``; missing or
+    unavailable ones show ``unknown``. Rows with no ``metadata["source"]``
+    (legacy) get no line. Calendar rows are stored under an ``_email`` source
+    (``outlook_mcp_email``), so the ``calendar:`` channel is checked first.
     """
-    from patina.adapters._source_facts import PARTICIPANT_KEYS, RECIPIENT_KEYS, render_facts
+    from patina.adapters._source_facts import (
+        ATTENDEE_KEYS,
+        PARTICIPANT_KEYS,
+        RECIPIENT_KEYS,
+        render_facts,
+    )
+    from patina.extraction import CALENDAR_CHANNEL_PREFIX
 
     if not isinstance(facts, dict):
         return None
+    if channel_id.startswith(CALENDAR_CHANNEL_PREFIX):
+        return f"Attendees: {render_facts(facts, ATTENDEE_KEYS)}"
     if "slack" in source:
         return f"Participants: {render_facts(facts, PARTICIPANT_KEYS)}"
     if source == "imap" or source.endswith("_email"):
@@ -182,7 +192,7 @@ def store_search(query: str, limit: int = 20) -> str:
         seen_ids: set[str] = set()
         all_rows: list = []
 
-        fts_sql = """SELECT o.id, o.source, o.timestamp, o.text,
+        fts_sql = """SELECT o.id, o.source, o.channel_id, o.timestamp, o.text,
                       e.name AS sender_name,
                       o.metadata
                FROM observations_fts f
@@ -207,7 +217,7 @@ def store_search(query: str, limit: int = 20) -> str:
         if entity_id:
             sender_limit = max(limit - len(all_rows), 10)
             sender_rows = conn.execute(
-                """SELECT o.id, o.source, o.timestamp, o.text,
+                """SELECT o.id, o.source, o.channel_id, o.timestamp, o.text,
                           e.name AS sender_name,
                           o.metadata
                    FROM observations o
@@ -259,7 +269,7 @@ def store_search(query: str, limit: int = 20) -> str:
                 context_parts.append(f"in #{channel}")
 
             lines.append(" ".join(context_parts))
-            fact_line = _source_fact_line(source, facts)
+            fact_line = _source_fact_line(source, facts, row["channel_id"] or "")
             if fact_line:
                 lines.append(fact_line)
             lines.append(f"> {text}")

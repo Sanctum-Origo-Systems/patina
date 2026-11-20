@@ -64,9 +64,10 @@ def get_fact(facts: dict, key: str) -> SourceFact | None:
     return None
 
 
-# Keys rendered together as one "Recipients" or "Participants" line.
+# Keys rendered together as one "Recipients", "Participants" or "Attendees" line.
 RECIPIENT_KEYS = ("to", "cc", "recipients")
 PARTICIPANT_KEYS = ("participants",)
+ATTENDEE_KEYS = ("attendees",)
 
 
 def _display(value) -> str:
