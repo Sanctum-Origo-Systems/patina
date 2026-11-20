@@ -1,7 +1,8 @@
 ## v0.41.0 (2026-11-19)
 - #696: Feat: changelog job bumps the README install pin with the version ($1.07)
 - #701: Feat: [patina] fix: outlook_mcp message_id ignores live itemIds ob ($0.70)
-Total: 2 PRs, $1.77
+- #703: Feat: [patina] fix: email_inbox recorded keyset and ADAPTER_READS ($1.54)
+Total: 3 PRs, $3.31
 
 ## v0.40.0 (2026-11-18)
 - #676: Feat: [patina] cleanup-meeting-obs --confirm treats "no citing cla ($1.43)
