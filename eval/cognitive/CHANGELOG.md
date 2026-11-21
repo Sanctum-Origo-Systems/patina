@@ -1,3 +1,7 @@
+## v0.42.0 (2026-11-20)
+- #702: Feat: [patina] fix: store_search shows 'Recipients: unknown' on ca ($0.61)
+Total: 1 PRs, $0.61
+
 ## v0.41.0 (2026-11-19)
 - #696: Feat: changelog job bumps the README install pin with the version ($1.07)
 - #701: Feat: [patina] fix: outlook_mcp message_id ignores live itemIds ob ($0.70)
