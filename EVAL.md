@@ -1,25 +1,25 @@
 # EVAL Report
 
-Report date 2026-11-19: data as of 2026-11-19T03:56:11.050138+00:00, 312 history rows.
+Report date 2026-11-22: data as of 2026-11-22T02:19:30.602230+00:00, 319 history rows.
 
 ## Overall
 
 | Metric | Value | Pending |
 |--------|-------|---------|
-| Total PRs | 179 | — |
-| First-attempt success | 90% (n=173 implement runs) | pending: 0 |
-| Avg cost/run | $1.75 (n=173 implement runs) | included |
-| Avg review cost/run | $0.27 (n=61 implement runs) | included |
-| Human edit rate | 32% (n=179 merged PRs; edited by a human PR within 7 days) | pending: 0 |
+| Total PRs | 184 | — |
+| First-attempt success | 90% (n=177 implement runs) | pending: 1 |
+| Avg cost/run | $1.73 (n=178 implement runs) | included |
+| Avg review cost/run | $0.27 (n=66 implement runs) | included |
+| Human edit rate | 32% (n=183 merged PRs; edited by a human PR within 7 days) | pending: 1 |
 
 ## Charts
 
 ```mermaid
 xychart-beta horizontal
     title "Weekly First-Attempt Success Rate (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)", "11/8 (n=12)", "11/15 (n=16)", "11/19 (n=14)"]
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)", "11/8 (n=12)", "11/15 (n=16)", "11/22 (n=19)"]
     y-axis "Success %" 0 --> 100
-    bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 43, 50, 100, 83, 100, 93]
+    bar [0, 100, 71, 100, 87, 75, 100, 67, 74, 0, 43, 50, 100, 83, 100, 89]
 ```
 
 > bars before 10/26 count triage runs as implementations (#400)
@@ -27,9 +27,9 @@ xychart-beta horizontal
 ```mermaid
 xychart-beta horizontal
     title "Weekly Avg Cost/PR (2026)"
-    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)", "11/8 (n=12)", "11/15 (n=16)", "11/19 (n=14)"]
+    x-axis ["7/20 (n=0)", "7/27 (n=1)", "8/3 (n=24)", "8/10 (n=2)", "8/24 (n=23)", "8/31 (n=8)", "9/7 (n=4)", "9/20 (n=3)", "10/4 (n=27)", "10/11 (n=2)", "10/18 (n=7)", "10/25 (n=2)", "11/1 (n=4)", "11/8 (n=12)", "11/15 (n=16)", "11/22 (n=19)"]
     y-axis "Cost ($)" 0 --> 2
-    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27, 1.24, 1.04, 1.40, 1.64]
+    bar [0.00, 0.59, 0.80, 0.38, 0.83, 0.86, 0.64, 0.36, 0.94, 0.35, 0.38, 0.27, 1.24, 1.04, 1.40, 1.48]
 ```
 
 > bars before 10/26 count triage runs as implementations (#400)
@@ -37,12 +37,12 @@ xychart-beta horizontal
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'pie1': '#4CAF50', 'pie2': '#2196F3', 'pie3': '#FF9800', 'pie4': '#E91E63', 'pie5': '#9C27B0', 'pie6': '#00BCD4', 'pieTitleTextColor': '#aaa', 'pieLegendTextColor': '#aaa', 'pieSectionTextColor': '#fff'}}}%%
 pie title Attempt Distribution by Module
-    "other (80%, 26 impl)" : 26
-    "src/patina/ (96%, 112 impl)" : 112
-    "src/patina/adapters/ (85%, 21 impl)" : 21
-    "src/patina/autonomy/ (100%, 1 impl)" : 1
-    "src/patina/beliefs/ (77%, 14 impl)" : 14
-    "src/patina/mcp/ (100%, 9 impl)" : 9
+    "other (78%, 29 impl)" : 29
+    "src/patina/ (97%, 117 impl)" : 117
+    "src/patina/adapters/ (82%, 17 impl)" : 17
+    "src/patina/autonomy/ (67%, 3 impl)" : 3
+    "src/patina/beliefs/ (73%, 12 impl)" : 12
+    "src/patina/mcp/ (100%, 10 impl)" : 10
     "src/patina/priority/ (100%, 2 impl)" : 2
 ```
 
@@ -52,19 +52,19 @@ pie title Attempt Distribution by Module
 |--------|-------|-----------|
 | Success rate | 90% | >90% |
 | Edit rate | 32% | <5% |
-| Clean merges | 121 | ≥10 |
+| Clean merges | 125 | ≥10 |
 | **Ready?** | **No** | |
 
 ## Per-Module Breakdown
 
 | Module | Success | Avg Cost | Impl | Auto-merge ready? |
 |--------|---------|----------|------|--------------------|
-| other | 80% (n=25 runs) | $1.75 (n=25 runs) | 26 | No |
-| src/patina/ | 96% (n=109 runs) | $1.88 (n=109 runs) | 112 | No |
-| src/patina/adapters/ | insufficient data (n=13 runs) | insufficient data (n=13 runs) | 21 | No |
-| src/patina/autonomy/ | insufficient data (n=1 runs) | insufficient data (n=1 runs) | 1 | No |
-| src/patina/beliefs/ | insufficient data (n=13 runs) | insufficient data (n=13 runs) | 14 | No |
-| src/patina/mcp/ | insufficient data (n=7 runs) | insufficient data (n=7 runs) | 9 | No |
+| other | 78% (n=27 runs) | $1.67 (n=28 runs) | 29 | No |
+| src/patina/ | 97% (n=112 runs) | $1.83 (n=112 runs) | 117 | No |
+| src/patina/adapters/ | insufficient data (n=11 runs) | insufficient data (n=11 runs) | 17 | No |
+| src/patina/autonomy/ | insufficient data (n=3 runs) | insufficient data (n=3 runs) | 3 | No |
+| src/patina/beliefs/ | insufficient data (n=11 runs) | insufficient data (n=11 runs) | 12 | No |
+| src/patina/mcp/ | insufficient data (n=8 runs) | insufficient data (n=8 runs) | 10 | Yes |
 | src/patina/priority/ | insufficient data (n=2 runs) | insufficient data (n=2 runs) | 2 | No |
 
 ## Trend
@@ -137,6 +137,9 @@ pie title Attempt Distribution by Module
 | 2026-11-17 | 0 | — | — | — |
 | 2026-11-18 | 5 | — | $1.10 | — |
 | 2026-11-19 | 9 | 93% | $1.93 | 0% |
+| 2026-11-20 | 4 | 67% | $0.86 | 0% |
+| 2026-11-21 | 0 | — | — | — |
+| 2026-11-22 | 1 | — | $1.73 | — |
 
 > Baseline break at 2026-10-26: earlier snapshots counted triage runs as implementations (#400), so their first-attempt and cost values are not comparable with later rows.
 
