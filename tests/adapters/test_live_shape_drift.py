@@ -1,9 +1,10 @@
 """Live-shape drift: fixtures vs recorded key sets vs declared adapter reads (#688).
 
 Each recorded key set in ``recorded_keysets/`` is the item-level shape a tool
-returns. The drift check fails when a declared adapter read is missing from
-the recorded set, when the fixture carries a key the recorded set lacks, or
-when a recorded key is absent from the fixture.
+returns. The drift check fails when a declared live read is missing from the
+recorded set, when the fixture carries a key the recorded set lacks, or when a
+recorded key is absent from the fixture. Fallback reads cover payload shapes
+the live tool never sends, so the recorded set need not carry them (#707).
 """
 
 from __future__ import annotations
@@ -25,31 +26,20 @@ from tests.adapters.keyset import (
     extract_keyset,
     load_recorded,
 )
-from tests.adapters.test_outlook_mcp import (
-    FIXTURE_INBOX_CONVERSATION_GROUPED,
-    FIXTURE_INBOX_RAW,
-    LIVE_CALENDAR_VIEW_ITEM,
-)
+from tests.adapters.test_outlook_mcp import LIVE_CALENDAR_VIEW_ITEM
 from tests.adapters.test_slack_mcp import FIXTURES_MESSAGES_DICT, FIXTURES_MESSAGES_LIST
 
-# Hand-written key paths each adapter reads that the recorded shape covers.
-# Keep in step with the adapters by hand; never derive from adapter source.
-ADAPTER_READS = {
+# Hand-written key paths each adapter reads off the live tool's items; every
+# one must be in the recorded shape. Keep in step with the adapters by hand;
+# never derive from adapter source.
+LIVE_READS = {
     "email_inbox": [
-        "id",
         "conversationId",
-        "subject",
         "topic",
-        "from.email",
-        "from.name",
         "senders",
         "recipients",
-        "toRecipients[].email",
-        "toRecipients[].name",
-        "receivedDateTime",
         "lastDeliveryTime",
         "preview",
-        "bodyPreview",
         "itemIds[].id",
         "itemClasses",
     ],
@@ -68,8 +58,26 @@ ADAPTER_READS = {
         "channel_id",
         "channel_name",
         "reactions",
-        "members",
     ],
+}
+
+# Key paths each adapter also reads for payload shapes the live tool never
+# sends, each with why. The recorded shape need not carry these.
+FALLBACK_READS = {
+    "email_inbox": {
+        "id": "Graph-style message id; live items key on conversationId and itemIds[].id",
+        "subject": "Graph-style subject; live items carry topic",
+        "from.email": "Graph-style sender; live items carry senders",
+        "from.name": "Graph-style sender; live items carry senders",
+        "toRecipients[].email": "Graph-style recipients; live items carry recipients",
+        "toRecipients[].name": "Graph-style recipients; live items carry recipients",
+        "receivedDateTime": "Graph-style timestamp; live items carry lastDeliveryTime",
+        "bodyPreview": "Graph-style preview; live items carry preview",
+    },
+    "calendar_view": {},
+    "get_messages": {
+        "members": "participants, read only when present; no live get_messages row carries it",
+    },
 }
 
 RECORDED_FILES = {
@@ -78,13 +86,21 @@ RECORDED_FILES = {
     "get_messages": "slack_get_messages",
 }
 
-# Red until OBS-2026-11-19-1 moves the fixtures to the live shape and the Owner
-# commits ``refresh_keyset.py --live`` key sets (#699). Strict, so the marker
-# must come off once both land.
-_AWAITING_LIVE_REFRESH = pytest.mark.xfail(
-    strict=True,
-    reason="#699: recorded key set predates the live refresh (OBS-2026-11-19-1)",
-)
+# Fictitious repro of the live ``email_inbox`` item shape (OBS-2026-11-20-1):
+# conversation-grouped, ``itemIds`` as objects with ``changeKey``, no Graph keys.
+LIVE_INBOX_ITEM = {
+    "conversationId": "AAQkExampleConv1=",
+    "topic": "The quick brown fox — café",
+    "senders": ["Example, Jordan"],
+    "recipients": ["Brook, Dana", "Müller, Avery"],
+    "lastDeliveryTime": "2026-11-19T11:40:14-06:00",
+    "preview": "Jumps over the lazy dog.",
+    "unreadCount": 1,
+    "hasAttachments": False,
+    "messageCount": 1,
+    "itemClasses": ["IPM.Note"],
+    "itemIds": [{"id": "AAkALgExampleItem1=", "changeKey": "CQAAAA=="}],
+}
 
 _PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[\])*(\.[A-Za-z_][A-Za-z0-9_]*(\[\])*)*$")
 
@@ -111,7 +127,7 @@ def _slack_message_items(*payloads: str) -> list:
 
 def _fixture_keyset(tool: str) -> dict[str, str]:
     if tool == "email_inbox":
-        items = _outlook_inbox_items(FIXTURE_INBOX_RAW, FIXTURE_INBOX_CONVERSATION_GROUPED)
+        items = _outlook_inbox_items(json.dumps([LIVE_INBOX_ITEM]))
     elif tool == "calendar_view":
         items = [LIVE_CALENDAR_VIEW_ITEM]
     else:
@@ -225,9 +241,8 @@ class TestRecordedKeysets:
     def test_no_unexpected_recorded_files(self):
         assert {p.stem for p in RECORDED_DIR.glob("*.json")} == set(RECORDED_FILES.values())
 
-    def test_email_inbox_matches_664_live_shape_fixtures(self):
-        items = _outlook_inbox_items(FIXTURE_INBOX_RAW, FIXTURE_INBOX_CONVERSATION_GROUPED)
-        assert load_recorded("email_inbox") == extract_items_keyset(items)
+    def test_email_inbox_matches_707_live_item(self):
+        assert load_recorded("email_inbox") == extract_keyset(LIVE_INBOX_ITEM)
 
     def test_calendar_view_matches_651_live_item(self):
         assert load_recorded("calendar_view") == extract_keyset(LIVE_CALENDAR_VIEW_ITEM)
@@ -235,74 +250,58 @@ class TestRecordedKeysets:
 
 class TestAdapterReads:
     def test_declared_for_all_tools(self):
-        assert set(ADAPTER_READS) == {"email_inbox", "calendar_view", "get_messages"}
-        for tool, reads in ADAPTER_READS.items():
+        tools = {"email_inbox", "calendar_view", "get_messages"}
+        assert set(LIVE_READS) == set(FALLBACK_READS) == tools
+        for tool, reads in LIVE_READS.items():
             assert reads, tool
             assert all(isinstance(p, str) and _PATH_RE.match(p) for p in reads), tool
 
-    def test_is_a_literal_dict(self):
+    def test_fallback_reads_have_reasons(self):
+        for tool, fallbacks in FALLBACK_READS.items():
+            for path, reason in fallbacks.items():
+                assert isinstance(path, str) and _PATH_RE.match(path), (tool, path)
+                assert isinstance(reason, str) and reason.strip(), (tool, path)
+            assert not set(fallbacks) & set(LIVE_READS[tool]), tool
+
+    @pytest.mark.parametrize("name", ["LIVE_READS", "FALLBACK_READS"])
+    def test_is_a_literal_dict(self, name):
         tree = ast.parse(Path(__file__).read_text())
         (node,) = [
             n
             for n in tree.body
             if isinstance(n, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "ADAPTER_READS" for t in n.targets)
+            and any(isinstance(t, ast.Name) and t.id == name for t in n.targets)
         ]
-        assert ast.literal_eval(node.value) == ADAPTER_READS
+        assert ast.literal_eval(node.value) == globals()[name]
 
 
 class TestDriftCheck:
-    @pytest.mark.parametrize(
-        "tool",
-        [
-            pytest.param("calendar_view"),
-            pytest.param("email_inbox", marks=_AWAITING_LIVE_REFRESH),
-            pytest.param("get_messages", marks=_AWAITING_LIVE_REFRESH),
-        ],
-    )
+    @pytest.mark.parametrize("tool", sorted(LIVE_READS))
     def test_committed_shapes_have_no_drift(self, tool):
         assert_no_drift(
             tool,
-            reads=ADAPTER_READS[tool],
+            reads=LIVE_READS[tool],
             recorded=load_recorded(RECORDED_FILES[tool]),
             fixture=_fixture_keyset(tool),
         )
 
     @pytest.mark.parametrize(
-        ("tool", "missing"),
-        [
-            ("email_inbox", ["itemClasses", "itemIds[].id"]),
-            ("get_messages", ["members"]),
-        ],
+        ("tool", "dropped"),
+        [(tool, path) for tool, reads in sorted(LIVE_READS.items()) for path in reads],
     )
-    def test_committed_shapes_drift_only_on_undeclared_reads(self, tool, missing):
-        # Flip together with the xfail above once the live refresh lands.
-        with pytest.raises(AssertionError) as excinfo:
-            assert_no_drift(
-                tool,
-                reads=ADAPTER_READS[tool],
-                recorded=load_recorded(RECORDED_FILES[tool]),
-                fixture=_fixture_keyset(tool),
-            )
-        assert _drift_lines(excinfo) == [
-            f"{tool}: live-shape drift",
-            *(f"read missing from recorded: {p}" for p in missing),
-        ]
-
-    @pytest.mark.parametrize("tool", sorted(ADAPTER_READS))
-    def test_case_a_read_missing_from_recorded(self, tool):
-        dropped = ADAPTER_READS[tool][0]
+    def test_case_a_read_missing_from_recorded(self, tool, dropped):
         recorded = load_recorded(RECORDED_FILES[tool])
+        assert dropped in recorded
         del recorded[dropped]
         with pytest.raises(AssertionError) as excinfo:
             assert_no_drift(
-                tool, reads=ADAPTER_READS[tool], recorded=recorded, fixture=_fixture_keyset(tool)
+                tool, reads=LIVE_READS[tool], recorded=recorded, fixture=_fixture_keyset(tool)
             )
         lines = _drift_lines(excinfo)
         assert lines[0] == f"{tool}: live-shape drift"
         assert f"read missing from recorded: {dropped}" in lines
 
-    @pytest.mark.parametrize("tool", sorted(ADAPTER_READS))
+    @pytest.mark.parametrize("tool", sorted(LIVE_READS))
     def test_case_b_recorded_key_absent_from_fixture(self, tool):
         fixture = _fixture_keyset(tool)
         removed = sorted(fixture)[-1]
@@ -310,13 +309,29 @@ class TestDriftCheck:
         with pytest.raises(AssertionError) as excinfo:
             assert_no_drift(
                 tool,
-                reads=ADAPTER_READS[tool],
+                reads=LIVE_READS[tool],
                 recorded=load_recorded(RECORDED_FILES[tool]),
                 fixture=fixture,
             )
         lines = _drift_lines(excinfo)
         assert lines[0] == f"{tool}: live-shape drift"
         assert f"extra recorded key absent from fixture: {removed}" in lines
+
+    @pytest.mark.parametrize("tool", sorted(FALLBACK_READS))
+    def test_fallback_reads_absent_from_committed_shape(self, tool):
+        # A fallback the live tool does send belongs in LIVE_READS.
+        assert not set(FALLBACK_READS[tool]) & set(load_recorded(RECORDED_FILES[tool]))
+
+    def test_string_item_ids_in_recorded_flag_item_id_read(self):
+        recorded = extract_keyset({**LIVE_INBOX_ITEM, "itemIds": ["AAkALgExampleItem1="]})
+        with pytest.raises(AssertionError) as excinfo:
+            assert_no_drift(
+                "email_inbox",
+                reads=LIVE_READS["email_inbox"],
+                recorded=recorded,
+                fixture=_fixture_keyset("email_inbox"),
+            )
+        assert "read missing from recorded: itemIds[].id" in _drift_lines(excinfo)
 
 
 # Fictitious repro of the drift shape: a Graph-style message fixture fed to a
@@ -345,7 +360,7 @@ class TestEmailInboxRepro:
         with pytest.raises(AssertionError) as excinfo:
             assert_no_drift(
                 "email_inbox",
-                reads=ADAPTER_READS["email_inbox"],
+                reads=LIVE_READS["email_inbox"],
                 recorded=recorded,
                 fixture=extract_keyset(REPRO_FIXTURE_ITEM),
             )
@@ -370,7 +385,7 @@ class TestEmailInboxRepro:
 
 # Fictitious repros of the #699 live trigger shapes: ``email_inbox`` items list
 # ``itemIds`` as objects and carry ``itemClasses`` and ``hasAttachments``;
-# ``get_messages`` items carry ``members``.
+# ``get_messages`` items may carry ``members`` (a fallback read, #707).
 LIVE_INBOX_ITEM_699 = {
     "conversationId": "AAQkADExampleConv699=",
     "itemIds": [{"id": "AAMkADExampleItem699="}],
@@ -395,23 +410,20 @@ LIVE_MESSAGE_ITEM_699 = {
 
 
 class TestUndeclaredReadsRepro:
-    @pytest.mark.parametrize(
-        ("tool", "item", "paths"),
-        [
-            ("email_inbox", LIVE_INBOX_ITEM_699, ["itemIds[].id", "itemClasses"]),
-            ("get_messages", LIVE_MESSAGE_ITEM_699, ["members"]),
-        ],
-    )
-    def test_reads_declared(self, tool, item, paths):
-        recorded = extract_keyset(item)
-        for path in paths:
-            assert path in ADAPTER_READS[tool]
+    def test_reads_declared(self):
+        recorded = extract_keyset(LIVE_INBOX_ITEM_699)
+        for path in ["itemIds[].id", "itemClasses"]:
+            assert path in LIVE_READS["email_inbox"]
             assert path in recorded
+
+    def test_members_declared_fallback(self):
+        assert "members" in FALLBACK_READS["get_messages"]
+        assert "members" not in LIVE_READS["get_messages"]
 
     def _missing_reads(self, tool: str, item: dict) -> list[str]:
         keyset = extract_keyset(item)
         try:
-            assert_no_drift(tool, reads=ADAPTER_READS[tool], recorded=keyset, fixture=keyset)
+            assert_no_drift(tool, reads=LIVE_READS[tool], recorded=keyset, fixture=keyset)
         except AssertionError as exc:
             return [line for line in str(exc).splitlines() if line.startswith("read missing")]
         return []
@@ -424,11 +436,9 @@ class TestUndeclaredReadsRepro:
         assert "read missing from recorded: itemClasses" in missing
 
     def test_object_item_ids_cover_item_id_read(self):
-        missing = self._missing_reads("email_inbox", LIVE_INBOX_ITEM_699)
-        assert "read missing from recorded: itemIds[].id" not in missing
-        assert "read missing from recorded: itemClasses" not in missing
+        assert self._missing_reads("email_inbox", LIVE_INBOX_ITEM_699) == []
 
-    def test_members_read_flagged_until_recorded(self):
+    def test_members_not_required_in_recorded(self):
         item = {k: v for k, v in LIVE_MESSAGE_ITEM_699.items() if k != "members"}
-        assert "read missing from recorded: members" in self._missing_reads("get_messages", item)
+        assert self._missing_reads("get_messages", item) == []
         assert self._missing_reads("get_messages", LIVE_MESSAGE_ITEM_699) == []
