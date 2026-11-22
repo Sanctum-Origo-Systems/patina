@@ -1,3 +1,7 @@
+## v0.43.0 (2026-11-22)
+- #708: Feat: [patina] email_inbox drift guard can't pass on live keysets: ($1.39)
+Total: 1 PRs, $1.39
+
 ## v0.42.0 (2026-11-20)
 - #702: Feat: [patina] fix: store_search shows 'Recipients: unknown' on ca ($0.61)
 Total: 1 PRs, $0.61
@@ -40,22 +44,4 @@ Total: 4 PRs, $8.74
 - #637: Docs: ingestion pipeline page and sink diagram ($0.00)
 - #635: Docs: explain why cross-app identity resolution is hard ($0.00)
 Total: 2 PRs, $0.00
-
-## v0.37.0 (2026-11-07)
-- #603: Feat: [patina] fix: contradictions still fills the cap with org an ($0.98)
-- #602: Feat: Meeting-observation classification, selection and guarded re ($1.57)
-- #605: Feat: `patina cleanup-meeting-obs` CLI: read-only dry run, --, and ($1.68)
-- #623: Feat: add method column to claims and relationships and migrate ex ($0.95)
-- #622: Feat: Exclude calendar observations from belief extraction ($1.19)
-- #621: Feat: Source-facts metadata contract, Outlook email adapter and mi ($1.85)
-- #620: Feat: Add participants and customer_domains to objectives, with a ($1.44)
-- #625: Feat: [patina] fix: contradictions still fill the cap on live data ($0.85)
-- #624: Feat: [patina] fix: cleanup-meeting-obs selects 0 rows on the live ($1.27)
-- #626: Feat: Source facts for Outlook calendar, Slack and IMAP/Gmail, plu ($2.43)
-- #627: Feat: Implement the deterministic outlook_relevance keep/drop deci ($1.82)
-- #628: Feat: record per-claim observation ids in extract_beliefs, store m ($1.47)
-- #630: Feat: cleanup-meeting-obs counts only real observation ids and rep ($1.45)
-- #629: Feat: Apply the filter at Outlook ingest, count drops by reason, a ($2.28)
-- #632: Docs: README tool count, owner.emails and Outlook relevance filter ($0.00)
-Total: 15 PRs, $21.23
 
