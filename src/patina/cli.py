@@ -281,7 +281,8 @@ def _print_extraction_history(limit: int, home: Path | None) -> None:
         return
 
     typer.echo(
-        f"{'Date':<20} {'Processed':>9} {'Skipped':>8} {'Collisions':>10}  Top source (skips)"
+        f"{'Date':<20} {'Processed':>9} {'Skipped':>8} {'Collisions':>10} {'Fallbacks':>9}"
+        "  Top source (skips)"
     )
     for run in runs:
         by_source = json.loads(run["by_source_json"] or "{}")
@@ -297,7 +298,8 @@ def _print_extraction_history(limit: int, home: Path | None) -> None:
         date = run["started_at"][:19].replace("T", " ")
         typer.echo(
             f"{date:<20} {run['observations_processed']:>9} "
-            f"{run['skipped_unresolved']:>8} {run['alias_collisions']:>10}  {top_label}"
+            f"{run['skipped_unresolved']:>8} {run['alias_collisions']:>10} "
+            f"{run['batch_fallbacks']:>9}  {top_label}"
         )
 
 

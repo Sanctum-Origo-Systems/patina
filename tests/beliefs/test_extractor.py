@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from patina.beliefs.extractor import (
     _is_plausible_person_name,
+    _observation_ids_for_names,
     _parse_extraction,
     _resolve_entity_id,
     _upsert_entity,
@@ -1809,3 +1810,116 @@ class TestReconfirmUnionsSourceIds:
         assert set(ids) == {"a1", "a2", "b1", "b2"}
         assert row["first_asserted"] == "2026-01-01T00:00:00+00:00"
         assert row["method"] == "behavioral_extraction"
+
+
+_BATCH_OF_TEN = [f"o{i}" for i in range(1, 11)]
+
+
+def _seed_owner_batch(db_conn, texts):
+    """Ten-row batch with Owner "Jordan Example"; texts maps obs number to (sender, text)."""
+    _make_owner(
+        db_conn,
+        entity_id="owner1",
+        name="Jordan Example",
+        aliases=["user_a", "slack:U0EXAMPLE1"],
+    )
+    upsert_entity(db_conn, Entity(id="h1", type="person", name="user_a"))
+    upsert_entity(db_conn, Entity(id="e5", type="person", name="Dana Brook"))
+    for i in range(1, 11):
+        sender, text = texts.get(i, (None, f"The quick brown fox, part {i}"))
+        _insert_obs(db_conn, f"o{i}", "slack_live", text, sender=sender, ts=float(i))
+    db_conn.commit()
+    db_conn.close()
+
+
+def _run_batch_of_ten(tmp_path, response):
+    with (
+        patch("patina.beliefs.extractor._call_claude", return_value=response),
+        patch("patina.beliefs.extractor.time.sleep"),
+    ):
+        return extract_beliefs(home=tmp_path, batch_size=10)
+
+
+def _claim_response(subject):
+    claim = {"subject": subject, "predicate": "commitment", "object": "design review"}
+    return json.dumps({"entities": [], "claims": [claim], "relationships": [], "behavioral": []})
+
+
+class TestAliasAttribution:
+    """#712: Owner beliefs cite the source observation via the entity's aliases."""
+
+    def test_alias_sender_cites_only_source_observation(self, db_conn, db_path, tmp_path):
+        _seed_owner_batch(db_conn, {3: ("h1", "I'll take the design review on Friday")})
+
+        stats = _run_batch_of_ten(tmp_path, _claim_response("Jordan Example"))
+
+        claims = _belief_rows(db_path, "claims")
+        assert len(claims) == 1
+        assert claims[0]["subject_id"] == "owner1"
+        assert _source_ids(claims[0]) == ["o3"]
+        assert stats["batch_fallbacks"] == 0
+
+    def test_you_addressed_owner_takes_counted_fallback(self, db_conn, db_path, tmp_path):
+        _seed_owner_batch(db_conn, {5: ("e5", "can you send the deck?")})
+
+        stats = _run_batch_of_ten(tmp_path, _claim_response("Jordan Example"))
+
+        claims = _belief_rows(db_path, "claims")
+        assert len(claims) == 1
+        assert sorted(_source_ids(claims[0])) == sorted(_BATCH_OF_TEN)
+        assert stats["batch_fallbacks"] == 1
+        runs = _extraction_runs(tmp_path)
+        assert [r["batch_fallbacks"] for r in runs] == [1]
+
+    def test_unmatched_subject_still_cites_batch(self, db_conn, db_path, tmp_path):
+        upsert_entity(
+            db_conn,
+            Entity(id="e3", type="person", name="Quinn Harper", aliases=["qharper"]),
+        )
+        _insert_obs(db_conn, "o1", "slack_live", "The quick brown fox", ts=1.0)
+        db_conn.commit()
+        db_conn.close()
+
+        stats = _run_batch_of_ten(tmp_path, _claim_response("Quinn Harper"))
+
+        claims = _belief_rows(db_path, "claims")
+        assert len(claims) == 1
+        assert _source_ids(claims[0]) == ["o1"]
+        assert stats["batch_fallbacks"] == 1
+
+    def test_summary_prints_fallback_count(self, db_conn, db_path, tmp_path, capsys):
+        _seed_owner_batch(db_conn, {5: ("e5", "can you send the deck?")})
+
+        _run_batch_of_ten(tmp_path, _claim_response("Jordan Example"))
+
+        assert "Batch fallbacks:        1" in capsys.readouterr().out
+
+
+def _row(obs_id, text, sender_name=None):
+    return {"id": obs_id, "text": text, "sender_name": sender_name}
+
+
+class TestObservationIdsForNames:
+    """#712: alias matching in _observation_ids_for_names."""
+
+    def _cite(self, batch, aliases):
+        from patina.graph import normalize_name
+
+        return _observation_ids_for_names(["Jordan Example"], batch, normalize_name, aliases)
+
+    def test_alias_sender_preferred_over_alias_in_text(self):
+        batch = [_row("o1", "ping user_a about it"), _row("o2", "On it — ça marche", "user_a")]
+        assert self._cite(batch, [["Jordan Example", "user_a"]]) == (["o2"], False)
+
+    def test_alias_in_text_matches_whole_word_only(self):
+        batch = [_row("o1", "the user_abc account"), _row("o2", "thanks <@U0EXAMPLE1>!")]
+        aliases = [["Jordan Example", "user_a", "U0EXAMPLE1"]]
+        assert self._cite(batch, aliases) == (["o2"], False)
+
+    def test_single_character_alias_ignored(self):
+        batch = [_row("o1", "a quick brown fox"), _row("o2", "lorem ipsum")]
+        assert self._cite(batch, [["Jordan Example", "a"]]) == (["o1", "o2"], True)
+
+    def test_no_match_falls_back_to_whole_batch(self):
+        batch = [_row("o1", "can you send the deck?", "Dana Brook")]
+        assert self._cite(batch, [["Jordan Example", "user_a"]]) == (["o1"], True)

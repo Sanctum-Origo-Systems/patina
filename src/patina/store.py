@@ -897,6 +897,17 @@ def run_pending_migrations(conn: sqlite3.Connection) -> None:
                 f"observations {IngestionOutcome.RETAIN_ONLY}"
             )
 
+    row = conn.execute(
+        "SELECT 1 FROM migrations WHERE name = 'add_extraction_runs_batch_fallbacks_v1'"
+    ).fetchone()
+    if not row:
+        ensure_extraction_runs_table(conn)
+        conn.execute(
+            "INSERT INTO migrations (name, applied_at) "
+            "VALUES ('add_extraction_runs_batch_fallbacks_v1', datetime('now'))"
+        )
+        conn.commit()
+
 
 def _ensure_outcome_column(conn: sqlite3.Connection) -> None:
     """Add outcome to an observations table created before #669.
@@ -1093,9 +1104,16 @@ def ensure_extraction_runs_table(conn: sqlite3.Connection) -> None:
                alias_collisions INTEGER NOT NULL DEFAULT 0,
                empty_skipped INTEGER NOT NULL DEFAULT 0,
                errors INTEGER NOT NULL DEFAULT 0,
-               by_source_json TEXT NOT NULL DEFAULT '{}'
+               by_source_json TEXT NOT NULL DEFAULT '{}',
+               batch_fallbacks INTEGER NOT NULL DEFAULT 0
            )"""
     )
+    # Tables created before #712 lack batch_fallbacks; old rows default to 0.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(extraction_runs)").fetchall()}
+    if "batch_fallbacks" not in cols:
+        conn.execute(
+            "ALTER TABLE extraction_runs ADD COLUMN batch_fallbacks INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def record_extraction_run(
@@ -1112,8 +1130,8 @@ def record_extraction_run(
         """INSERT INTO extraction_runs
            (started_at, finished_at, model, observations_processed,
             claims_extracted, skipped_unresolved, alias_collisions,
-            empty_skipped, errors, by_source_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            empty_skipped, errors, by_source_json, batch_fallbacks)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             started_at,
             finished_at,
@@ -1125,6 +1143,7 @@ def record_extraction_run(
             stats["empty_skipped"],
             stats["errors"],
             json.dumps(by_source, sort_keys=True),
+            stats.get("batch_fallbacks", 0),
         ),
     )
     conn.commit()
