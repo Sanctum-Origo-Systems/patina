@@ -146,11 +146,11 @@ def _seed_extraction_runs(tmp_path):
         "errors": 0,
     }
     runs = [
-        ("2026-10-23T09:00:00+00:00", 100, 7, 1, {"slack_live": 7}),
-        ("2026-10-24T09:00:00+00:00", 200, 11, 2, {"slack_live": 3, "outlook_mcp_email": 8}),
-        ("2026-10-25T09:00:00+00:00", 300, 13, 3, {"slack_live": 9, "outlook_mcp_email": 4}),
+        ("2026-10-23T09:00:00+00:00", 100, 7, 1, 4, {"slack_live": 7}),
+        ("2026-10-24T09:00:00+00:00", 200, 11, 2, 5, {"slack_live": 3, "outlook_mcp_email": 8}),
+        ("2026-10-25T09:00:00+00:00", 300, 13, 3, 6, {"slack_live": 9, "outlook_mcp_email": 4}),
     ]
-    for started, processed, skipped, collisions, skips_by_source in runs:
+    for started, processed, skipped, collisions, fallbacks, skips_by_source in runs:
         record_extraction_run(
             conn,
             started_at=started,
@@ -161,6 +161,7 @@ def _seed_extraction_runs(tmp_path):
                 "observations_processed": processed,
                 "skipped_unresolved": skipped,
                 "alias_collisions": collisions,
+                "batch_fallbacks": fallbacks,
             },
             by_source={
                 src: {"skipped_unresolved": n, "alias_collisions": 0}
@@ -182,18 +183,29 @@ def test_extract_history_prints_most_recent_runs_newest_first(tmp_path):
         "Processed",
         "Skipped",
         "Collisions",
+        "Fallbacks",
         "Top",
         "source",
         "(skips)",
     ]
     assert len(lines) == 3
-    assert lines[1].split() == ["2026-10-25", "09:00:00", "300", "13", "3", "slack_live", "(9)"]
+    assert lines[1].split() == [
+        "2026-10-25",
+        "09:00:00",
+        "300",
+        "13",
+        "3",
+        "6",
+        "slack_live",
+        "(9)",
+    ]
     assert lines[2].split() == [
         "2026-10-24",
         "09:00:00",
         "200",
         "11",
         "2",
+        "5",
         "outlook_mcp_email",
         "(8)",
     ]

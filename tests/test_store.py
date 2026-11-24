@@ -108,9 +108,47 @@ def test_migration_creates_extraction_runs_table(db_path):
         "empty_skipped",
         "errors",
         "by_source_json",
+        "batch_fallbacks",
     ]
     applied = conn.execute(
         "SELECT COUNT(*) FROM migrations WHERE name = 'add_extraction_runs_table_v1'"
+    ).fetchone()[0]
+    assert applied == 1
+    conn.close()
+
+
+def test_migration_adds_batch_fallbacks_to_pre_712_table(db_path):
+    conn = connect(db_path)
+    conn.execute("DROP TABLE extraction_runs")
+    conn.execute(
+        """CREATE TABLE extraction_runs (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               started_at TEXT NOT NULL,
+               finished_at TEXT NOT NULL,
+               model TEXT NOT NULL,
+               observations_processed INTEGER NOT NULL DEFAULT 0,
+               claims_extracted INTEGER NOT NULL DEFAULT 0,
+               skipped_unresolved INTEGER NOT NULL DEFAULT 0,
+               alias_collisions INTEGER NOT NULL DEFAULT 0,
+               empty_skipped INTEGER NOT NULL DEFAULT 0,
+               errors INTEGER NOT NULL DEFAULT 0,
+               by_source_json TEXT NOT NULL DEFAULT '{}'
+           )"""
+    )
+    conn.execute(
+        "INSERT INTO extraction_runs (started_at, finished_at, model) "
+        "VALUES ('2026-10-20T00:00:00+00:00', '2026-10-20T00:01:00+00:00', 'sonnet')"
+    )
+    conn.execute("DELETE FROM migrations WHERE name = 'add_extraction_runs_batch_fallbacks_v1'")
+    conn.commit()
+
+    run_pending_migrations(conn)
+    run_pending_migrations(conn)
+
+    runs = conn.execute("SELECT batch_fallbacks FROM extraction_runs").fetchall()
+    assert [r["batch_fallbacks"] for r in runs] == [0]
+    applied = conn.execute(
+        "SELECT COUNT(*) FROM migrations WHERE name = 'add_extraction_runs_batch_fallbacks_v1'"
     ).fetchone()[0]
     assert applied == 1
     conn.close()
