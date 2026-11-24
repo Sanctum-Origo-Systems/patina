@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import time
 from collections import Counter
@@ -411,22 +412,72 @@ def _source_for_name(
     return Counter(row["source"] for row in batch).most_common(1)[0][0]
 
 
+def _entity_aliases(conn, entity_id: str | None) -> list[str]:
+    """An entity's canonical name and aliases, platform prefixes stripped."""
+    from patina.owner import normalize_alias
+
+    if not entity_id:
+        return []
+    row = conn.execute("SELECT name, aliases FROM entities WHERE id = ?", (entity_id,)).fetchone()
+    if row is None:
+        return []
+    names = [row["name"], *(normalize_alias(a) for a in json.loads(row["aliases"] or "[]"))]
+    return [n for n in names if n and n.strip()]
+
+
+def _observation_for_aliases(
+    aliases: Sequence[str],
+    batch: Sequence,
+    normalize: Callable[[str], str],
+):
+    """Attribute one entity's names (canonical name and aliases) to one observation row.
+
+    Prefers the observation whose sender matches any alias, then the first one
+    whose text mentions one as a whole word. Single-character aliases are
+    ignored. Returns None when no observation matches.
+    """
+    keys = {a.strip().lower() for a in aliases if len(a.strip()) > 1}
+    keys |= {normalize(k) for k in keys}
+    keys.discard("")
+    if not keys:
+        return None
+    for row in batch:
+        sender = row["sender_name"]
+        if sender and (sender.lower() in keys or normalize(sender) in keys):
+            return row
+    pattern = re.compile(
+        "|".join(rf"(?<!\w){re.escape(k)}(?!\w)" for k in sorted(keys, key=len, reverse=True))
+    )
+    for row in batch:
+        if pattern.search((row["text"] or "").lower()):
+            return row
+    return None
+
+
 def _observation_ids_for_names(
     names: Sequence[str],
     batch: Sequence,
     normalize: Callable[[str], str],
-) -> list[str]:
+    aliases: Sequence[Sequence[str]] = (),
+) -> tuple[list[str], bool]:
     """Observation ids a belief from a batch's LLM response should cite.
 
     Uses the observation from _observation_for_name for the first name that
-    matches one, then falls back to every observation in the batch. Never
-    returns an id from outside the batch.
+    matches one, then from _observation_for_aliases for the first entity's
+    alias list that matches one (#712). Otherwise falls back to every
+    observation in the batch, so a belief never cites zero observations.
+    Never returns an id from outside the batch. The flag is True when the
+    batch-wide fallback was used.
     """
     for name in names:
         row = _observation_for_name(name, batch, normalize)
         if row is not None:
-            return [row["id"]]
-    return [row["id"] for row in batch]
+            return [row["id"]], False
+    for entity_aliases in aliases:
+        row = _observation_for_aliases(entity_aliases, batch, normalize)
+        if row is not None:
+            return [row["id"]], False
+    return [row["id"] for row in batch], True
 
 
 def _merged_source_ids(conn, table: str, row_id: str, new_ids: list[str]) -> str:
@@ -533,6 +584,7 @@ def extract_beliefs(
         "skipped_unresolved": 0,
         "alias_collisions": 0,
         "empty_skipped": 0,
+        "batch_fallbacks": 0,
     }
     # Per observation source: skip and collision counts for this run.
     by_source: dict[str, dict[str, int]] = {}
@@ -540,6 +592,19 @@ def extract_beliefs(
     def _count(source: str, key: str, n: int = 1) -> None:
         stats[key] += n
         by_source[source][key] += n
+
+    def _cite(names: Sequence[str], entity_ids: Sequence[str], batch: Sequence) -> list[str]:
+        """Observation ids a belief cites; counts each batch-wide fallback (#712)."""
+        aliases = []
+        for entity_id in entity_ids:
+            entity_aliases = _entity_aliases(conn, entity_id)
+            if entity_id == owner_entity_id:
+                entity_aliases += sorted(owner_match_names)
+            aliases.append(entity_aliases)
+        ids, fell_back = _observation_ids_for_names(names, batch, _normalize_name, aliases)
+        if fell_back:
+            stats["batch_fallbacks"] += 1
+        return ids
 
     def _record_run() -> None:
         if dry_run:
@@ -706,7 +771,7 @@ def extract_beliefs(
                         claim.get("confidence", 0.7),
                         now,
                         0.02,
-                        _observation_ids_for_names([subject_name], batch, _normalize_name),
+                        _cite([subject_name], [subject_id], batch),
                         "extraction",
                     )
                     stats["claims_extracted"] += 1
@@ -746,10 +811,10 @@ def extract_beliefs(
                         object_id,
                         rel.get("confidence", 0.7),
                         now,
-                        _observation_ids_for_names(
+                        _cite(
                             [rel.get("subject", ""), rel.get("object", "")],
+                            [subject_id, object_id],
                             batch,
-                            _normalize_name,
                         ),
                         "extraction",
                     )
@@ -785,7 +850,7 @@ def extract_beliefs(
                         beh.get("confidence", 0.6),
                         now,
                         0.05,
-                        _observation_ids_for_names([subject_name], batch, _normalize_name),
+                        _cite([subject_name], [subject_id], batch),
                         "behavioral_extraction",
                     )
                     stats["claims_extracted"] += 1
@@ -813,6 +878,7 @@ def extract_beliefs(
         print(f"  Batches sent to LLM:    {stats['batches_sent']}")
         print(f"  Skipped (unresolved):   {stats['skipped_unresolved']}")
         print(f"  Alias collisions:       {stats['alias_collisions']}")
+        print(f"  Batch fallbacks:        {stats['batch_fallbacks']}")
         if stats["errors"]:
             print(f"  Errors:                 {stats['errors']}")
 

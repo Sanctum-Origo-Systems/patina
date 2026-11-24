@@ -44,7 +44,7 @@ patina draft --to <name> --context "follow up on the timeline"  # generate a dra
 
 # Belief graph
 patina extract                     # extract beliefs from observations via LLM (calendar items are schedule data, not extracted)
-patina extract --history 5         # last N runs: skips + alias collisions by source
+patina extract --history 5         # last N runs: skips, alias collisions, batch fallbacks
 patina beliefs --type person       # entities with claim counts
 patina stale                       # decayed beliefs below confidence threshold
 patina contradictions              # conflicting claims
