@@ -1,3 +1,7 @@
+## v0.44.0 (2026-11-24)
+- #713: Feat: [patina] Owner beliefs cite the whole extraction batch inste ($1.87)
+Total: 1 PRs, $1.87
+
 ## v0.43.0 (2026-11-22)
 - #708: Feat: [patina] email_inbox drift guard can't pass on live keysets: ($1.39)
 Total: 1 PRs, $1.39
@@ -32,16 +36,4 @@ Total: 14 PRs, $27.38
 ## v0.39.0 (2026-11-11)
 - #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
 Total: 1 PRs, $1.38
-
-## v0.38.0 (2026-11-09)
-- #645: Feat: [patina] Contradictions still mostly noise on live: org/titl ($1.46)
-- #644: Feat: [patina] Outlook relevance filter reads fields the live inbo ($1.48)
-- #646: Feat: [patina] `patina extract` fails on a pre-#613 store until an ($3.39)
-- #648: Feat: [patina] fix: customer-domain engagement rule never fires on ($2.41)
-Total: 4 PRs, $8.74
-
-## v0.37.1 (2026-11-08)
-- #637: Docs: ingestion pipeline page and sink diagram ($0.00)
-- #635: Docs: explain why cross-app identity resolution is hard ($0.00)
-Total: 2 PRs, $0.00
 
