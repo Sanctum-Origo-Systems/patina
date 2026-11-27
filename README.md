@@ -10,7 +10,7 @@ Patina is an architecture for building systems that form, hold, decay, and act o
 
 ```bash
 # Install (from GitHub; the "patina" package on PyPI is an unrelated project)
-uv tool install git+https://github.com/Sanctum-Origo-Systems/patina.git@v0.44.0
+uv tool install git+https://github.com/Sanctum-Origo-Systems/patina.git@v0.44.1
 
 # Initialize
 patina init
