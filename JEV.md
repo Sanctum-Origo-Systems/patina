@@ -1,6 +1,6 @@
 # JEV Report
 
-**Verdict:** Jev agreed on 87% (n=23 live) of confident calls
+**Verdict:** Jev agreed on 88% (n=24 live) of confident calls
 
 **Band:** 0.15–0.85 (from config); triage.needs_decomposition: 0.35–0.85
 
@@ -8,41 +8,41 @@
 
 ```mermaid
 xychart-beta
-    title "Triage: Jev vs Incumbent (n=156 live)"
+    title "Triage: Jev vs Incumbent (n=157 live)"
     x-axis ["Agreed", "Disagreed", "Uncertain (fell back)"]
     y-axis "Decisions" 0 --> 134
-    bar [20, 3, 133]
+    bar [21, 3, 133]
 ```
 
 ```mermaid
 xychart-beta
-    title "Auto-Merge Confidence by Action Zone (n=155 live)"
+    title "Auto-Merge Confidence by Action Zone (n=156 live)"
     x-axis ["Act: reject (below 0.15)", "Pipeline (0.15-0.85)", "Act: merge (0.85+)"]
-    y-axis "Count" 0 --> 152
-    bar [0, 151, 4]
+    y-axis "Count" 0 --> 153
+    bar [0, 152, 4]
 ```
 
 ```mermaid
 xychart-beta
     title "Weekly Triage Agreement When Confident"
-    x-axis ["9/28 (n=2 live)", "10/5 (n=1 live)", "10/12 (n=3 live)", "10/26 (n=7 live)", "11/2 (n=2 live)", "11/9 (n=1 live)", "11/16 (n=7 live)"]
+    x-axis ["9/28 (n=2 live)", "10/5 (n=1 live)", "10/12 (n=3 live)", "10/26 (n=7 live)", "11/2 (n=2 live)", "11/9 (n=1 live)", "11/16 (n=7 live)", "11/23 (n=1 live)"]
     y-axis "% agreed" 0 --> 100
-    bar [100, 100, 100, 100, 50, 0, 86]
+    bar [100, 100, 100, 100, 50, 0, 86, 100]
 ```
 
 ## Counts
 
-- **Total entries:** 403
-- **Live entries:** 331
+- **Total entries:** 405
+- **Live entries:** 333
 - **Backfilled entries:** 72
-- **Date range:** 2026-07-03 to 2026-11-24
+- **Date range:** 2026-07-03 to 2026-11-27
 
 ## Triage Agreement
 
-- **Agreed:** 20 of 156
-- **Disagreed:** 3 of 156
-- **Uncertain (fell back):** 133 of 156
-- **When confident, agreed:** 20 of 23 — 87% (n=23 live)
+- **Agreed:** 21 of 157
+- **Disagreed:** 3 of 157
+- **Uncertain (fell back):** 133 of 157
+- **When confident, agreed:** 21 of 24 — 88% (n=24 live)
 - **Disagreement breakdown:**
   - needs-decomposition-vs-rejected: 2
   - ready-vs-rejected: 1
@@ -59,20 +59,20 @@ xychart-beta
 | 11/2 | 1 | 1 | 30 | 32 |
 | 11/9 | 0 | 1 | 5 | 6 |
 | 11/16 | 6 | 1 | 22 | 29 |
-| 11/23 | 0 | 0 | 2 | 2 |
+| 11/23 | 1 | 0 | 2 | 3 |
 
 ## Auto-Merge Agreement
 
-- **Mean confidence:** 0.554 (n=155 live)
-- **Median confidence:** 0.560 (n=155 live)
-- **Agreement with incumbent decision:** 60/84 — 71% (n=84 live)
+- **Mean confidence:** 0.552 (n=156 live)
+- **Median confidence:** 0.555 (n=156 live)
+- **Agreement with incumbent decision:** 60/85 — 71% (n=85 live)
 
 ### Per-Zone Agreement
 
 | Zone | Agreed | Total | Agreement |
 |------|--------|-------|-----------|
 | Act: reject (below 0.15) | — | 0 | no outcomes yet |
-| Pipeline (0.15-0.85) | 60 | 84 | 71% (n=84 live) |
+| Pipeline (0.15-0.85) | 60 | 85 | 71% (n=85 live) |
 | Act: merge (0.85+) | — | 0 | no outcomes yet |
 
 ## Calibration
@@ -88,17 +88,17 @@ Live rows only; shadow and backfilled rows are excluded. A suggested band edge n
 | 0.35–0.5 | n=0 | — |
 | 0.5–0.65 | n=0 | — |
 | 0.65–0.85 | n=22 | 77% |
-| 0.85–1 | n=153 | 84% |
+| 0.85–1 | n=154 | 84% |
 
 - **Band:** 0.15–0.85 (from config)
-- **Suggested band edges:** no edge reaches 95% (n=176)
-- **Baseline:** always accept: 82%, n=176 vs Jev: 83%, n=176
+- **Suggested band edges:** no edge reaches 95% (n=177)
+- **Baseline:** always accept: 82%, n=177 vs Jev: 83%, n=177
 
 ### triage.needs_decomposition
 
 | Bin | n | % needs-decomposition |
 |-----|---|---|
-| 0–0.15 | n=8 | 0% |
+| 0–0.15 | n=9 | 0% |
 | 0.15–0.35 | n=40 | 8% |
 | 0.35–0.5 | n=26 | 8% |
 | 0.5–0.65 | n=33 | 15% |
@@ -106,15 +106,15 @@ Live rows only; shadow and backfilled rows are excluded. A suggested band edge n
 | 0.85–1 | n=12 | 75% |
 
 - **Band:** 0.35–0.85 (from config)
-- **Suggested band edges:** no edge reaches 95% (n=176)
-- **Baseline:** never decompose: 74%, n=176 vs Jev: 62%, n=176
+- **Suggested band edges:** no edge reaches 95% (n=177)
+- **Baseline:** never decompose: 75%, n=177 vs Jev: 62%, n=177
 
 ### auto-merge.meets_acceptance_criteria
 
 | Bin | n | % approved (incumbent verdict) |
 |-----|---|---|
 | 0–0.15 | n=0 | — |
-| 0.15–0.35 | n=9 | 89% |
+| 0.15–0.35 | n=10 | 90% |
 | 0.35–0.5 | n=15 | 80% |
 | 0.5–0.65 | n=43 | 91% |
 | 0.65–0.85 | n=17 | 100% |
@@ -122,8 +122,8 @@ Live rows only; shadow and backfilled rows are excluded. A suggested band edge n
 
 - **Yardsticks:** **incumbent verdict** (approved), **final outcome** (merged), **7-day human edit** (no human edit). The incumbent's verdict is not ground truth.
 - **Band:** 0.15–0.85 (from config)
-- **Suggested band edges:** no edge reaches 95% (n=84)
-- **Baseline:** always approve: 90%, n=84 vs Jev: 71%, n=84
+- **Suggested band edges:** no edge reaches 95% (n=85)
+- **Baseline:** always approve: 91%, n=85 vs Jev: 71%, n=85
 - **Baseline (final outcome):** no data (no live rows with a merged or closed-unmerged final_outcome)
 - **Baseline (7-day human edit):** no data (run history has no 7-day human-edit signal)
 
@@ -164,4 +164,4 @@ xychart-beta
 
 ---
 
-*Generated at 2026-11-25 05:10 UTC*
+*Generated at 2026-11-27 05:10 UTC*
