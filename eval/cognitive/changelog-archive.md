@@ -401,3 +401,7 @@ Total: 4 PRs, $8.74
 - #635: Docs: explain why cross-app identity resolution is hard ($0.00)
 Total: 2 PRs, $0.00
 
+## v0.39.0 (2026-11-11)
+- #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
+Total: 1 PRs, $1.38
+

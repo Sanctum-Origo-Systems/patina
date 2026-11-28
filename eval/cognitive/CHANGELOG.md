@@ -1,3 +1,7 @@
+## v0.44.1 (2026-11-27)
+- #719: Fix: pin mcp below 2.0 so fresh tool installs of patina-mcp start ($0.55)
+Total: 1 PRs, $0.55
+
 ## v0.44.0 (2026-11-24)
 - #713: Feat: [patina] Owner beliefs cite the whole extraction batch inste ($1.87)
 Total: 1 PRs, $1.87
@@ -32,8 +36,4 @@ Total: 3 PRs, $3.31
 - #686: Feat: Add promotion command (dry run by default, --confirm) and pe ($2.01)
 - #691: Feat: scripts/refresh_keyset.py with a no-values test ($1.18)
 Total: 14 PRs, $27.38
-
-## v0.39.0 (2026-11-11)
-- #652: Feat: [patina] Calendar attendees never captured from live calenda ($1.38)
-Total: 1 PRs, $1.38
 
